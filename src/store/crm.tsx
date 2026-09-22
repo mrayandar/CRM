@@ -33,13 +33,19 @@ import { DEAL_STAGE_LABEL } from '@/data/types'
 
 type SubjectRef = NonNullable<Activity['subject']>
 
-export interface ConvertLeadInput {
-  dealName: string
+/** Optional deal-creation piece of a lead conversion. */
+export interface ConvertLeadDealInput {
+  name: string
   value: number
   stage: DealStage
   closeDate: string
-  ownerId: string
   priority: Priority
+}
+
+export interface ConvertLeadInput {
+  ownerId: string
+  /** Omit to convert to a Contact only. Provide to also open a Deal. */
+  deal?: ConvertLeadDealInput
 }
 
 interface CrmState {
@@ -53,7 +59,10 @@ interface CrmState {
   ownerById: (id: string) => Owner
   moveDeal: (dealId: string, stage: DealStage) => void
   setLeadStatus: (leadId: string, status: LeadStatus) => void
-  convertLead: (leadId: string, input: ConvertLeadInput) => { dealId: string; contactId: string }
+  convertLead: (
+    leadId: string,
+    input: ConvertLeadInput,
+  ) => { contactId: string; dealId: string | null }
   toggleTask: (taskId: string) => void
   addTask: (task: { title: string; dueDate: string; priority: Priority; subject?: SubjectRef }) => void
   addNote: (subject: SubjectRef, body: string) => void
@@ -143,9 +152,9 @@ export function CrmProvider({ children }: { children: ReactNode }) {
   const convertLead = useCallback(
     (leadId: string, input: ConvertLeadInput) => {
       const lead = leads.find((l) => l.id === leadId)!
-      const dealId = nextId('d')
       const contactId = nextId('c')
       const now = new Date().toISOString()
+      const dealId = input.deal ? nextId('d') : null
 
       const contact: Contact = {
         id: contactId,
@@ -161,42 +170,54 @@ export function CrmProvider({ children }: { children: ReactNode }) {
         location: lead.location,
         lastInteractionAt: now,
         createdAt: now,
-        openDeals: 1,
+        openDeals: input.deal ? 1 : 0,
         accountValue: 0,
       }
 
-      const deal: Deal = {
-        id: dealId,
-        name: input.dealName,
-        company: lead.company,
-        contactId,
-        leadId,
-        value: input.value,
-        stage: input.stage,
-        ownerId: input.ownerId,
-        probability: STAGE_PROBABILITY[input.stage] ?? 25,
-        closeDate: input.closeDate,
-        updatedAt: now,
-        priority: input.priority,
-        source: lead.source,
+      setContacts((prev) => [contact, ...prev])
+
+      if (input.deal && dealId) {
+        const deal: Deal = {
+          id: dealId,
+          name: input.deal.name,
+          company: lead.company,
+          contactId,
+          leadId,
+          value: input.deal.value,
+          stage: input.deal.stage,
+          ownerId: input.ownerId,
+          probability: STAGE_PROBABILITY[input.deal.stage] ?? 25,
+          closeDate: input.deal.closeDate,
+          updatedAt: now,
+          priority: input.deal.priority,
+          source: lead.source,
+        }
+        setDeals((prev) => [deal, ...prev])
       }
 
-      setContacts((prev) => [contact, ...prev])
-      setDeals((prev) => [deal, ...prev])
       setLeads((prev) =>
         prev.map((l) =>
           l.id === leadId
-            ? { ...l, status: 'qualified', convertedDealId: dealId, lastTouchedAt: now }
+            ? {
+                ...l,
+                status: 'qualified',
+                convertedDealId: dealId ?? undefined,
+                lastTouchedAt: now,
+              }
             : l,
         ),
       )
-      pushActivity('created', `converted ${lead.name} into ${input.dealName}`, {
+
+      const activityTitle = input.deal
+        ? `converted ${lead.name} into ${input.deal.name}`
+        : `converted ${lead.name} to a contact`
+      pushActivity('created', activityTitle, {
         type: 'lead',
         id: leadId,
         label: lead.name,
       })
 
-      return { dealId, contactId }
+      return { contactId, dealId }
     },
     [leads, pushActivity],
   )

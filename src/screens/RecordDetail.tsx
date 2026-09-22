@@ -95,7 +95,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
   const [note, setNote] = useState('')
   const [newTask, setNewTask] = useState('')
   const [convertOpen, setConvertOpen] = useState(false)
-  const [converted, setConverted] = useState<{ dealId: string; contactId: string } | null>(null)
+  const [converted, setConverted] = useState<{ dealId: string | null; contactId: string } | null>(null)
 
   const owner = ownerById(record.ownerId)
 
@@ -556,7 +556,7 @@ function ConvertModal({
   lead: Lead
   open: boolean
   onClose: () => void
-  onConverted: (result: { dealId: string; contactId: string }) => void
+  onConverted: (result: { dealId: string | null; contactId: string }) => void
 }) {
   const { convertLead, owners } = useCrm()
   const [name, setName] = useState(`${lead.company} — New opportunity`)
@@ -574,12 +574,14 @@ function ConvertModal({
 
   const submit = () => {
     const result = convertLead(lead.id, {
-      dealName: name.trim() || `${lead.company} — New opportunity`,
-      value: numericValue,
-      stage,
-      closeDate: new Date(`${closeDate}T12:00:00`).toISOString(),
       ownerId,
-      priority,
+      deal: {
+        name: name.trim() || `${lead.company} — New opportunity`,
+        value: numericValue,
+        stage,
+        closeDate: new Date(`${closeDate}T12:00:00`).toISOString(),
+        priority,
+      },
     })
     onConverted(result)
     onClose()

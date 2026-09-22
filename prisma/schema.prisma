@@ -5,6 +5,10 @@
 // data layer is wired in. Enum values intentionally match the string unions
 // already used on the frontend (e.g. LeadStatus 'new' | 'contacted' | ...)
 // to keep any future integration mapping-free.
+//
+// Multi-tenancy: every tenant-scoped table carries an `orgId` column (a
+// Clerk organization id — no local `Organization` model yet). Every query
+// in `lib/data/*.ts` MUST filter by `orgId` — see `.cursor/rules/nexocrm.mdc`.
 
 generator client {
   provider = "prisma-client-js"
@@ -89,10 +93,12 @@ enum SubjectType {
 // Core models
 // ---------------------------------------------------------------------------
 
+/// A user within a tenant org (e.g. an AE, SDR). NOT the org itself.
 model Owner {
   id    String @id @default(cuid())
+  orgId String
   name  String
-  email String @unique
+  email String
   role  String
 
   leads      Lead[]
@@ -104,11 +110,16 @@ model Owner {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Emails are unique per-org, not globally: two different tenants can
+  // legitimately each have an "ava@acme.com".
+  @@unique([orgId, email])
+  @@index([orgId])
   @@map("owners")
 }
 
 model Lead {
   id       String     @id @default(cuid())
+  orgId    String
   name     String
   title    String
   company  String
@@ -135,13 +146,16 @@ model Lead {
   tasks      Task[]
   activities Activity[]
 
-  @@index([status])
-  @@index([ownerId])
+  @@index([orgId])
+  @@index([orgId, status])
+  @@index([orgId, ownerId])
+  @@index([orgId, lastTouchedAt])
   @@map("leads")
 }
 
 model Contact {
   id      String @id @default(cuid())
+  orgId   String
   name    String
   title   String
   company String
@@ -169,13 +183,16 @@ model Contact {
   tasks      Task[]
   activities Activity[]
 
-  @@index([company])
-  @@index([ownerId])
+  @@index([orgId])
+  @@index([orgId, company])
+  @@index([orgId, ownerId])
+  @@index([orgId, lastInteractionAt])
   @@map("contacts")
 }
 
 model Deal {
   id       String    @id @default(cuid())
+  orgId    String
   name     String
   company  String
   value    Int
@@ -203,13 +220,15 @@ model Deal {
   tasks      Task[]
   activities Activity[]
 
-  @@index([stage])
-  @@index([ownerId])
+  @@index([orgId])
+  @@index([orgId, stage])
+  @@index([orgId, ownerId])
   @@map("deals")
 }
 
 model Task {
   id       String   @id @default(cuid())
+  orgId    String
   title    String
   dueDate  DateTime
   done     Boolean  @default(false)
@@ -235,13 +254,15 @@ model Task {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([ownerId])
-  @@index([done, dueDate])
+  @@index([orgId])
+  @@index([orgId, ownerId])
+  @@index([orgId, done, dueDate])
   @@map("tasks")
 }
 
 model Activity {
   id    String       @id @default(cuid())
+  orgId String
   kind  ActivityKind
   title String
   body  String?
@@ -262,7 +283,8 @@ model Activity {
   deal      Deal?    @relation(fields: [dealId], references: [id])
   dealId    String?
 
-  @@index([at])
+  @@index([orgId])
+  @@index([orgId, at])
   @@index([leadId])
   @@index([contactId])
   @@index([dealId])
