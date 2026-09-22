@@ -1,0 +1,270 @@
+// NexoCRM database schema.
+//
+// Mirrors the domain modeled in `src/data/types.ts` for the (currently
+// mock-data-driven) UI, so this schema is ready to back that UI once a real
+// data layer is wired in. Enum values intentionally match the string unions
+// already used on the frontend (e.g. LeadStatus 'new' | 'contacted' | ...)
+// to keep any future integration mapping-free.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum LeadStatus {
+  new
+  contacted
+  qualified
+  unqualified
+  lost
+}
+
+enum LeadSource {
+  Inbound
+  Outbound
+  Referral
+  Event
+  Partner
+  Website
+}
+
+enum DealStage {
+  discovery
+  proposal
+  negotiation
+  contract
+  won
+  lost
+}
+
+enum Priority {
+  low
+  medium
+  high
+}
+
+enum ContactLifecycle {
+  Customer
+  Champion
+  Prospect
+  Evaluator
+  Churned
+}
+
+enum TaskType {
+  call
+  email
+  meeting
+  todo
+}
+
+enum ActivityKind {
+  call
+  email
+  meeting
+  note
+  stage
+  created
+  task
+  won
+  lost
+}
+
+/** What a Task or Activity is attached to — a lightweight polymorphic reference. */
+enum SubjectType {
+  lead
+  contact
+  deal
+}
+
+// ---------------------------------------------------------------------------
+// Core models
+// ---------------------------------------------------------------------------
+
+model Owner {
+  id    String @id @default(cuid())
+  name  String
+  email String @unique
+  role  String
+
+  leads      Lead[]
+  contacts   Contact[]
+  deals      Deal[]
+  tasks      Task[]
+  activities Activity[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("owners")
+}
+
+model Lead {
+  id       String     @id @default(cuid())
+  name     String
+  title    String
+  company  String
+  email    String
+  phone    String
+  status   LeadStatus @default(new)
+  source   LeadSource
+  score    Int        @default(0)
+  estValue Int        @default(0)
+  location String
+
+  owner   Owner  @relation(fields: [ownerId], references: [id])
+  ownerId String
+
+  createdAt     DateTime @default(now())
+  lastTouchedAt DateTime @default(now())
+
+  // Populated once this lead has been converted (mirrors `convertedDealId`
+  // on the frontend Lead type). A lead converts into at most one deal and
+  // one contact.
+  convertedDeal    Deal?
+  convertedContact Contact?
+
+  tasks      Task[]
+  activities Activity[]
+
+  @@index([status])
+  @@index([ownerId])
+  @@map("leads")
+}
+
+model Contact {
+  id      String @id @default(cuid())
+  name    String
+  title   String
+  company String
+  email   String
+  phone   String
+  tags    String[]
+
+  lifecycle ContactLifecycle @default(Prospect)
+  location  String
+
+  owner   Owner  @relation(fields: [ownerId], references: [id])
+  ownerId String
+
+  // Present when this contact originated from converting a lead.
+  originLead   Lead?   @relation(fields: [originLeadId], references: [id])
+  originLeadId String? @unique
+
+  accountValue Int @default(0)
+
+  createdAt         DateTime @default(now())
+  lastInteractionAt DateTime @default(now())
+
+  // A contact can accumulate multiple deals over the life of the account.
+  deals      Deal[]
+  tasks      Task[]
+  activities Activity[]
+
+  @@index([company])
+  @@index([ownerId])
+  @@map("contacts")
+}
+
+model Deal {
+  id       String    @id @default(cuid())
+  name     String
+  company  String
+  value    Int
+  stage    DealStage @default(discovery)
+  priority Priority  @default(medium)
+  source   LeadSource
+
+  probability Int
+  closeDate   DateTime
+
+  owner   Owner  @relation(fields: [ownerId], references: [id])
+  ownerId String
+
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  contactId String?
+
+  // The lead this deal was converted from, if any (one-to-one — a lead
+  // converts into at most one deal).
+  lead   Lead?   @relation(fields: [leadId], references: [id])
+  leadId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks      Task[]
+  activities Activity[]
+
+  @@index([stage])
+  @@index([ownerId])
+  @@map("deals")
+}
+
+model Task {
+  id       String   @id @default(cuid())
+  title    String
+  dueDate  DateTime
+  done     Boolean  @default(false)
+  priority Priority @default(medium)
+  type     TaskType @default(todo)
+
+  owner   Owner  @relation(fields: [ownerId], references: [id])
+  ownerId String
+
+  // Polymorphic "related to" reference (lead | contact | deal), denormalized
+  // with a label so list views don't need a join to render (mirrors the
+  // frontend's `Task.relatedTo` shape).
+  relatedToType  SubjectType?
+  relatedToLabel String?
+
+  lead      Lead?    @relation(fields: [leadId], references: [id])
+  leadId    String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  contactId String?
+  deal      Deal?    @relation(fields: [dealId], references: [id])
+  dealId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([done, dueDate])
+  @@map("tasks")
+}
+
+model Activity {
+  id    String       @id @default(cuid())
+  kind  ActivityKind
+  title String
+  body  String?
+  at    DateTime     @default(now())
+
+  actor   Owner  @relation(fields: [actorId], references: [id])
+  actorId String
+
+  // Polymorphic "subject" reference (lead | contact | deal), denormalized
+  // with a label (mirrors the frontend's `Activity.subject` shape).
+  subjectType  SubjectType?
+  subjectLabel String?
+
+  lead      Lead?    @relation(fields: [leadId], references: [id])
+  leadId    String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  contactId String?
+  deal      Deal?    @relation(fields: [dealId], references: [id])
+  dealId    String?
+
+  @@index([at])
+  @@index([leadId])
+  @@index([contactId])
+  @@index([dealId])
+  @@map("activities")
+}

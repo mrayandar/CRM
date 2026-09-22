@@ -1,0 +1,165 @@
+@import '@fontsource-variable/inter';
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------
+   NexoCRM design tokens
+   Modern SaaS + premium minimalism: neutral surfaces, 1px borders, color
+   reserved for status and primary action only.
+   ------------------------------------------------------------------------- */
+@theme {
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+
+  /* Surfaces */
+  --color-canvas: #fafafa;
+  --color-surface: #ffffff;
+  --color-subtle: #f6f6f7;
+  --color-subtler: #fbfbfc;
+
+  /* Hairlines */
+  --color-line: #e8e8ec;
+  --color-line-strong: #dcdce1;
+
+  /* Text */
+  --color-ink-900: #16161a;
+  --color-ink-700: #3f3f46;
+  --color-ink-600: #5c5c66;
+  --color-ink-500: #74747f;
+  --color-ink-400: #9b9ba4;
+
+  /* Brand — primary actions only */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+
+  /* Status */
+  --color-positive: #15803d;
+  --color-positive-soft: #edfcf2;
+  --color-positive-line: #c9f2d7;
+
+  --color-negative: #b42318;
+  --color-negative-soft: #fef3f2;
+  --color-negative-line: #fdd9d5;
+
+  --color-warning: #b54708;
+  --color-warning-soft: #fffaeb;
+  --color-warning-line: #fdead0;
+
+  --color-info: #175cd3;
+  --color-info-soft: #eff8ff;
+  --color-info-line: #d3e7fd;
+
+  --color-accent: #6938ef;
+  --color-accent-soft: #f4f1ff;
+  --color-accent-line: #e4dcff;
+
+  --radius-card: 12px;
+  --radius-panel: 10px;
+  --radius-control: 8px;
+
+  --shadow-hairline: 0 1px 2px 0 rgb(16 16 26 / 0.04);
+  --shadow-lift: 0 1px 2px 0 rgb(16 16 26 / 0.04), 0 8px 24px -8px rgb(16 16 26 / 0.12);
+  --shadow-pop: 0 12px 40px -12px rgb(16 16 26 / 0.22), 0 0 0 1px rgb(16 16 26 / 0.04);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink-900 font-sans antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Numeric data should always align in columns */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-500;
+  }
+
+  ::selection {
+    background: var(--color-brand-100);
+  }
+}
+
+@layer utilities {
+  .scrollbar-slim {
+    scrollbar-width: thin;
+    scrollbar-color: #d4d4d8 transparent;
+  }
+  .scrollbar-slim::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-slim::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-slim::-webkit-scrollbar-thumb {
+    background-color: #dcdce1;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  .scrollbar-slim::-webkit-scrollbar-thumb:hover {
+    background-color: #c4c4cc;
+  }
+
+  /* Grabbed kanban card */
+  .dragging {
+    @apply opacity-40;
+  }
+}
+
+@keyframes nexo-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes nexo-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes nexo-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-fade-in {
+  animation: nexo-fade-in 0.18s ease-out;
+}
+.animate-pop-in {
+  animation: nexo-pop-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.animate-slide-in {
+  animation: nexo-slide-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
