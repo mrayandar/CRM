@@ -28,12 +28,10 @@ import { MenuItem, Popover } from '@/components/ui/Menu'
 import { ActivityTimeline } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
 import { useCrm } from '@/store/crm'
-import { generatedTimeline } from '@/data/timeline'
 import {
   DEAL_STAGE_LABEL,
   LEAD_STATUS_LABEL,
   LEAD_STATUS_ORDER,
-  type Activity,
   type Contact,
   type Deal,
   type Lead,
@@ -99,20 +97,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
 
   const owner = ownerById(record.ownerId)
 
-  const timeline = useMemo(() => {
-    const real = activities.filter((a) => a.subject?.id === record.id)
-    const seeded = generatedTimeline({
-      id: record.id,
-      name: record.name,
-      company: record.company,
-      createdAt: record.createdAt,
-      lastActivityAt: lead ? lead.lastTouchedAt : contact!.lastInteractionAt,
-      ownerId: record.ownerId,
-      type,
-    })
-    const merged: Activity[] = [...real, ...seeded]
-    return sortBy(merged, (a) => new Date(a.at).getTime(), 'desc')
-  }, [activities, record, type, lead, contact])
+  const timeline = useMemo(
+    () =>
+      sortBy(
+        activities.filter((a) => a.subject?.id === record.id),
+        (a) => new Date(a.at).getTime(),
+        'desc',
+      ),
+    [activities, record.id],
+  )
 
   const notes = timeline.filter((a) => a.kind === 'note')
   const recordTasks = tasks.filter((t) => t.relatedTo?.id === record.id)
@@ -432,7 +425,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
 
             {tab === 'activity' && (
               <div className="px-5 py-4">
-                <ActivityTimeline items={timeline} />
+                {timeline.length === 0 ? (
+                  <EmptyState
+                    icon={<CalendarPlus size={16} />}
+                    title="No activity yet"
+                    description="Log a note, schedule a call, or send an email to start the timeline."
+                  />
+                ) : (
+                  <ActivityTimeline items={timeline} />
+                )}
               </div>
             )}
 

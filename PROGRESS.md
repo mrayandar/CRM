@@ -187,16 +187,15 @@ The Owner sync path (`upsertOwnerFromClerk`) was already using
 | `src/screens/Settings.tsx` | `useCrm()` for currentUser; Clerk hooks for team | ✅ Real (via CrmProvider + Clerk) |
 | `src/screens/Dashboard.tsx` | `useCrm()` for all metrics **+** `monthlyPerformance` imported directly from `src/data/mock.ts` | ⚠️ Partially mock — the "Won vs. target" bar chart uses a hardcoded 6-month array, not DB data |
 | `src/screens/Reports.tsx` | `useCrm()` for deals/leads/owners **+** `monthlyPerformance` imported directly from `src/data/mock.ts` | ⚠️ Partially mock — the "Revenue vs. target" bar chart uses the same hardcoded array |
-| `src/screens/RecordDetail.tsx` | `useCrm()` for activities, tasks, deals, contacts, leads, owners **+** `generatedTimeline` imported from `src/data/timeline.ts` | ⚠️ Partially mock — the activity timeline shown in the detail view blends real activities from the DB with deterministically seeded fake events from `generatedTimeline()`. A new database tenant will see fake history for every record. |
+| `src/screens/RecordDetail.tsx` | `useCrm()` for activities, tasks, deals, contacts, leads, owners | ✅ Real — `generatedTimeline` blend removed; activity tab shows only DB activities, with an honest empty state for new records |
 
-**Summary:** 13 of 16 data-consuming files are fully wired to real Prisma
-data. 3 files still pull from hardcoded mock arrays for specific sub-features:
-- `monthlyPerformance` (2 screens) — historical chart data, no DB equivalent yet
-- `generatedTimeline` (1 screen) — fake per-record activity history
+**Summary:** 14 of 16 data-consuming files are fully wired to real Prisma
+data. 2 files still pull from a hardcoded mock array for one sub-feature:
+- `monthlyPerformance` (Dashboard + Reports) — historical bar chart data;
+  no DB equivalent yet; **must be replaced before onboarding real customers**
 
-These were not in scope for the Clerk integration task and are documented
-here for the next pass. No other files import from `src/data/mock.ts` or
-`src/data/timeline.ts`.
+No other files import from `src/data/timeline.ts`. `src/data/mock.ts` is
+still imported by Dashboard and Reports only for the chart array above.
 
 ## Known gaps / explicitly deferred
 
@@ -225,10 +224,9 @@ entirely on the on-demand fallback in `resolveAuth()`.
 
 `src/data/types.ts` (used by the UI) was written before Prisma was added.
 It's close to the schema but not identical. `lib/mappers.ts` bridges the
-gap for now. The mock data files (`src/data/mock.ts`, `src/data/timeline.ts`)
-still exist and are still imported by some screens (Dashboard uses
-`monthlyPerformance`, RecordDetail uses `generatedTimeline`). These should
-eventually be replaced with real data from the database.
+gap for now. `src/data/mock.ts` is still imported by Dashboard and Reports
+for the `monthlyPerformance` chart array (see the pre-onboarding blocker
+above). `src/data/timeline.ts` is no longer imported anywhere.
 
 ### orgId is not a formal FK
 
@@ -258,13 +256,18 @@ The API and store now support contact-only conversion (omit `input.deal`),
 but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
 `deal` block. No "Convert to contact only" UI path exists.
 
-### Mock data still referenced by three screens
+### `monthlyPerformance` mock in Dashboard + Reports — must fix before real customers
 
-See the verified mock data audit table above for the full file-by-file
-breakdown. Summary: `Dashboard` and `Reports` import `monthlyPerformance`
-from `src/data/mock.ts` for bar charts; `RecordDetail` imports
-`generatedTimeline` from `src/data/timeline.ts` for seeded fake history.
-All other files are fully wired to real Prisma data.
+`Dashboard` and `Reports` both import `monthlyPerformance` from
+`src/data/mock.ts` for their respective bar charts ("Won vs. target" and
+"Revenue vs. target"). This is hardcoded data — every tenant sees the same
+fabricated six-month trend regardless of their real deal history.
+
+**This must be replaced with real DB queries before onboarding any paying
+customer.** The fix requires a server-side aggregation query grouping
+closed-won deals by month and returning revenue totals, then surfacing that
+via `loadCrmData` (or a dedicated endpoint). Until then the charts show
+fictional numbers to real users.
 
 ### Settings profile/workspace forms don't persist
 
@@ -284,8 +287,8 @@ No specific task queued — waiting for direction. Likely candidates:
 - Configure real Clerk keys and test end-to-end auth flow.
 - Register the Clerk webhook endpoint and test org/member sync.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
-- Replace remaining mock data references (`monthlyPerformance`,
-  `generatedTimeline`) with real DB queries.
+- Replace `monthlyPerformance` mock in Dashboard + Reports with real
+  closed-won-by-month aggregation queries (pre-onboarding blocker).
 - Add formal FK constraints from `*.orgId` → `Organization.id`.
 - Add a "Convert to contact only" UI path in RecordDetail.
 
