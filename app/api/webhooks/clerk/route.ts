@@ -1,6 +1,6 @@
 import { headers } from 'next/headers'
 import { Webhook } from 'svix'
-import { createOrg, updateOrg, deleteOrg, getOrgByClerkId } from '@lib/data/organizations'
+import { upsertOrg, updateOrg, deleteOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { upsertOwnerFromClerk } from '@lib/data/owners'
 
 interface WebhookEvent {
@@ -77,10 +77,11 @@ async function handleOrgCreated(data: Record<string, unknown>) {
   const clerkOrgId = data.id as string
   const name = (data.name as string) ?? 'Untitled organization'
 
-  const existing = await getOrgByClerkId(clerkOrgId)
-  if (existing) return // already created (on-demand sync beat the webhook)
-
-  await createOrg({ clerkOrgId, name })
+  // upsertOrg is atomic: if resolveAuth() already created the row, this is
+  // a no-op (update: {} leaves the existing row unchanged). A plain
+  // check-then-create would race and throw P2002 when both paths try to
+  // INSERT concurrently.
+  await upsertOrg({ clerkOrgId, name })
 }
 
 async function handleOrgUpdated(data: Record<string, unknown>) {

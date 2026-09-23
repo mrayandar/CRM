@@ -134,6 +134,70 @@ that persist to PostgreSQL. Mock data is no longer the primary data source
 - `.cursor/rules/nexocrm.mdc` (alwaysApply) documenting auth flow,
   multi-tenancy, project structure, domain model, UI-hands-off policy.
 
+## Verified correctness checks (Sep 24 2026)
+
+### ✅ Race condition fixed — Organization creation is now atomic
+
+**What was wrong:** Both `resolveAuth()` and `handleOrgCreated()` used a
+check-then-create pattern (`getOrgByClerkId` → if null → `createOrg`).
+`createOrg` called `prisma.organization.create`, a plain INSERT. If both
+ran concurrently — the common case when a user hits the app for the first
+time before the webhook arrives — one INSERT wins and the other throws
+Prisma's `P2002` (unique constraint on `clerkOrgId`):
+
+- In `handleOrgCreated`: P2002 was caught by the outer try/catch → webhook
+  returned 500 → Svix retried. No duplicate row, but needless retries and
+  logged errors.
+- In `resolveAuth`: **no catch** around `createOrg` → P2002 propagated
+  unhandled → the user request threw a 500. This was a real user-visible bug.
+
+**What was fixed:** `createOrg` was replaced with `upsertOrg` in both
+code paths. `upsertOrg` uses `prisma.organization.upsert({ where: { clerkOrgId },
+create: {...}, update: {} })`. The `update: {}` makes it a no-op if the row
+already exists. Prisma's upsert maps to an atomic `INSERT ... ON CONFLICT DO
+UPDATE` at the PostgreSQL level, so no two concurrent callers can both succeed
+at INSERT — one creates the row, the other's upsert finds it and returns the
+existing row. P2002 is no longer possible.
+
+`upsertOrg` is exported from `lib/data/organizations.ts`. `createOrg` is
+kept only for callers (e.g. tests) that explicitly know the row is new.
+`requireAuth()` (used in server actions) still uses `getOrgByClerkId` —
+it deliberately does not create, since server actions run after the layout
+has already run `resolveAuth()`.
+
+The Owner sync path (`upsertOwnerFromClerk`) was already using
+`prisma.owner.upsert` and was already atomic. No change needed there.
+
+### Mock data audit — file-by-file
+
+| File | Data source | Status |
+|------|-------------|--------|
+| `src/store/crm.tsx` | `initialData` prop from server layout → `lib/data-loader.ts` → Prisma | ✅ Real data path — no mock imports |
+| `src/components/layout/Sidebar.tsx` | `useCrm()` | ✅ Real (via CrmProvider) |
+| `src/components/layout/CommandPalette.tsx` | `useCrm()` | ✅ Real (via CrmProvider) |
+| `src/components/layout/AppLayout.tsx` | No data | ✅ n/a |
+| `src/components/common/ActivityStream.tsx` | `useCrm()` for `ownerById` only | ✅ Real (via CrmProvider) |
+| `src/components/common/TaskRow.tsx` | `useCrm()` for `toggleTask`, `ownerById` | ✅ Real (via CrmProvider) |
+| `src/components/common/MetricTile.tsx` | Props only | ✅ n/a |
+| `src/components/common/LeadFunnel.tsx` | Props only | ✅ n/a |
+| `src/screens/Leads.tsx` | `useCrm()` only | ✅ Real (via CrmProvider) |
+| `src/screens/Contacts.tsx` | `useCrm()` only | ✅ Real (via CrmProvider) |
+| `src/screens/Pipeline.tsx` | `useCrm()` only | ✅ Real (via CrmProvider) |
+| `src/screens/Tasks.tsx` | `useCrm()` only | ✅ Real (via CrmProvider) |
+| `src/screens/Settings.tsx` | `useCrm()` for currentUser; Clerk hooks for team | ✅ Real (via CrmProvider + Clerk) |
+| `src/screens/Dashboard.tsx` | `useCrm()` for all metrics **+** `monthlyPerformance` imported directly from `src/data/mock.ts` | ⚠️ Partially mock — the "Won vs. target" bar chart uses a hardcoded 6-month array, not DB data |
+| `src/screens/Reports.tsx` | `useCrm()` for deals/leads/owners **+** `monthlyPerformance` imported directly from `src/data/mock.ts` | ⚠️ Partially mock — the "Revenue vs. target" bar chart uses the same hardcoded array |
+| `src/screens/RecordDetail.tsx` | `useCrm()` for activities, tasks, deals, contacts, leads, owners **+** `generatedTimeline` imported from `src/data/timeline.ts` | ⚠️ Partially mock — the activity timeline shown in the detail view blends real activities from the DB with deterministically seeded fake events from `generatedTimeline()`. A new database tenant will see fake history for every record. |
+
+**Summary:** 13 of 16 data-consuming files are fully wired to real Prisma
+data. 3 files still pull from hardcoded mock arrays for specific sub-features:
+- `monthlyPerformance` (2 screens) — historical chart data, no DB equivalent yet
+- `generatedTimeline` (1 screen) — fake per-record activity history
+
+These were not in scope for the Clerk integration task and are documented
+here for the next pass. No other files import from `src/data/mock.ts` or
+`src/data/timeline.ts`.
+
 ## Known gaps / explicitly deferred
 
 ### No database running / no migrations applied
@@ -194,14 +258,13 @@ The API and store now support contact-only conversion (omit `input.deal`),
 but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
 `deal` block. No "Convert to contact only" UI path exists.
 
-### Mock data still referenced by some screens
+### Mock data still referenced by three screens
 
-- `Dashboard` imports `monthlyPerformance` from `src/data/mock.ts` for the
-  "Won vs. target" chart — there's no equivalent historical data in the DB.
-- `RecordDetail` imports `generatedTimeline` from `src/data/timeline.ts`
-  for seeded timeline events — in production this should come from the
-  `activities` table.
-- `Reports` imports `monthlyPerformance` from `src/data/mock.ts`.
+See the verified mock data audit table above for the full file-by-file
+breakdown. Summary: `Dashboard` and `Reports` import `monthlyPerformance`
+from `src/data/mock.ts` for bar charts; `RecordDetail` imports
+`generatedTimeline` from `src/data/timeline.ts` for seeded fake history.
+All other files are fully wired to real Prisma data.
 
 ### Settings profile/workspace forms don't persist
 

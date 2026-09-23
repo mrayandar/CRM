@@ -2,7 +2,7 @@ import 'server-only'
 
 import { auth, clerkClient } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
-import { getOrgByClerkId, createOrg } from '@lib/data/organizations'
+import { upsertOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { getOwnerByClerkUserId, upsertOwnerFromClerk } from '@lib/data/owners'
 
 /**
@@ -21,23 +21,21 @@ export async function resolveAuth() {
   if (!clerkOrgId) redirect('/create-org')
 
   // ---- Organization sync (on-demand fallback for webhooks) ----
-  let org = await getOrgByClerkId(clerkOrgId)
-  if (!org) {
-    const client = await clerkClient()
-    const clerkOrg = await client.organizations.getOrganization({
-      organizationId: clerkOrgId,
-    })
-    org = await createOrg({
-      clerkOrgId,
-      name: clerkOrg.name,
-    })
-  }
+  //
+  // upsertOrg uses prisma.organization.upsert (not create), so it is
+  // atomic even when resolveAuth() and the organization.created webhook
+  // fire concurrently. A plain check-then-create would race: both read
+  // null, both attempt INSERT, one throws P2002 and the user sees a 500.
+  const clerk = await clerkClient()
+  const clerkOrg = await clerk.organizations.getOrganization({
+    organizationId: clerkOrgId,
+  })
+  const org = await upsertOrg({ clerkOrgId, name: clerkOrg.name })
 
   // ---- Owner sync (on-demand fallback for webhooks) ----
   let owner = await getOwnerByClerkUserId(org.id, userId)
   if (!owner) {
-    const client = await clerkClient()
-    const clerkUser = await client.users.getUser(userId)
+    const clerkUser = await clerk.users.getUser(userId)
     const primaryEmail =
       clerkUser.emailAddresses.find((e) => e.id === clerkUser.primaryEmailAddressId)
         ?.emailAddress ?? clerkUser.emailAddresses[0]?.emailAddress ?? ''
