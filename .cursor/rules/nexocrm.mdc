@@ -1,0 +1,83 @@
+---
+description: NexoCRM project conventions — multi-tenant SaaS CRM, stack, structure, and domain model
+alwaysApply: true
+---
+
+# NexoCRM
+
+Multi-tenant B2B SaaS CRM sold by subscription. Each customer organization
+("tenant") must only ever see its own data — never another tenant's.
+
+**Stack:** Next.js (App Router — migrated from a Vite SPA), TypeScript,
+Tailwind CSS, PostgreSQL + Prisma. Clerk will provide auth/organizations
+(not yet wired). Stripe will provide billing (not yet wired).
+
+## 🚨 Critical: multi-tenancy is not yet implemented
+
+The current `prisma/schema.prisma` and `lib/data/*.ts` have **no `orgId`
+scoping**. This is a known gap, not an oversight to repeat.
+
+Before wiring the UI to real data, or starting any auth/Clerk work:
+
+- Every tenant-scoped table (`Owner`, `Lead`, `Contact`, `Deal`, `Task`,
+  `Activity`) must get an `orgId String` column with an index (and likely
+  a compound index like `@@index([orgId, status])` for hot query paths).
+- **Every** query in `lib/data/*.ts` that touches tenant data MUST filter by
+  the current user's `orgId` — via `where: { orgId, ... }` — with no
+  exceptions. Never write a query keyed only by a record `id` without also
+  constraining `orgId`; an unscoped `findUnique({ where: { id } })` can leak
+  another tenant's record to a client that merely guesses/enumerates an id.
+- Prefer a helper that forces the org filter (e.g. a `withOrgScope(orgId)`
+  wrapper or a repository pattern) over trusting every call site to
+  remember it by hand.
+- When Clerk is wired, `orgId` should come from the authenticated session /
+  active organization — never from a client-supplied parameter.
+
+If you're asked to add a new `lib/data/*.ts` function or Prisma model before
+this scoping lands, flag the gap rather than silently building more
+unscoped code on top of it.
+
+## Project structure
+
+- `src/screens/` — the actual page components (Dashboard, Leads, Contacts,
+  Pipeline, RecordDetail, Tasks, Reports, Settings). This is where UI logic
+  lives.
+- `app/` — Next.js App Router route files only. Each `page.tsx` is a thin
+  wrapper that imports and renders the matching component from
+  `src/screens/`. Don't put real logic here.
+- `src/components/` — shared UI (`ui/`), layout (`layout/`), and common
+  (`common/`) components used by the screens.
+- `src/store/crm.tsx` — `CrmProvider`, the mock-data store the UI currently
+  runs on entirely (via React context/state, not the database yet).
+- `src/lib/router-compat.tsx` — shim giving screens a react-router-dom-shaped
+  API (`Link`, `NavLink`, `useNavigate`, `useSearchParams`, `useParams`) on
+  top of Next's `next/navigation`/`next/link`. Screens import routing helpers
+  from here, not directly from `next/navigation`.
+- `prisma/schema.prisma` — the Postgres schema.
+- `lib/data/*.ts` — server-only Prisma data-access functions (one file per
+  entity: `leads.ts`, `contacts.ts`, `deals.ts`, `tasks.ts`, `activities.ts`,
+  `owners.ts`). Never import these from a Client Component.
+- `lib/prisma.ts` — the Prisma client singleton.
+
+## Domain model
+
+**Lead and Deal are separate entities — never conflate them.** A `Lead` is
+a pre-qualification prospect. Converting a lead creates a `Contact` (the
+person) and, when there's a real opportunity, a `Deal` tied to that contact
+and back to the originating lead via `Deal.leadId`.
+
+Treat "convert" as producing a Contact always, with a Deal being the
+optional/secondary output — not something that must happen in lockstep.
+`convertLeadToDeal` in `lib/data/leads.ts` (mirroring `convertLead` in
+`src/store/crm.tsx`) currently always creates both together in one
+transaction; if you're asked to touch lead conversion, check whether that
+still matches the intended model before extending it, rather than assuming
+the existing code is the spec.
+
+## Hands off the UI
+
+The visual design in `src/screens/` and `src/components/` is finalized.
+**Do not modify their JSX, styling, or layout unless explicitly asked to.**
+Wiring, data-fetching, and backend changes should not require touching
+these files' markup — if a change seems to require it, flag that before
+proceeding.
