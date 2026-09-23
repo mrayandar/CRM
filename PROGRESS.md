@@ -199,20 +199,19 @@ still imported by Dashboard and Reports only for the chart array above.
 
 ## Known gaps / explicitly deferred
 
-### No database running / no migrations applied
+### Initial Prisma migration is applied
 
-`prisma/schema.prisma` is validated and the client is generated, but
-`prisma migrate dev` has never been run — there is no actual PostgreSQL
-database. The schema exists only as a design artifact right now. To test
-end-to-end, you need to spin up a Postgres instance, set DATABASE_URL,
-and run `prisma migrate dev`.
+`prisma/migrations/20260923211426_init` is in the repo and has been
+applied to the Neon Postgres instance via `prisma migrate dev`.
+`DATABASE_URL` is set locally (not committed). Tables exist; they were
+empty at last query because the Clerk org-selection handshake never
+reached `resolveAuth()` in the embedded browser.
 
-### Clerk keys not configured
+### Clerk keys are configured locally
 
-`@clerk/nextjs` is installed and all code is wired, but no real Clerk
-keys are in `.env`. The app will redirect to sign-in but Clerk won't
-render without valid keys. You need to create a Clerk application at
-dashboard.clerk.com and configure the keys.
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` are set in
+`.env` (not committed). Sign-in/sign-up render. `CLERK_WEBHOOK_SECRET`
+is still missing, so the webhook handler will reject events.
 
 ### Webhook endpoint not registered
 
@@ -283,8 +282,9 @@ Champions) have hardcoded counts and are not real saved queries.
 
 No specific task queued — waiting for direction. Likely candidates:
 
-- Spin up a Postgres instance, run `prisma migrate dev`, seed initial data.
-- Configure real Clerk keys and test end-to-end auth flow.
+- Finish Clerk org-selection → `resolveAuth()` and confirm Organization
+  + Owner rows in Neon (handshake stalled in the last browser check).
+- Seed initial CRM data for a new org (optional).
 - Register the Clerk webhook endpoint and test org/member sync.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
 - Replace `monthlyPerformance` mock in Dashboard + Reports with real
