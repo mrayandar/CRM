@@ -9,54 +9,69 @@ Multi-tenant B2B SaaS CRM sold by subscription. Each customer organization
 ("tenant") must only ever see its own data — never another tenant's.
 
 **Stack:** Next.js (App Router — migrated from a Vite SPA), TypeScript,
-Tailwind CSS, PostgreSQL + Prisma. Clerk will provide auth/organizations
-(not yet wired). Stripe will provide billing (not yet wired).
+Tailwind CSS, PostgreSQL + Prisma. Clerk provides auth/organizations.
+Stripe will provide billing (not yet wired).
 
-## 🚨 Critical: multi-tenancy is not yet implemented
+## Multi-tenancy enforcement
 
-The current `prisma/schema.prisma` and `lib/data/*.ts` have **no `orgId`
-scoping**. This is a known gap, not an oversight to repeat.
+Every tenant-scoped table (`Owner`, `Lead`, `Contact`, `Deal`, `Task`,
+`Activity`) has an `orgId String` column with indexes. The `orgId` value
+is `Organization.id` (our internal cuid), looked up via `Organization
+.clerkOrgId`.
 
-Before wiring the UI to real data, or starting any auth/Clerk work:
-
-- Every tenant-scoped table (`Owner`, `Lead`, `Contact`, `Deal`, `Task`,
-  `Activity`) must get an `orgId String` column with an index (and likely
-  a compound index like `@@index([orgId, status])` for hot query paths).
 - **Every** query in `lib/data/*.ts` that touches tenant data MUST filter by
-  the current user's `orgId` — via `where: { orgId, ... }` — with no
-  exceptions. Never write a query keyed only by a record `id` without also
-  constraining `orgId`; an unscoped `findUnique({ where: { id } })` can leak
-  another tenant's record to a client that merely guesses/enumerates an id.
-- Prefer a helper that forces the org filter (e.g. a `withOrgScope(orgId)`
-  wrapper or a repository pattern) over trusting every call site to
-  remember it by hand.
-- When Clerk is wired, `orgId` should come from the authenticated session /
-  active organization — never from a client-supplied parameter.
+  `orgId` — via `where: { orgId, ... }` — with no exceptions.
+- Never write a query keyed only by a record `id` without also constraining
+  `orgId`; an unscoped `findUnique({ where: { id } })` can leak another
+  tenant's record to a client that merely guesses/enumerates an id.
+- All by-id reads use `findFirst({ where: { id, orgId } })`.
+- `orgId` comes from `resolveAuth()` / `requireAuth()` in `lib/auth.ts`,
+  which derives it from the Clerk session — never from a client parameter.
 
-If you're asked to add a new `lib/data/*.ts` function or Prisma model before
-this scoping lands, flag the gap rather than silently building more
-unscoped code on top of it.
+## Auth flow
+
+- `middleware.ts` — Clerk middleware protects all routes except `/sign-in`,
+  `/sign-up`, and `/api/webhooks`.
+- `lib/auth.ts` → `resolveAuth()` — called in `app/(app)/layout.tsx`. Gets
+  Clerk auth, ensures an `Organization` row exists (on-demand from Clerk API
+  if the webhook hasn't arrived yet), ensures an `Owner` row exists for the
+  current user, returns `{ orgId, owner }`.
+- `lib/auth.ts` → `requireAuth()` — lightweight version for server actions.
+  Assumes org + owner already exist (user navigated through the layout).
+- Webhook at `app/api/webhooks/clerk/route.ts` handles `organization.*` and
+  `organizationMembership.*` events for sync.
 
 ## Project structure
 
+- `app/layout.tsx` — root layout: `ClerkProvider`, html/body. No data loading.
+- `app/(app)/layout.tsx` — authenticated layout: calls `resolveAuth()`, loads
+  all CRM data via `lib/data-loader.ts`, wraps in `CrmProvider` + `AppLayout`.
+- `app/(app)/*/page.tsx` — thin route wrappers importing from `src/screens/`.
+- `app/sign-in/`, `app/sign-up/`, `app/create-org/` — public auth pages.
+- `app/api/webhooks/clerk/route.ts` — Clerk webhook handler.
 - `src/screens/` — the actual page components (Dashboard, Leads, Contacts,
   Pipeline, RecordDetail, Tasks, Reports, Settings). This is where UI logic
   lives.
-- `app/` — Next.js App Router route files only. Each `page.tsx` is a thin
-  wrapper that imports and renders the matching component from
-  `src/screens/`. Don't put real logic here.
 - `src/components/` — shared UI (`ui/`), layout (`layout/`), and common
   (`common/`) components used by the screens.
-- `src/store/crm.tsx` — `CrmProvider`, the mock-data store the UI currently
-  runs on entirely (via React context/state, not the database yet).
+- `src/store/crm.tsx` — `CrmProvider` + `useCrm()`. Receives initial data
+  from the server layout, maintains local state, and calls server actions
+  (in `lib/actions/crm.ts`) for mutations with optimistic updates.
 - `src/lib/router-compat.tsx` — shim giving screens a react-router-dom-shaped
   API (`Link`, `NavLink`, `useNavigate`, `useSearchParams`, `useParams`) on
   top of Next's `next/navigation`/`next/link`. Screens import routing helpers
   from here, not directly from `next/navigation`.
-- `prisma/schema.prisma` — the Postgres schema.
+- `prisma/schema.prisma` — the Postgres schema (Organization, Owner, Lead,
+  Contact, Deal, Task, Activity).
 - `lib/data/*.ts` — server-only Prisma data-access functions (one file per
-  entity: `leads.ts`, `contacts.ts`, `deals.ts`, `tasks.ts`, `activities.ts`,
-  `owners.ts`). Never import these from a Client Component.
+  entity). Never import these from a Client Component.
+- `lib/actions/crm.ts` — `'use server'` actions called by CrmProvider for
+  mutations. Each action calls `requireAuth()` then the relevant `lib/data/*`
+  function.
+- `lib/mappers.ts` — converts Prisma records → frontend types (DateTime →
+  ISO string, compute initials, reshape relatedTo/subject objects).
+- `lib/data-loader.ts` — fetches all CRM data for an org and maps to frontend
+  types; called once per request in the `(app)` layout.
 - `lib/prisma.ts` — the Prisma client singleton.
 
 ## Domain model
@@ -68,11 +83,15 @@ and back to the originating lead via `Deal.leadId`.
 
 Treat "convert" as producing a Contact always, with a Deal being the
 optional/secondary output — not something that must happen in lockstep.
-`convertLeadToDeal` in `lib/data/leads.ts` (mirroring `convertLead` in
-`src/store/crm.tsx`) currently always creates both together in one
-transaction; if you're asked to touch lead conversion, check whether that
-still matches the intended model before extending it, rather than assuming
-the existing code is the spec.
+
+**Organization** is a local mirror of a Clerk organization. `orgId` on
+tenant tables is `Organization.id` (not the Clerk org ID directly).
+
+**Owner** is a CRM user within a tenant org, linked to Clerk via
+`clerkUserId`. When a Clerk user joins an org, an Owner row is created.
+
+**Deal.stage** is a plain `DealStage` enum string — there is no seedable
+`PipelineStage` model.
 
 ## Hands off the UI
 

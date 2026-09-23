@@ -14,12 +14,15 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.9.5",
     "@fontsource-variable/inter": "^5.1.1",
     "@prisma/client": "^6.2.1",
     "lucide-react": "^0.469.0",
     "next": "^15.1.4",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "server-only": "^0.0.1",
+    "svix": "^2.5.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",

@@ -4,9 +4,11 @@
 
 ## Status
 
-**Phase: Backend scaffolding.** The full UI runs on a client-side mock store.
-The Prisma schema and server-side data-access layer exist but are not yet
-consumed by any page — nothing calls `lib/data/*` yet.
+**Phase: Auth + real data.** Clerk authentication and multi-tenancy are
+integrated. The UI reads from the database via `lib/data/*` (through the
+CrmProvider's server-loaded initial data). Mutations call server actions
+that persist to PostgreSQL. Mock data is no longer the primary data source
+(though the mock dataset files still exist for reference).
 
 ## Done
 
@@ -18,125 +20,169 @@ consumed by any page — nothing calls `lib/data/*` yet.
   Card, Avatar, Table, Field, Menu, Modal, Display), `layout/` (Sidebar,
   PageShell, CommandPalette, AppLayout), `common/` (ActivityStream,
   MetricTile, TaskRow, LeadFunnel).
-- **Mock data store** in `src/store/crm.tsx` — `CrmProvider` + `useCrm()`
-  hook providing leads, contacts, deals, tasks, activities, owners, plus
-  mutation functions (`moveDeal`, `setLeadStatus`, `convertLead`,
-  `toggleTask`, `addTask`, `addNote`, `logActivity`). The entire UI renders
-  from this store.
-- **Mock dataset** in `src/data/mock.ts` + `src/data/timeline.ts` — 22
-  leads, 24 contacts, 18 deals, tasks, activities, 6 owners with
-  deterministic seeded timeline generation.
 - **Command palette** (Ctrl+K) searching across nav, leads, contacts, deals.
 - **Drag-and-drop** kanban on the Pipeline board (native HTML5 drag events).
 
 ### Next.js migration (complete)
 
 - Migrated from Vite + react-router-dom SPA to **Next.js 15 App Router**.
-- `app/` directory contains thin route wrappers only — each `page.tsx`
-  imports and renders a screen from `src/screens/`.
-- `src/lib/router-compat.tsx` bridges react-router-dom's API (`Link` with
-  `to` prop, `NavLink` with `isActive` render props, `useNavigate`,
-  `useSearchParams` with setter, `useParams`) on top of `next/link` and
-  `next/navigation`. All 11 files that used `react-router-dom` now import
-  from this shim — zero remaining `react-router-dom` imports.
-- All 27 `.tsx` files under `src/` carry `'use client'` (the app is 100%
-  client-rendered while it runs on the mock store).
-- Tailwind v4 via `@tailwindcss/postcss` (was `@tailwindcss/vite`).
-- CSS entry at `app/globals.css` (was `src/index.css`).
-- Production build passes, all 10 routes prerender/render successfully.
+- `app/(app)/` route group contains thin wrappers importing from
+  `src/screens/`. Root `app/layout.tsx` has `ClerkProvider` only.
+- `src/lib/router-compat.tsx` bridges react-router-dom's API on top of
+  `next/link` and `next/navigation`. Zero `react-router-dom` imports remain.
+- Tailwind v4 via `@tailwindcss/postcss`.
+- Production build passes, all 12 routes render successfully.
 
-### Prisma + PostgreSQL schema (complete, not yet consumed)
+### Clerk authentication (complete)
 
-- `prisma/schema.prisma` models 6 entities: Owner, Lead, Contact, Deal,
-  Task, Activity — mirroring `src/data/types.ts` field-for-field.
-- Enums match the exact string unions used on the frontend (e.g.
-  `LeadStatus.new` = `'new'`).
-- **Multi-tenancy:** every model has `orgId String` with `@@index([orgId])`
-  plus composite indexes on hot query paths (e.g. `@@index([orgId, status])`
-  on Lead, `@@index([orgId, done, dueDate])` on Task).
-- `Owner.email` uniqueness is per-org: `@@unique([orgId, email])`.
-- Lead-to-Contact is one-to-one via `Contact.originLeadId` (unique FK).
-  Lead-to-Deal is one-to-one via `Deal.leadId` (unique FK). Contact-to-Deal
-  is one-to-many.
+- **`@clerk/nextjs`** installed and wired.
+- `middleware.ts` — protects all routes except `/sign-in`, `/sign-up`, and
+  `/api/webhooks`. Unauthenticated users redirect to sign-in.
+- Sign-in at `/sign-in`, sign-up at `/sign-up` using Clerk's prebuilt
+  components.
+- `/create-org` page for users who haven't selected an organization yet.
+- `<ClerkProvider>` wraps the entire app in `app/layout.tsx`.
 
-### Server-side data-access layer (complete, not yet consumed)
+### Organization model + sync (complete)
+
+- **`Organization`** model in Prisma: `id` (cuid), `clerkOrgId` (unique),
+  `name`, `plan` (PlanTier enum: free/starter/pro/enterprise, default free),
+  `stripeCustomerId` (nullable), `createdAt`, `updatedAt`.
+- **On-demand sync** in `lib/auth.ts` → `resolveAuth()`: if a Clerk org
+  has no matching Organization row, it's created from Clerk's API on the
+  spot. This covers first-time setup and the webhook race condition.
+- **Webhook handler** at `app/api/webhooks/clerk/route.ts`: handles
+  `organization.created`, `organization.updated`, `organization.deleted`,
+  `organizationMembership.created`, `organizationMembership.updated`.
+  Svix signature verification. This is the primary sync path in production.
+- `orgId` on tenant tables conceptually references `Organization.id` (our
+  internal cuid). No formal FK constraint added in this pass.
+
+### Owner ↔ Clerk user sync (complete)
+
+- **Owner** model kept (not renamed — see decisions log). Added `clerkUserId
+  String?` with `@@unique([orgId, clerkUserId])` and `avatarUrl String?`.
+- `upsertOwnerFromClerk()` in `lib/data/owners.ts` — creates or updates an
+  Owner from Clerk user data.
+- On-demand sync in `resolveAuth()`: if the Clerk user has no Owner row in
+  the current org, one is created from Clerk's API.
+- Webhook sync: `organizationMembership.created/updated` events upsert
+  the Owner row.
+
+### Organization switcher (complete)
+
+- Clerk's `<OrganizationSwitcher>` component integrated into the Sidebar's
+  workspace switcher area (`WorkspaceSwitcher` component).
+- `hidePersonal` set so only organizations are shown (no personal accounts).
+- After creating/selecting an org, user is sent to `/`.
+
+### Team settings page (complete)
+
+- Settings → Team tab now uses Clerk's `useOrganization()` hook to show real
+  org members (name, email, role).
+- **Invite by email**: opens a modal, calls `organization.inviteMember()`.
+- **Change role**: inline dropdown per member (Admin / Member), calls
+  `organization.updateMember()`.
+- **Remove member**: calls `organization.removeMember()`.
+- Real-time: all actions call `memberships.revalidate()` to refresh the list.
+
+### UI cut-over to real data (complete)
+
+- `app/(app)/layout.tsx` is a server component that calls `resolveAuth()`
+  to get `orgId` + `owner`, then `loadCrmData(orgId, owner.id)` to fetch
+  all data from PostgreSQL, maps it to frontend types via `lib/mappers.ts`,
+  and passes it as `initialData` to `CrmProvider`.
+- `CrmProvider` (`src/store/crm.tsx`) rewritten: accepts `initialData` prop
+  instead of importing mock data. Same `useCrm()` interface — screen
+  components didn't need to change at all.
+- Mutations (moveDeal, setLeadStatus, convertLead, toggleTask, addTask,
+  addNote, logActivity) do optimistic local state updates PLUS call server
+  actions in `lib/actions/crm.ts`. Server actions call `requireAuth()` then
+  the appropriate `lib/data/*` function and `revalidatePath('/', 'layout')`.
+- `lib/mappers.ts` converts Prisma types → frontend types: DateTime → ISO
+  string, compute `initials` from name, reshape `relatedTo`/`subject` from
+  separate DB fields into frontend objects, map `_count.deals` → `openDeals`.
+- `lib/data-loader.ts` fetches owners, leads, contacts, deals, tasks,
+  activities in parallel via `Promise.all`.
+- `lib/data/leads.ts` updated to include `convertedDeal: { select: { id:
+  true } }` so the mapper can produce `convertedDealId`.
+
+### Prisma + PostgreSQL schema (complete)
+
+- 7 models: **Organization** (new), Owner, Lead, Contact, Deal, Task,
+  Activity.
+- Enums match frontend string unions. New enum: `PlanTier`.
+- Multi-tenancy enforced: every tenant-scoped model has `orgId String` with
+  `@@index([orgId])` and composite indexes.
+- `Owner.clerkUserId` with `@@unique([orgId, clerkUserId])`.
+- `Organization.stripeCustomerId` nullable (ready for billing stage).
+
+### Server-side data-access layer (complete)
 
 - `lib/prisma.ts` — HMR-safe PrismaClient singleton.
-- `lib/data/{owners,leads,contacts,deals,tasks,activities}.ts` — 22
-  exported functions covering list, getById, create, and
-  domain-specific writes (updateLeadStatus, convertLeadToDeal,
-  addContactTag, moveDealToStage, toggleTaskDone, logActivity, etc.).
-- **Every function** takes `orgId: string` as its first required parameter.
-  All by-id reads use `findFirst({ where: { id, orgId } })`, never
-  `findUnique({ where: { id } })`. Writes verify tenant match inside a
-  Prisma transaction before mutating. TypeScript enforces that no call site
-  can omit `orgId`.
-- `convertLeadToDeal` accepts `{ ownerId, deal?: {...} }` — Contact is
-  always created; Deal only when `input.deal` is provided. The mock-store
-  `convertLead` mirrors this signature and behavior.
+- `lib/data/{organizations,owners,leads,contacts,deals,tasks,activities}.ts`
+  — 25+ exported functions. Every function takes `orgId` as required first
+  parameter, every by-id read uses `findFirst({ where: { id, orgId } })`.
+- `lib/actions/crm.ts` — 7 server actions wrapping data functions with
+  `requireAuth()` + `revalidatePath`.
 
 ### Config / env
 
-- `.env.example` with placeholders for DATABASE_URL, Clerk keys, Stripe
-  keys, app URL.
+- `.env.example` with placeholders for DATABASE_URL, Clerk keys,
+  `CLERK_WEBHOOK_SECRET`, Stripe keys, app URL.
 - `.gitignore` covering `node_modules`, `.next`, `.env*`, `*.tsbuildinfo`.
-- `.cursor/rules/nexocrm.mdc` (alwaysApply) documenting multi-tenancy
-  invariant, project structure, domain model, and UI-hands-off policy.
-  **Not yet committed** — still untracked.
+- `.cursor/rules/nexocrm.mdc` (alwaysApply) documenting auth flow,
+  multi-tenancy, project structure, domain model, UI-hands-off policy.
 
 ## Known gaps / explicitly deferred
-
-### UI ↔ database not wired
-
-Nothing in `app/` or `src/` imports from `lib/data/*`. The entire UI still
-reads from `src/store/crm.tsx` (in-memory mock data). Wiring screens to
-real Postgres data requires:
-
-1. Server Components or Server Actions in `app/` route files that call
-   `lib/data/*` and pass results as props to the client screens, OR
-2. A fetch-based API layer (`app/api/`) that the client screens call.
-
-Neither exists yet.
 
 ### No database running / no migrations applied
 
 `prisma/schema.prisma` is validated and the client is generated, but
 `prisma migrate dev` has never been run — there is no actual PostgreSQL
-database. The schema exists only as a design artifact right now.
+database. The schema exists only as a design artifact right now. To test
+end-to-end, you need to spin up a Postgres instance, set DATABASE_URL,
+and run `prisma migrate dev`.
+
+### Clerk keys not configured
+
+`@clerk/nextjs` is installed and all code is wired, but no real Clerk
+keys are in `.env`. The app will redirect to sign-in but Clerk won't
+render without valid keys. You need to create a Clerk application at
+dashboard.clerk.com and configure the keys.
+
+### Webhook endpoint not registered
+
+The webhook handler exists at `/api/webhooks/clerk` but it's not registered
+in Clerk's dashboard yet. Until it is, organization and member sync relies
+entirely on the on-demand fallback in `resolveAuth()`.
 
 ### Frontend types diverge from Prisma types
 
 `src/data/types.ts` (used by the UI) was written before Prisma was added.
-It's close to the schema but not identical:
+It's close to the schema but not identical. `lib/mappers.ts` bridges the
+gap for now. The mock data files (`src/data/mock.ts`, `src/data/timeline.ts`)
+still exist and are still imported by some screens (Dashboard uses
+`monthlyPerformance`, RecordDetail uses `generatedTimeline`). These should
+eventually be replaced with real data from the database.
 
-- Frontend `Owner` has `initials: string`; the Prisma model does not.
-- Frontend types use `string` for dates; Prisma uses `DateTime`.
-- Frontend types don't include `orgId`.
-- Frontend `Contact.openDeals` is a denormalized `number`; the Prisma model
-  uses `_count: { deals }` at query time instead.
-- Frontend `Task.relatedTo` is `{ type, id, label }`; the Prisma model
-  splits this into `relatedToType`, `relatedToLabel`, plus nullable FK
-  fields (`leadId`, `contactId`, `dealId`).
+### orgId is not a formal FK
 
-These will need a mapping/adapter layer when the UI is wired to the
-database, or the frontend types will need to be replaced with Prisma's
-generated types.
-
-### Auth not wired (Clerk)
-
-`@clerk/nextjs` is **not installed**. `.env.example` has placeholder keys
-but no middleware, no `<ClerkProvider>`, no `auth()` calls. `orgId` in
-`lib/data/*` is a plain string parameter — nothing enforces it comes from
-a Clerk session yet.
+`orgId` on tenant tables is still a bare `String`, not a `@relation` FK to
+`Organization.id`. This is by design for this pass (avoids a cross-table
+migration), but should be formalized once the system is live and stable.
 
 ### Billing not wired (Stripe)
 
 `stripe` SDK is **not installed**. `.env.example` has placeholder keys but
-no webhook handler, no checkout flow, no subscription model in the schema.
+no webhook handler, no checkout flow, no subscription model.
+`Organization.stripeCustomerId` and `Organization.plan` exist as fields
+ready for the billing stage.
 
-### No API routes
+### No API routes (REST/tRPC)
 
-`app/api/` does not exist. There are no REST or tRPC endpoints.
+All data flows through server actions (`lib/actions/crm.ts`) called from
+CrmProvider. There are no REST API endpoints for external integrations.
 
 ### No tests
 
@@ -144,45 +190,57 @@ No test framework configured. No unit, integration, or E2E tests.
 
 ### `convertLead` UI only creates a deal
 
-The API and mock store now support contact-only conversion (omit
-`input.deal`), but the UI's "Convert to deal" modal in `RecordDetail.tsx`
-always passes a `deal` block. There is no "Convert to contact only" UI path
-yet — the optional-deal capability exists only at the function level.
+The API and store now support contact-only conversion (omit `input.deal`),
+but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
+`deal` block. No "Convert to contact only" UI path exists.
 
-### `.cursor/rules/nexocrm.mdc` not committed
+### Mock data still referenced by some screens
 
-The Cursor project rule file exists locally but was excluded from the last
-commit (it was created in a separate task). Needs to be committed.
+- `Dashboard` imports `monthlyPerformance` from `src/data/mock.ts` for the
+  "Won vs. target" chart — there's no equivalent historical data in the DB.
+- `RecordDetail` imports `generatedTimeline` from `src/data/timeline.ts`
+  for seeded timeline events — in production this should come from the
+  `activities` table.
+- `Reports` imports `monthlyPerformance` from `src/data/mock.ts`.
 
-### `src/pages/` rename to `src/screens/`
+### Settings profile/workspace forms don't persist
 
-The rename happened because Next.js treats `src/pages/` as its legacy Pages
-Router directory. The `.cursor/rules/nexocrm.mdc` file documents the
-current name (`src/screens/`), but the file's own heading still says
-`Project structure` without calling out the rename history — fine for now,
-but something to be aware of if anyone goes looking for "pages."
+The Profile and Workspace sections in Settings render with default values
+but Save doesn't do anything yet.
+
+### Saved views in sidebar are hardcoded
+
+The sidebar's "Saved views" (Untouched leads, Closing in 30 days,
+Champions) have hardcoded counts and are not real saved queries.
 
 ## Next up
 
-No specific task queued — waiting for direction on what to build next.
-Likely candidates:
+No specific task queued — waiting for direction. Likely candidates:
 
-- Wire Clerk auth (`@clerk/nextjs` middleware, `<ClerkProvider>`, derive
-  `orgId` from session, protect routes).
-- Create an API or Server Action layer connecting `app/` routes to
-  `lib/data/*`.
-- Run `prisma migrate dev` against a real Postgres instance and seed it.
+- Spin up a Postgres instance, run `prisma migrate dev`, seed initial data.
+- Configure real Clerk keys and test end-to-end auth flow.
+- Register the Clerk webhook endpoint and test org/member sync.
+- Wire Stripe billing (install SDK, create checkout flow, webhook handler).
+- Replace remaining mock data references (`monthlyPerformance`,
+  `generatedTimeline`) with real DB queries.
+- Add formal FK constraints from `*.orgId` → `Organization.id`.
 - Add a "Convert to contact only" UI path in RecordDetail.
 
 ## Decisions log
 
 | When | Decision | Why |
 |------|----------|-----|
-| Migration | Renamed `src/pages/` → `src/screens/` | Next.js auto-detects `src/pages/` as the legacy Pages Router, causing it to look for `app/` under `src/app/` instead of the project root. Renaming was the only way to unblock the build without restructuring the route files. |
-| Migration | Created `src/lib/router-compat.tsx` shim | All existing screens used react-router-dom's `Link` (with `to` prop), `NavLink` (with `isActive` render prop), `useNavigate`, `useSearchParams` (with setter), and `useParams`. Building a compatibility layer let us change one import line per file instead of rewriting every `<Link to=...>` and every `setSearchParams(...)` call across 11 files. |
-| Migration | `app/` pages are thin wrappers, not the actual screens | The "don't touch the UI" constraint means screen logic stays in `src/screens/`. Each `app/*/page.tsx` just imports and renders the corresponding screen component, sometimes wrapped in `<Suspense>` for Next's static-prerender requirements on `useSearchParams`. |
-| Schema | `orgId` is a bare `String`, not a FK to an `Organization` model | Clerk will own the organization concept. Adding a local `Organization` table would duplicate what Clerk manages and create sync headaches. `orgId` is just the Clerk org id stored as a string. |
-| Schema | `Owner.email` uses `@@unique([orgId, email])` not `@unique` | Global email uniqueness would prevent two tenants from independently having users with the same email address — a real scenario in B2B SaaS. |
-| Schema | By-id lookups use `findFirst({ where: { id, orgId } })` not `findUnique({ where: { id } })` | Prisma's `findUnique` requires the `where` to match a declared unique key. Since `id` is the PK and adding a compound `@@unique([orgId, id])` is redundant, `findFirst` with both fields is the idiomatic Prisma pattern for tenant-scoped lookups. It pushes the filter into the query (vs. a post-fetch check) so there's no window where a guessed id returns another tenant's row. |
-| Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` not flat top-level fields | The original implementation always created both a Contact and a Deal together. The intended domain model says a Deal is optional — converting a lead should always produce a Contact, but a Deal only when there's a real opportunity. Wrapping deal fields in an optional sub-object makes the intent explicit in the type system: callers must consciously decide whether to open a deal. |
-| Data layer | Write helpers (update, toggle, move) use find-then-update in a transaction | A raw `update({ where: { id } })` would succeed even if the record belongs to a different tenant — Prisma doesn't let us add `orgId` to an `update`'s unique-key `where`. Wrapping in a transaction with a `findFirst({ where: { id, orgId } })` guard ensures the tenant match is checked atomically before the mutation runs. |
+| Migration | Renamed `src/pages/` → `src/screens/` | Next.js auto-detects `src/pages/` as the legacy Pages Router. |
+| Migration | Created `src/lib/router-compat.tsx` shim | All screens used react-router-dom APIs; a compat layer let us change one import per file instead of rewriting every usage. |
+| Migration | `app/` pages are thin wrappers, not the actual screens | The "don't touch the UI" constraint means screen logic stays in `src/screens/`. |
+| Schema | `orgId` is `Organization.id` (cuid), not Clerk's org ID | Decouples from Clerk's specific ID format. If Clerk changes something, only the Organization table needs updating. |
+| Schema | No formal FK from `*.orgId` → `Organization.id` in this pass | Adding FKs across 6 tables in the same migration as the Organization model is risky and constrains insert order. The application layer (`resolveAuth`) guarantees the Organization exists before any query runs. Can formalize later. |
+| Schema | `Owner.email` uses `@@unique([orgId, email])` not `@unique` | Global email uniqueness would prevent two tenants from independently having users with the same email. |
+| Schema | By-id lookups use `findFirst({ where: { id, orgId } })` not `findUnique({ where: { id } })` | Prisma's `findUnique` requires the `where` to match a declared unique key. `findFirst` with both fields pushes the tenant filter into the query. |
+| Auth | Kept "Owner" name instead of renaming to "Member" | "Owner" is the CRM domain concept — leads have owners, deals have owners, tasks have assignees (owners). Renaming to "Member" would lose that semantic meaning. Added `clerkUserId` to link Owner to Clerk identity without conflating the concepts. |
+| Auth | On-demand sync as primary, webhooks as supplement | Webhooks have delivery latency — a user can hit the app before the `organization.created` webhook arrives. On-demand sync in `resolveAuth()` creates the Organization and Owner rows from Clerk's API on first access. Webhooks handle ongoing updates (name changes, new members). Both paths use upsert to avoid conflicts. |
+| Auth | Route group `(app)` for authenticated pages | Separates authenticated pages (which need `resolveAuth()` + data loading + `CrmProvider` + `AppLayout`) from public pages (`sign-in`, `sign-up`, `create-org`) that just need `ClerkProvider`. Avoids conditional rendering in the root layout. |
+| UI cutover | Rewrote CrmProvider rather than each screen | CrmProvider's `useCrm()` interface stayed identical. Screens still call `useCrm()` for data — the only change is that data now comes from server-loaded Prisma results instead of hardcoded mock arrays. This meant zero changes to screen JSX/logic. |
+| UI cutover | Optimistic updates + server actions | Mutations update local state immediately (for instant UI feedback) and fire a server action in a `startTransition`. After the server action completes, `router.refresh()` re-fetches the layout's data to sync from the database. |
+| Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
+| Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |

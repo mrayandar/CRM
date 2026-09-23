@@ -6,17 +6,10 @@ import {
   useContext,
   useMemo,
   useState,
+  useTransition,
   type ReactNode,
 } from 'react'
-import {
-  activities as seedActivities,
-  contacts as seedContacts,
-  currentUser,
-  deals as seedDeals,
-  leads as seedLeads,
-  owners,
-  tasks as seedTasks,
-} from '@/data/mock'
+import { useRouter } from 'next/navigation'
 import type {
   Activity,
   ActivityKind,
@@ -30,6 +23,16 @@ import type {
   Task,
 } from '@/data/types'
 import { DEAL_STAGE_LABEL } from '@/data/types'
+import {
+  moveDealAction,
+  setLeadStatusAction,
+  convertLeadAction,
+  toggleTaskAction,
+  addTaskAction,
+  addNoteAction,
+  logActivityAction,
+} from '@lib/actions/crm'
+import type { CrmInitialData } from '@lib/data-loader'
 
 type SubjectRef = NonNullable<Activity['subject']>
 
@@ -74,16 +77,27 @@ const CrmContext = createContext<CrmState | null>(null)
 let sequence = 1000
 const nextId = (prefix: string) => `${prefix}${++sequence}`
 
-export function CrmProvider({ children }: { children: ReactNode }) {
-  const [leads, setLeads] = useState<Lead[]>(seedLeads)
-  const [contacts, setContacts] = useState<Contact[]>(seedContacts)
-  const [deals, setDeals] = useState<Deal[]>(seedDeals)
-  const [tasks, setTasks] = useState<Task[]>(seedTasks)
-  const [activities, setActivities] = useState<Activity[]>(seedActivities)
+interface CrmProviderProps {
+  children: ReactNode
+  initialData: CrmInitialData
+  orgId: string
+}
+
+export function CrmProvider({ children, initialData }: CrmProviderProps) {
+  const router = useRouter()
+  const [, startTransition] = useTransition()
+
+  const [leads, setLeads] = useState<Lead[]>(initialData.leads)
+  const [contacts, setContacts] = useState<Contact[]>(initialData.contacts)
+  const [deals, setDeals] = useState<Deal[]>(initialData.deals)
+  const [tasks, setTasks] = useState<Task[]>(initialData.tasks)
+  const [activities, setActivities] = useState<Activity[]>(initialData.activities)
+  const [owners] = useState<Owner[]>(initialData.owners)
+  const [currentUser] = useState<Owner>(initialData.currentUser)
 
   const ownerById = useCallback(
     (id: string) => owners.find((o) => o.id === id) ?? currentUser,
-    [],
+    [owners, currentUser],
   )
 
   const pushActivity = useCallback(
@@ -100,22 +114,29 @@ export function CrmProvider({ children }: { children: ReactNode }) {
         },
         ...prev,
       ])
+      startTransition(async () => {
+        await logActivityAction(kind, title, subject, body)
+        router.refresh()
+      })
     },
-    [],
+    [currentUser.id, router],
   )
 
   const moveDeal = useCallback(
     (dealId: string, stage: DealStage) => {
-      setDeals((prev) =>
-        prev.map((deal) => {
-          if (deal.id !== dealId || deal.stage === stage) return deal
-          const probability =
-            stage === 'won' ? 100 : stage === 'lost' ? 0 : STAGE_PROBABILITY[stage]
-          return { ...deal, stage, probability, updatedAt: new Date().toISOString() }
-        }),
-      )
       const deal = deals.find((d) => d.id === dealId)
       if (!deal || deal.stage === stage) return
+
+      const probability =
+        stage === 'won' ? 100 : stage === 'lost' ? 0 : STAGE_PROBABILITY[stage]
+      setDeals((prev) =>
+        prev.map((d) =>
+          d.id === dealId
+            ? { ...d, stage, probability, updatedAt: new Date().toISOString() }
+            : d,
+        ),
+      )
+
       const kind: ActivityKind = stage === 'won' ? 'won' : stage === 'lost' ? 'lost' : 'stage'
       const title =
         stage === 'won'
@@ -124,8 +145,13 @@ export function CrmProvider({ children }: { children: ReactNode }) {
             ? `marked ${deal.name} as Lost`
             : `moved ${deal.name} to ${DEAL_STAGE_LABEL[stage]}`
       pushActivity(kind, title, { type: 'deal', id: deal.id, label: deal.name })
+
+      startTransition(async () => {
+        await moveDealAction(dealId, stage)
+        router.refresh()
+      })
     },
-    [deals, pushActivity],
+    [deals, pushActivity, router],
   )
 
   const setLeadStatus = useCallback(
@@ -145,8 +171,12 @@ export function CrmProvider({ children }: { children: ReactNode }) {
           label: lead.name,
         })
       }
+      startTransition(async () => {
+        await setLeadStatusAction(leadId, status)
+        router.refresh()
+      })
     },
-    [leads, pushActivity],
+    [leads, pushActivity, router],
   )
 
   const convertLead = useCallback(
@@ -156,6 +186,7 @@ export function CrmProvider({ children }: { children: ReactNode }) {
       const now = new Date().toISOString()
       const dealId = input.deal ? nextId('d') : null
 
+      // Optimistic: add contact locally
       const contact: Contact = {
         id: contactId,
         name: lead.name,
@@ -173,9 +204,9 @@ export function CrmProvider({ children }: { children: ReactNode }) {
         openDeals: input.deal ? 1 : 0,
         accountValue: 0,
       }
-
       setContacts((prev) => [contact, ...prev])
 
+      // Optimistic: add deal locally if provided
       if (input.deal && dealId) {
         const deal: Deal = {
           id: dealId,
@@ -217,9 +248,26 @@ export function CrmProvider({ children }: { children: ReactNode }) {
         label: lead.name,
       })
 
+      // Persist server-side
+      startTransition(async () => {
+        await convertLeadAction(leadId, {
+          ownerId: input.ownerId,
+          deal: input.deal
+            ? {
+                name: input.deal.name,
+                value: input.deal.value,
+                stage: input.deal.stage,
+                closeDate: input.deal.closeDate,
+                priority: input.deal.priority,
+              }
+            : undefined,
+        })
+        router.refresh()
+      })
+
       return { contactId, dealId }
     },
-    [leads, pushActivity],
+    [leads, pushActivity, router],
   )
 
   const toggleTask = useCallback(
@@ -237,8 +285,14 @@ export function CrmProvider({ children }: { children: ReactNode }) {
         }),
       )
       if (completedTitle) pushActivity('task', `completed ${completedTitle}`, subject)
+
+      const task = tasks.find((t) => t.id === taskId)
+      startTransition(async () => {
+        await toggleTaskAction(taskId, !(task?.done ?? false))
+        router.refresh()
+      })
     },
-    [pushActivity],
+    [tasks, pushActivity, router],
   )
 
   const addTask = useCallback<CrmState['addTask']>(
@@ -256,8 +310,12 @@ export function CrmProvider({ children }: { children: ReactNode }) {
         },
         ...prev,
       ])
+      startTransition(async () => {
+        await addTaskAction({ title, dueDate, priority, subject })
+        router.refresh()
+      })
     },
-    [],
+    [currentUser.id, router],
   )
 
   const addNote = useCallback(
@@ -274,8 +332,12 @@ export function CrmProvider({ children }: { children: ReactNode }) {
           prev.map((l) => (l.id === subject.id ? { ...l, lastTouchedAt: now } : l)),
         )
       }
+      startTransition(async () => {
+        await addNoteAction(subject, body)
+        router.refresh()
+      })
     },
-    [pushActivity],
+    [pushActivity, router],
   )
 
   const value = useMemo<CrmState>(
@@ -297,6 +359,8 @@ export function CrmProvider({ children }: { children: ReactNode }) {
       logActivity: pushActivity,
     }),
     [
+      owners,
+      currentUser,
       leads,
       contacts,
       deals,

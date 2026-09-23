@@ -16,6 +16,11 @@ import { cn, dayDelta } from '@/lib/utils'
 import { useCrm } from '@/store/crm'
 import { Avatar } from '@/components/ui/Avatar'
 import { Popover, MenuDivider, MenuItem, MenuLabel } from '@/components/ui/Menu'
+import {
+  OrganizationSwitcher,
+  useUser,
+  useClerk,
+} from '@clerk/nextjs'
 
 interface NavEntry {
   to: string
@@ -26,7 +31,7 @@ interface NavEntry {
 }
 
 export function Sidebar() {
-  const { leads, tasks, currentUser } = useCrm()
+  const { leads, tasks } = useCrm()
 
   const newLeads = leads.filter((l) => l.status === 'new').length
   const overdueTasks = tasks.filter((t) => !t.done && dayDelta(t.dueDate) < 0).length
@@ -87,38 +92,7 @@ export function Sidebar() {
           </div>
         </div>
 
-        <Popover
-          width={228}
-          trigger={({ toggle }) => (
-            <button
-              type="button"
-              onClick={toggle}
-              className="flex w-full items-center gap-2.5 rounded-panel px-2 py-2 text-left transition-colors hover:bg-subtle"
-            >
-              <Avatar name={currentUser.name} initials={currentUser.initials} size="md" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] font-semibold text-ink-900">
-                  {currentUser.name}
-                </span>
-                <span className="block truncate text-[11.5px] text-ink-500">{currentUser.role}</span>
-              </span>
-              <ChevronsUpDown size={13} className="shrink-0 text-ink-400" />
-            </button>
-          )}
-        >
-          {({ close }) => (
-            <>
-              <MenuLabel>{currentUser.email}</MenuLabel>
-              <MenuItem onClick={close}>Profile & preferences</MenuItem>
-              <MenuItem onClick={close}>Notification settings</MenuItem>
-              <MenuItem onClick={close}>Keyboard shortcuts</MenuItem>
-              <MenuDivider />
-              <MenuItem onClick={close} tone="danger">
-                Sign out
-              </MenuItem>
-            </>
-          )}
-        </Popover>
+        <UserMenu />
       </div>
     </aside>
   )
@@ -126,17 +100,72 @@ export function Sidebar() {
 
 function WorkspaceSwitcher() {
   return (
-    <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-line px-3.5">
-      <span className="flex size-7 items-center justify-center rounded-[8px] bg-brand-600 text-[13px] font-bold text-white">
-        N
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13.5px] leading-4 font-semibold tracking-[-0.01em] text-ink-900">
-          NexoCRM
-        </span>
-        <span className="block truncate text-[11px] leading-4 text-ink-400">Acme Revenue Team</span>
-      </span>
+    <div className="flex h-14 shrink-0 items-center border-b border-line px-2">
+      <OrganizationSwitcher
+        hidePersonal
+        afterCreateOrganizationUrl="/"
+        afterSelectOrganizationUrl="/"
+        appearance={{
+          elements: {
+            rootBox: 'w-full',
+            organizationSwitcherTrigger:
+              'w-full rounded-[8px] px-1.5 py-1.5 hover:bg-subtler transition-colors text-[13px]',
+          },
+        }}
+      />
     </div>
+  )
+}
+
+function UserMenu() {
+  const { currentUser } = useCrm()
+  const { user: clerkUser } = useUser()
+  const { signOut } = useClerk()
+
+  const displayName = clerkUser?.fullName ?? currentUser.name
+  const displayEmail = clerkUser?.primaryEmailAddress?.emailAddress ?? currentUser.email
+  const displayRole = currentUser.role
+  const initials = currentUser.initials
+
+  return (
+    <Popover
+      width={228}
+      trigger={({ toggle }) => (
+        <button
+          type="button"
+          onClick={toggle}
+          className="flex w-full items-center gap-2.5 rounded-panel px-2 py-2 text-left transition-colors hover:bg-subtle"
+        >
+          <Avatar name={displayName} initials={initials} size="md" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] font-semibold text-ink-900">
+              {displayName}
+            </span>
+            <span className="block truncate text-[11.5px] text-ink-500">{displayRole}</span>
+          </span>
+          <ChevronsUpDown size={13} className="shrink-0 text-ink-400" />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <>
+          <MenuLabel>{displayEmail}</MenuLabel>
+          <MenuItem onClick={close}>Profile & preferences</MenuItem>
+          <MenuItem onClick={close}>Notification settings</MenuItem>
+          <MenuItem onClick={close}>Keyboard shortcuts</MenuItem>
+          <MenuDivider />
+          <MenuItem
+            onClick={() => {
+              close()
+              signOut({ redirectUrl: '/sign-in' })
+            }}
+            tone="danger"
+          >
+            Sign out
+          </MenuItem>
+        </>
+      )}
+    </Popover>
   )
 }
 

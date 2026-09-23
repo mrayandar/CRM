@@ -1,3 +1,4 @@
+export * from './organizations'
 export * from './owners'
 export * from './leads'
 export * from './contacts'

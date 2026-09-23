@@ -25,9 +25,40 @@ export function getOwnerByEmail(orgId: string, email: string) {
   })
 }
 
+export function getOwnerByClerkUserId(orgId: string, clerkUserId: string) {
+  return prisma.owner.findUnique({
+    where: { orgId_clerkUserId: { orgId, clerkUserId } },
+  })
+}
+
 export function createOwner(
   orgId: string,
   data: Omit<Prisma.OwnerCreateInput, 'orgId'>,
 ) {
   return prisma.owner.create({ data: { ...data, orgId } })
+}
+
+/** Upsert an Owner from Clerk user data — used during auth resolution and
+ *  webhook-driven member sync. */
+export function upsertOwnerFromClerk(
+  orgId: string,
+  clerkUserId: string,
+  data: { name: string; email: string; role: string; avatarUrl?: string | null },
+) {
+  return prisma.owner.upsert({
+    where: { orgId_clerkUserId: { orgId, clerkUserId } },
+    create: {
+      orgId,
+      clerkUserId,
+      name: data.name,
+      email: data.email,
+      role: data.role,
+      avatarUrl: data.avatarUrl ?? null,
+    },
+    update: {
+      name: data.name,
+      email: data.email,
+      avatarUrl: data.avatarUrl ?? null,
+    },
+  })
 }

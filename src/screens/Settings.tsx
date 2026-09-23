@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { GripVertical, Plus } from 'lucide-react'
+import { GripVertical, Plus, Loader2, UserX } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
@@ -9,14 +9,16 @@ import { Badge, StatusDot, DEAL_STAGE_TONE, Tag } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { Input, Label, Segmented, Select } from '@/components/ui/Field'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
+import { Modal } from '@/components/ui/Modal'
 import { useCrm } from '@/store/crm'
 import { DEAL_STAGE_LABEL, DEAL_STAGE_ORDER } from '@/data/types'
 import { cn } from '@/lib/utils'
+import { useOrganization, useUser } from '@clerk/nextjs'
 
 type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
 
 export function Settings() {
-  const { currentUser, owners } = useCrm()
+  const { currentUser } = useCrm()
   const [section, setSection] = useState<Section>('profile')
   const [notifications, setNotifications] = useState({
     dealStage: true,
@@ -89,7 +91,7 @@ export function Settings() {
             </Card>
 
             <Card>
-              <CardHeader title="Workspace" subtitle="Applies to all members of Acme Revenue Team" />
+              <CardHeader title="Workspace" subtitle="Applies to all members of this organization" />
               <div className="grid gap-4 px-5 py-4 sm:grid-cols-2">
                 <div>
                   <Label>Workspace name</Label>
@@ -177,47 +179,7 @@ export function Settings() {
           </>
         )}
 
-        {section === 'team' && (
-          <Card className="overflow-hidden">
-            <CardHeader
-              title="Team members"
-              subtitle={`${owners.length} seats in use of 10`}
-              action={
-                <Button variant="primary" size="xs" icon={<Plus size={12} />}>
-                  Invite
-                </Button>
-              }
-            />
-            <TableShell className="[&_table]:min-w-[560px]">
-              <Thead>
-                <Th>Member</Th>
-                <Th>Email</Th>
-                <Th>Role</Th>
-                <Th align="right">Access</Th>
-              </Thead>
-              <tbody>
-                {owners.map((owner, i) => (
-                  <Tr key={owner.id}>
-                    <Td>
-                      <div className="flex items-center gap-2.5">
-                        <Avatar name={owner.name} initials={owner.initials} size="md" />
-                        <span className="text-[13px] font-medium text-ink-900">{owner.name}</span>
-                        {owner.id === currentUser.id && <Badge tone="brand">You</Badge>}
-                      </div>
-                    </Td>
-                    <Td className="text-ink-500">{owner.email}</Td>
-                    <Td className="text-ink-600">{owner.role}</Td>
-                    <Td align="right">
-                      <Badge tone={i === 0 ? 'accent' : 'neutral'}>
-                        {i === 0 ? 'Admin' : 'Member'}
-                      </Badge>
-                    </Td>
-                  </Tr>
-                ))}
-              </tbody>
-            </TableShell>
-          </Card>
-        )}
+        {section === 'team' && <TeamSection />}
 
         {section === 'notifications' && (
           <Card>
@@ -265,6 +227,211 @@ export function Settings() {
         )}
       </div>
     </PageShell>
+  )
+}
+
+function TeamSection() {
+  const { user: clerkUser } = useUser()
+  const { organization, memberships, isLoaded } = useOrganization({
+    memberships: { pageSize: 50 },
+  })
+  const [inviteOpen, setInviteOpen] = useState(false)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'org:admin' | 'org:member'>('org:member')
+  const [inviting, setInviting] = useState(false)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+
+  const memberList = memberships?.data ?? []
+  const totalSeats = memberList.length
+
+  const handleInvite = async () => {
+    if (!organization || !inviteEmail.trim()) return
+    setInviting(true)
+    setInviteError(null)
+    try {
+      await organization.inviteMember({
+        emailAddress: inviteEmail.trim(),
+        role: inviteRole,
+      })
+      setInviteOpen(false)
+      setInviteEmail('')
+      if (memberships?.revalidate) memberships.revalidate()
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to send invitation'
+      setInviteError(message)
+    } finally {
+      setInviting(false)
+    }
+  }
+
+  const handleRoleChange = async (
+    userId: string,
+    newRole: 'org:admin' | 'org:member',
+  ) => {
+    if (!organization) return
+    try {
+      await organization.updateMember({ userId, role: newRole })
+      if (memberships?.revalidate) memberships.revalidate()
+    } catch {
+      // Silently fail; Clerk may restrict self-demotion
+    }
+  }
+
+  const handleRemove = async (userId: string) => {
+    if (!organization) return
+    try {
+      await organization.removeMember(userId)
+      if (memberships?.revalidate) memberships.revalidate()
+    } catch {
+      // Silently fail for now
+    }
+  }
+
+  if (!isLoaded) {
+    return (
+      <Card className="flex items-center justify-center py-12">
+        <Loader2 size={20} className="animate-spin text-ink-400" />
+      </Card>
+    )
+  }
+
+  return (
+    <>
+      <Card className="overflow-hidden">
+        <CardHeader
+          title="Team members"
+          subtitle={`${totalSeats} ${totalSeats === 1 ? 'member' : 'members'} in this organization`}
+          action={
+            <Button
+              variant="primary"
+              size="xs"
+              icon={<Plus size={12} />}
+              onClick={() => setInviteOpen(true)}
+            >
+              Invite
+            </Button>
+          }
+        />
+        <TableShell className="[&_table]:min-w-[560px]">
+          <Thead>
+            <Th>Member</Th>
+            <Th>Email</Th>
+            <Th>Role</Th>
+            <Th align="right">Actions</Th>
+          </Thead>
+          <tbody>
+            {memberList.map((membership) => {
+              const profile = membership.publicUserData
+              const firstName = profile?.firstName ?? ''
+              const lastName = profile?.lastName ?? ''
+              const identifier = profile?.identifier ?? ''
+              const memberId = profile?.userId ?? ''
+              const name = [firstName, lastName].filter(Boolean).join(' ') || identifier || 'Unknown'
+              const email = identifier
+              const isYou = memberId === clerkUser?.id
+
+              return (
+                <Tr key={membership.id}>
+                  <Td>
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={name} size="md" />
+                      <span className="text-[13px] font-medium text-ink-900">
+                        {name}
+                      </span>
+                      {isYou && <Badge tone="brand">You</Badge>}
+                    </div>
+                  </Td>
+                  <Td className="text-ink-500">{email}</Td>
+                  <Td>
+                    <Select
+                      value={membership.role}
+                      onChange={(e) =>
+                        handleRoleChange(
+                          memberId,
+                          e.target.value as 'org:admin' | 'org:member',
+                        )
+                      }
+                      className="h-7 w-[110px] text-[12px]"
+                      disabled={isYou}
+                    >
+                      <option value="org:admin">Admin</option>
+                      <option value="org:member">Member</option>
+                    </Select>
+                  </Td>
+                  <Td align="right">
+                    {!isYou && memberId && (
+                      <IconButton
+                        label={`Remove ${name}`}
+                        variant="danger"
+                        onClick={() => handleRemove(memberId)}
+                      >
+                        <UserX size={13} />
+                      </IconButton>
+                    )}
+                  </Td>
+                </Tr>
+              )
+            })}
+          </tbody>
+        </TableShell>
+      </Card>
+
+      <Modal
+        open={inviteOpen}
+        onClose={() => {
+          setInviteOpen(false)
+          setInviteError(null)
+        }}
+        width={440}
+        title="Invite a team member"
+        description="They'll receive an email invitation to join your organization."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setInviteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleInvite}
+              disabled={!inviteEmail.trim() || inviting}
+            >
+              {inviting ? 'Sending…' : 'Send invite'}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <Label>Email address</Label>
+            <Input
+              type="email"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              placeholder="colleague@company.com"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleInvite()
+              }}
+            />
+          </div>
+          <div>
+            <Label>Role</Label>
+            <Select
+              value={inviteRole}
+              onChange={(e) =>
+                setInviteRole(e.target.value as 'org:admin' | 'org:member')
+              }
+              className="h-9"
+            >
+              <option value="org:member">Member</option>
+              <option value="org:admin">Admin</option>
+            </Select>
+          </div>
+          {inviteError && (
+            <p className="text-[12.5px] text-negative">{inviteError}</p>
+          )}
+        </div>
+      </Modal>
+    </>
   )
 }
 

@@ -1,14 +1,14 @@
 // NexoCRM database schema.
 //
-// Mirrors the domain modeled in `src/data/types.ts` for the (currently
-// mock-data-driven) UI, so this schema is ready to back that UI once a real
-// data layer is wired in. Enum values intentionally match the string unions
-// already used on the frontend (e.g. LeadStatus 'new' | 'contacted' | ...)
-// to keep any future integration mapping-free.
+// Multi-tenancy: every tenant-scoped table carries an `orgId` column.
+// The `orgId` value is `Organization.id` (our internal cuid). The
+// Organization model links to Clerk via `clerkOrgId`. Every query in
+// `lib/data/*.ts` MUST filter by `orgId` — see `.cursor/rules/nexocrm.mdc`.
 //
-// Multi-tenancy: every tenant-scoped table carries an `orgId` column (a
-// Clerk organization id — no local `Organization` model yet). Every query
-// in `lib/data/*.ts` MUST filter by `orgId` — see `.cursor/rules/nexocrm.mdc`.
+// NOTE: `orgId` on tenant tables is a bare String, not a formal FK to
+// Organization.id. This avoids a cross-table migration in this pass. The
+// relationship is enforced at the application layer (lib/auth.ts ensures
+// a valid Organization exists before any data query runs).
 
 generator client {
   provider = "prisma-client-js"
@@ -89,17 +89,46 @@ enum SubjectType {
   deal
 }
 
+enum PlanTier {
+  free
+  starter
+  pro
+  enterprise
+}
+
 // ---------------------------------------------------------------------------
-// Core models
+// Identity & multi-tenancy
 // ---------------------------------------------------------------------------
 
-/// A user within a tenant org (e.g. an AE, SDR). NOT the org itself.
+/// Mirrors a Clerk organization. Created via webhook or on-demand on first
+/// request. Owns all tenant-scoped data through Organization.id → *.orgId.
+model Organization {
+  id         String   @id @default(cuid())
+  clerkOrgId String   @unique
+  name       String
+  plan       PlanTier @default(free)
+
+  /// Populated when Stripe billing is wired. Null until then.
+  stripeCustomerId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("organizations")
+}
+
+/// A user within a tenant org (e.g. an AE, SDR, Admin). Linked to a Clerk
+/// user via `clerkUserId`. When a Clerk user joins an org, an Owner row is
+/// created for them in that org. The same Clerk user in two different orgs
+/// produces two Owner rows (one per org).
 model Owner {
-  id    String @id @default(cuid())
-  orgId String
-  name  String
-  email String
-  role  String
+  id          String  @id @default(cuid())
+  orgId       String
+  clerkUserId String?
+  name        String
+  email       String
+  avatarUrl   String?
+  role        String
 
   leads      Lead[]
   contacts   Contact[]
@@ -113,9 +142,15 @@ model Owner {
   // Emails are unique per-org, not globally: two different tenants can
   // legitimately each have an "ava@acme.com".
   @@unique([orgId, email])
+  // A Clerk user can exist only once per org.
+  @@unique([orgId, clerkUserId])
   @@index([orgId])
   @@map("owners")
 }
+
+// ---------------------------------------------------------------------------
+// Core CRM models
+// ---------------------------------------------------------------------------
 
 model Lead {
   id       String     @id @default(cuid())
