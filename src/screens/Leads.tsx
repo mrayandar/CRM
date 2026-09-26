@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from '@/lib/router-compat'
 import {
   ArrowRightLeft,
@@ -17,7 +17,8 @@ import { Card } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
 import { Badge, LEAD_STATUS_TONE, Tag } from '@/components/ui/Badge'
 import { Avatar, CompanyMark } from '@/components/ui/Avatar'
-import { Checkbox, SearchInput, Select } from '@/components/ui/Field'
+import { Checkbox, Input, Label, SearchInput, Select, Textarea } from '@/components/ui/Field'
+import { Modal } from '@/components/ui/Modal'
 import { MenuDivider, MenuItem, MenuLabel, Popover } from '@/components/ui/Menu'
 import { EmptyState } from '@/components/ui/Display'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
@@ -27,6 +28,7 @@ import {
   LEAD_STATUS_LABEL,
   LEAD_STATUS_ORDER,
   type Lead,
+  type LeadSource,
   type LeadStatus,
 } from '@/data/types'
 import { cn, currency, currencyCompact, relativeTime, sortBy, sum } from '@/lib/utils'
@@ -39,6 +41,7 @@ export function Leads() {
   const navigate = useNavigate()
   const { leads, owners, ownerById, setLeadStatus } = useCrm()
   const [params, setParams] = useSearchParams()
+  const [newLeadOpen, setNewLeadOpen] = useState(false)
 
   const status = (params.get('status') as LeadStatus | null) ?? 'all'
   const [query, setQuery] = useState('')
@@ -107,7 +110,12 @@ export function Leads() {
           <Button variant="secondary" size="sm" icon={<Download size={14} />}>
             Export
           </Button>
-          <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus size={14} />}
+            onClick={() => setNewLeadOpen(true)}
+          >
             New lead
           </Button>
         </>
@@ -356,7 +364,136 @@ export function Leads() {
           )}
         </Card>
       </div>
+
+      {newLeadOpen && <NewLeadModal onClose={() => setNewLeadOpen(false)} />}
     </PageShell>
+  )
+}
+
+function NewLeadModal({ onClose }: { onClose: () => void }) {
+  const { addLead, owners, currentUser } = useCrm()
+  const [name, setName] = useState('')
+  const [company, setCompany] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [source, setSource] = useState<LeadSource>('Inbound')
+  const [status, setStatus] = useState<LeadStatus>('new')
+  const [ownerId, setOwnerId] = useState(currentUser.id)
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid && !saving
+
+  const submit = async () => {
+    if (!canSubmit) return
+    setSaving(true)
+    setError(null)
+    try {
+      await addLead({ name, company, email, phone, source, status, ownerId, notes })
+      onClose()
+    } catch {
+      setError('Could not save the lead. Please try again.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={saving ? () => {} : onClose}
+      width={560}
+      title="New lead"
+      description="Add a prospect to your pipeline. You can convert it to a contact and deal later."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            {saving ? 'Creating…' : 'Create lead'}
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Full name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Cooper" autoFocus />
+          </Field>
+          <Field label="Company">
+            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Inc." />
+          </Field>
+          <Field label="Email">
+            <Input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="jane@acme.com"
+              aria-invalid={emailInvalid}
+            />
+          </Field>
+          <Field label="Phone">
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 010 0199" />
+          </Field>
+          <Field label="Source">
+            <Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} className="h-9">
+              {SOURCES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Status">
+            <Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} className="h-9">
+              {LEAD_STATUS_ORDER.map((s) => (
+                <option key={s} value={s}>
+                  {LEAD_STATUS_LABEL[s]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <Field label="Owner">
+          <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
+            {owners.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name} · {o.role}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label="Notes">
+          <Textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Anything worth remembering about this lead…"
+          />
+        </Field>
+
+        {emailInvalid && <p className="text-[11.5px] leading-4 text-negative">Enter a valid email address.</p>}
+        {error && <p className="text-[11.5px] leading-4 text-negative">{error}</p>}
+      </form>
+    </Modal>
+  )
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      {children}
+    </div>
   )
 }
 

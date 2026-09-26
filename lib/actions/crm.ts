@@ -3,13 +3,25 @@
 import { revalidatePath } from 'next/cache'
 import { requireAuth } from '@lib/auth'
 import {
+  createLead as dbCreateLead,
   updateLeadStatus as dbUpdateLeadStatus,
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
+import { getOwnerById } from '@lib/data/owners'
 import { moveDealToStage as dbMoveDealToStage } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
-import type { DealStage, LeadStatus, Priority, ActivityKind } from '@prisma/client'
+import type { DealStage, LeadSource, LeadStatus, Priority, ActivityKind } from '@prisma/client'
+
+const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualified', 'lost']
+const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Optimistic creates use a client-generated UUID as the row id; reject anything else. */
+function assertClientId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || !UUID_RE.test(id)) throw new Error('Invalid id')
+}
 
 const STAGE_PROBABILITY: Record<string, number> = {
   discovery: 20,
@@ -26,6 +38,77 @@ export async function moveDealAction(dealId: string, stage: DealStage) {
   revalidatePath('/', 'layout')
 }
 
+export async function createLeadAction(input: {
+  id: string
+  name: string
+  email: string
+  phone: string
+  company: string
+  source: LeadSource
+  status: LeadStatus
+  ownerId: string
+  notes?: string
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.id)
+
+  const name = input.name.trim()
+  const company = input.company.trim()
+  const email = input.email.trim()
+  const phone = input.phone.trim()
+  const notes = input.notes?.trim()
+  if (!name || name.length > 200) throw new Error('Name is required')
+  if (!company || company.length > 200) throw new Error('Company is required')
+  if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
+  if (phone.length > 60) throw new Error('Invalid phone')
+  if (notes && notes.length > 5000) throw new Error('Notes are too long')
+  if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
+  if (!LEAD_STATUSES.includes(input.status)) throw new Error('Invalid status')
+
+  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+
+  const subject = { subjectType: 'lead' as const, subjectLabel: name }
+  const lead = await dbCreateLead(orgId, {
+    id: input.id,
+    name,
+    title: '',
+    company,
+    email,
+    phone,
+    location: '',
+    status: input.status,
+    source: input.source,
+    owner: { connect: { id: owner.id } },
+    activities: {
+      create: [
+        {
+          orgId,
+          kind: 'created',
+          title: `created lead ${name}`,
+          actor: { connect: { id: actorId } },
+          ...subject,
+        },
+        ...(notes
+          ? [
+              {
+                orgId,
+                kind: 'note' as const,
+                title: `added a note on ${name}`,
+                body: notes,
+                actor: { connect: { id: actorId } },
+                ...subject,
+              },
+            ]
+          : []),
+      ],
+    },
+  })
+  revalidatePath('/', 'layout')
+  return { id: lead.id, createdAt: lead.createdAt.toISOString() }
+}
+
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {
   const { orgId } = await requireAuth()
   await dbUpdateLeadStatus(orgId, leadId, status)
@@ -36,6 +119,8 @@ export async function convertLeadAction(
   leadId: string,
   input: {
     ownerId: string
+    contactId: string
+    dealId?: string
     deal?: {
       name: string
       value: number
@@ -45,9 +130,18 @@ export async function convertLeadAction(
     }
   },
 ) {
-  const { orgId } = await requireAuth()
+  const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.contactId)
+  if (input.deal) assertClientId(input.dealId)
+
+  // ownerId comes from the client — make sure it belongs to this org before using it.
+  if (!(await getOwnerById(orgId, input.ownerId))) throw new Error('Owner not found')
+
   const result = await dbConvertLeadToDeal(orgId, leadId, {
     ownerId: input.ownerId,
+    actorId,
+    contactId: input.contactId,
+    dealId: input.deal ? input.dealId : undefined,
     deal: input.deal
       ? {
           ...input.deal,
@@ -69,13 +163,16 @@ export async function toggleTaskAction(taskId: string, done: boolean) {
 }
 
 export async function addTaskAction(input: {
+  id: string
   title: string
   dueDate: string
   priority: Priority
   subject?: { type: 'lead' | 'contact' | 'deal'; id: string; label: string }
 }) {
   const { orgId, ownerId } = await requireAuth()
+  assertClientId(input.id)
   await dbCreateTask(orgId, {
+    id: input.id,
     title: input.title,
     dueDate: new Date(input.dueDate),
     priority: input.priority,

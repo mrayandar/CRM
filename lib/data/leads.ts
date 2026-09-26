@@ -84,6 +84,11 @@ export async function convertLeadToDeal(
   leadId: string,
   input: {
     ownerId: string
+    /** Who performed the conversion (for the activity entry). */
+    actorId: string
+    /** Client-generated ids so the optimistic UI rows are the real rows. */
+    contactId?: string
+    dealId?: string
     /** Omit to convert to a Contact only. Provide to also open a Deal. */
     deal?: ConvertLeadDealInput
   },
@@ -94,6 +99,7 @@ export async function convertLeadToDeal(
 
     const contact = await tx.contact.create({
       data: {
+        ...(input.contactId && { id: input.contactId }),
         orgId,
         name: lead.name,
         title: lead.title,
@@ -112,6 +118,7 @@ export async function convertLeadToDeal(
     if (input.deal) {
       deal = await tx.deal.create({
         data: {
+          ...(input.dealId && { id: input.dealId }),
           orgId,
           name: input.deal.name,
           company: lead.company,
@@ -131,6 +138,20 @@ export async function convertLeadToDeal(
     await tx.lead.update({
       where: { id: leadId },
       data: { status: 'qualified', lastTouchedAt: new Date() },
+    })
+
+    await tx.activity.create({
+      data: {
+        orgId,
+        kind: 'created',
+        title: input.deal
+          ? `converted ${lead.name} into ${input.deal.name}`
+          : `converted ${lead.name} to a contact`,
+        actorId: input.actorId,
+        subjectType: 'lead',
+        subjectLabel: lead.name,
+        leadId: lead.id,
+      },
     })
 
     return { contact, deal }

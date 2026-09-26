@@ -9,7 +9,6 @@ import {
   useTransition,
   type ReactNode,
 } from 'react'
-import { useRouter } from 'next/navigation'
 import type {
   Activity,
   ActivityKind,
@@ -17,6 +16,7 @@ import type {
   Deal,
   DealStage,
   Lead,
+  LeadSource,
   LeadStatus,
   Owner,
   Priority,
@@ -24,6 +24,7 @@ import type {
 } from '@/data/types'
 import { DEAL_STAGE_LABEL } from '@/data/types'
 import {
+  createLeadAction,
   moveDealAction,
   setLeadStatusAction,
   convertLeadAction,
@@ -51,6 +52,17 @@ export interface ConvertLeadInput {
   deal?: ConvertLeadDealInput
 }
 
+export interface NewLeadInput {
+  name: string
+  email: string
+  phone: string
+  company: string
+  source: LeadSource
+  status: LeadStatus
+  ownerId: string
+  notes?: string
+}
+
 interface CrmState {
   owners: Owner[]
   currentUser: Owner
@@ -61,6 +73,8 @@ interface CrmState {
   activities: Activity[]
   ownerById: (id: string) => Owner
   moveDeal: (dealId: string, stage: DealStage) => void
+  /** Adds the lead to local state immediately; resolves once persisted, rejects (after rolling back) if the save fails. */
+  addLead: (input: NewLeadInput) => Promise<Lead>
   setLeadStatus: (leadId: string, status: LeadStatus) => void
   convertLead: (
     leadId: string,
@@ -74,8 +88,12 @@ interface CrmState {
 
 const CrmContext = createContext<CrmState | null>(null)
 
+// Activities are display-only until the next load and are never referenced by id, so a local
+// counter is enough. Anything that *is* referenced by id (leads, contacts, deals, tasks) must use
+// a real UUID that the server stores as the row id — never a counter (see `newEntityId`).
 let sequence = 1000
 const nextId = (prefix: string) => `${prefix}${++sequence}`
+const newEntityId = () => crypto.randomUUID()
 
 interface CrmProviderProps {
   children: ReactNode
@@ -84,7 +102,6 @@ interface CrmProviderProps {
 }
 
 export function CrmProvider({ children, initialData }: CrmProviderProps) {
-  const router = useRouter()
   const [, startTransition] = useTransition()
 
   const [leads, setLeads] = useState<Lead[]>(initialData.leads)
@@ -116,10 +133,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ])
       startTransition(async () => {
         await logActivityAction(kind, title, subject, body)
-        router.refresh()
       })
     },
-    [currentUser.id, router],
+    [currentUser.id],
   )
 
   const moveDeal = useCallback(
@@ -148,10 +164,56 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
       startTransition(async () => {
         await moveDealAction(dealId, stage)
-        router.refresh()
       })
     },
-    [deals, pushActivity, router],
+    [deals, pushActivity],
+  )
+
+  const addLead = useCallback(
+    async (input: NewLeadInput): Promise<Lead> => {
+      const id = newEntityId()
+      const now = new Date().toISOString()
+      const name = input.name.trim()
+      const notes = input.notes?.trim()
+      const lead: Lead = {
+        id,
+        name,
+        title: '',
+        company: input.company.trim(),
+        email: input.email.trim(),
+        phone: input.phone.trim(),
+        status: input.status,
+        source: input.source,
+        ownerId: input.ownerId,
+        score: 0,
+        estValue: 0,
+        location: '',
+        createdAt: now,
+        lastTouchedAt: now,
+      }
+      const subject: SubjectRef = { type: 'lead', id, label: name }
+      const optimisticActivities: Activity[] = [
+        ...(notes
+          ? [{ id: nextId('a'), kind: 'note' as const, title: `added a note on ${name}`, body: notes, at: now, actorId: currentUser.id, subject }]
+          : []),
+        { id: nextId('a'), kind: 'created', title: `created lead ${name}`, at: now, actorId: currentUser.id, subject },
+      ]
+      const activityIds = new Set(optimisticActivities.map((a) => a.id))
+
+      setLeads((prev) => [lead, ...prev])
+      setActivities((prev) => [...optimisticActivities, ...prev])
+
+      try {
+        // The server stores the row under this same id, so the optimistic lead is already the real one.
+        await createLeadAction({ ...input, id, name, notes })
+        return lead
+      } catch (err) {
+        setLeads((prev) => prev.filter((l) => l.id !== id))
+        setActivities((prev) => prev.filter((a) => !activityIds.has(a.id)))
+        throw err
+      }
+    },
+    [currentUser.id],
   )
 
   const setLeadStatus = useCallback(
@@ -173,20 +235,19 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
       startTransition(async () => {
         await setLeadStatusAction(leadId, status)
-        router.refresh()
       })
     },
-    [leads, pushActivity, router],
+    [leads, pushActivity],
   )
 
   const convertLead = useCallback(
     (leadId: string, input: ConvertLeadInput) => {
       const lead = leads.find((l) => l.id === leadId)!
-      const contactId = nextId('c')
+      const contactId = newEntityId()
       const now = new Date().toISOString()
-      const dealId = input.deal ? nextId('d') : null
+      const dealId = input.deal ? newEntityId() : null
 
-      // Optimistic: add contact locally
+      // Optimistic rows use the same UUIDs the server stores, so they are the real rows.
       const contact: Contact = {
         id: contactId,
         name: lead.name,
@@ -204,70 +265,75 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         openDeals: input.deal ? 1 : 0,
         accountValue: 0,
       }
-      setContacts((prev) => [contact, ...prev])
-
-      // Optimistic: add deal locally if provided
-      if (input.deal && dealId) {
-        const deal: Deal = {
-          id: dealId,
-          name: input.deal.name,
-          company: lead.company,
-          contactId,
-          leadId,
-          value: input.deal.value,
-          stage: input.deal.stage,
-          ownerId: input.ownerId,
-          probability: STAGE_PROBABILITY[input.deal.stage] ?? 25,
-          closeDate: input.deal.closeDate,
-          updatedAt: now,
-          priority: input.deal.priority,
-          source: lead.source,
-        }
-        setDeals((prev) => [deal, ...prev])
+      const deal: Deal | null =
+        input.deal && dealId
+          ? {
+              id: dealId,
+              name: input.deal.name,
+              company: lead.company,
+              contactId,
+              leadId,
+              value: input.deal.value,
+              stage: input.deal.stage,
+              ownerId: input.ownerId,
+              probability: STAGE_PROBABILITY[input.deal.stage] ?? 25,
+              closeDate: input.deal.closeDate,
+              updatedAt: now,
+              priority: input.deal.priority,
+              source: lead.source,
+            }
+          : null
+      // Written to Postgres inside the same transaction as the contact/deal (see convertLeadToDeal).
+      const activity: Activity = {
+        id: nextId('a'),
+        kind: 'created',
+        title: input.deal
+          ? `converted ${lead.name} into ${input.deal.name}`
+          : `converted ${lead.name} to a contact`,
+        at: now,
+        actorId: currentUser.id,
+        subject: { type: 'lead', id: leadId, label: lead.name },
       }
 
+      setContacts((prev) => [contact, ...prev])
+      if (deal) setDeals((prev) => [deal, ...prev])
       setLeads((prev) =>
         prev.map((l) =>
           l.id === leadId
-            ? {
-                ...l,
-                status: 'qualified',
-                convertedDealId: dealId ?? undefined,
-                lastTouchedAt: now,
-              }
+            ? { ...l, status: 'qualified', convertedDealId: dealId ?? undefined, lastTouchedAt: now }
             : l,
         ),
       )
+      setActivities((prev) => [activity, ...prev])
 
-      const activityTitle = input.deal
-        ? `converted ${lead.name} into ${input.deal.name}`
-        : `converted ${lead.name} to a contact`
-      pushActivity('created', activityTitle, {
-        type: 'lead',
-        id: leadId,
-        label: lead.name,
-      })
-
-      // Persist server-side
       startTransition(async () => {
-        await convertLeadAction(leadId, {
-          ownerId: input.ownerId,
-          deal: input.deal
-            ? {
-                name: input.deal.name,
-                value: input.deal.value,
-                stage: input.deal.stage,
-                closeDate: input.deal.closeDate,
-                priority: input.deal.priority,
-              }
-            : undefined,
-        })
-        router.refresh()
+        try {
+          await convertLeadAction(leadId, {
+            ownerId: input.ownerId,
+            contactId,
+            dealId: dealId ?? undefined,
+            deal: input.deal
+              ? {
+                  name: input.deal.name,
+                  value: input.deal.value,
+                  stage: input.deal.stage,
+                  closeDate: input.deal.closeDate,
+                  priority: input.deal.priority,
+                }
+              : undefined,
+          })
+        } catch {
+          // Nothing was written: drop the rows that never existed and restore the lead.
+          setContacts((prev) => prev.filter((c) => c.id !== contactId))
+          if (dealId) setDeals((prev) => prev.filter((d) => d.id !== dealId))
+          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+          setLeads((prev) => prev.map((l) => (l.id === leadId ? lead : l)))
+        }
       })
 
       return { contactId, dealId }
     },
-    [leads, pushActivity, router],
+    [leads, currentUser.id],
   )
 
   const toggleTask = useCallback(
@@ -289,17 +355,17 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const task = tasks.find((t) => t.id === taskId)
       startTransition(async () => {
         await toggleTaskAction(taskId, !(task?.done ?? false))
-        router.refresh()
       })
     },
-    [tasks, pushActivity, router],
+    [tasks, pushActivity],
   )
 
   const addTask = useCallback<CrmState['addTask']>(
     ({ title, dueDate, priority, subject }) => {
+      const id = newEntityId()
       setTasks((prev) => [
         {
-          id: nextId('t'),
+          id,
           title,
           dueDate,
           done: false,
@@ -311,11 +377,14 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         ...prev,
       ])
       startTransition(async () => {
-        await addTaskAction({ title, dueDate, priority, subject })
-        router.refresh()
+        try {
+          await addTaskAction({ id, title, dueDate, priority, subject })
+        } catch {
+          setTasks((prev) => prev.filter((t) => t.id !== id))
+        }
       })
     },
-    [currentUser.id, router],
+    [currentUser.id],
   )
 
   const addNote = useCallback(
@@ -334,10 +403,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
       startTransition(async () => {
         await addNoteAction(subject, body)
-        router.refresh()
       })
     },
-    [pushActivity, router],
+    [pushActivity],
   )
 
   const value = useMemo<CrmState>(
@@ -351,6 +419,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       activities,
       ownerById,
       moveDeal,
+      addLead,
       setLeadStatus,
       convertLead,
       toggleTask,
@@ -368,6 +437,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       activities,
       ownerById,
       moveDeal,
+      addLead,
       setLeadStatus,
       convertLead,
       toggleTask,

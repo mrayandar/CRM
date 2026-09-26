@@ -14,10 +14,13 @@ create organization → select organization → the actual dashboard, plus
 sign-out → sign-in → select org → dashboard. `Organization` and `Owner`
 rows are created correctly in Postgres by `resolveAuth()`.
 
-Audit items #3–14 (lead/contact/deal/task CRUD, pipeline drag persistence,
-activity timeline, search, dashboard metrics, team settings) are now
-**unblocked but still unverified** — they have not been exercised in a
-browser yet.
+Audit items #3–14 were **partially re-run** in the browser on Sep 26 2026
+(see "Functional audit" below). Headline: every "create" button (lead,
+contact, deal) is unwired, contact-only convert isn't exposed in the UI,
+and **server-action persistence is unreliable** — two dev-server sessions
+degraded into a flood of `failed to forward action response` /
+`HeadersTimeoutError` errors, after which no mutation reached the DB.
+Items 9–12 and 14 remain untested.
 
 ## Fixed: Clerk org-selection redirect loop (Sep 26 2026)
 
@@ -139,6 +142,77 @@ per-developer env setup.
    ```
    Also confirmed for "Nexo Audit Org" once its session was activated.
 
+## Fixed: phantom deals from optimistic temp ids (Sep 27 2026)
+
+**Symptom:** dragging/moving a deal on the Pipeline board threw
+`Deal d1005 not found in org …` (`moveDealAction`), and the activity logged
+for the move threw `No 'Deal' record found for nested connect`
+(`logActivityAction`).
+
+**Not a mock-data leak.** `src/data/mock.ts` is imported only for the
+`monthlyPerformance` chart array (Dashboard, Reports). Pipeline and Dashboard
+read deals exclusively from `useCrm()` → `initialData` → `loadCrmData()`
+(Prisma). The real database ids are cuids (`cmui…`), never `d1005`.
+
+**Actual root cause:** `d1005` is `nextId('d')` — the store's client-side
+counter (`let sequence = 1000`). `convertLead` gave its optimistic Deal/Contact
+those counter ids, fired `convertLeadAction`, and **discarded the real ids the
+server created**. So after any convert-with-deal, the Pipeline showed a card
+whose id existed only in browser memory (the real deal was in Postgres under a
+different id). Any action on it — move, log activity, and later edit — sent the
+fake id to the server and failed. The counter also restarts at 1000 on every
+page load, so ids weren't even unique across sessions. `addTask` had the same
+flaw (toggling a just-added task would have failed), and `addLead` (built
+earlier the same day) papered over it with a post-hoc id swap that left a
+window where the row still had its fake id.
+
+**Reproduced first** (real browser, then Neon): convert lead → Pipeline → move
+the new deal → `[500, 500]`, server log `Deal d1002 not found in org
+cmui9z4s…` + the Prisma nested-connect error, while a direct query showed the
+real deal "Audit Corp — New opportunity" existed under a cuid.
+
+**Fix:** every optimistic create that the UI can act on before it round-trips
+now uses a client-generated **UUID that the server stores as the row id**, so
+the optimistic row *is* the real row — no swap, no window. Next runs server
+actions one at a time in order, so a follow-up action on that id is processed
+after the create.
+- `src/store/crm.tsx`: `newEntityId()` (`crypto.randomUUID()`) for lead,
+  contact, deal, task ids. `nextId()` remains only for activities (display-only,
+  never referenced by id). `convertLead` and `addTask` now roll back their
+  optimistic rows if the server rejects the create (previously silent/uncaught).
+- `lib/actions/crm.ts`: `createLeadAction`, `convertLeadAction`,
+  `addTaskAction` take the id(s); `assertClientId()` accepts only a UUID.
+- `lib/data/leads.ts`: `convertLeadToDeal` accepts `contactId`/`dealId`.
+- Also fixed while in there: `convertLeadAction` used the client-supplied
+  `ownerId` without checking it belongs to the org (cross-tenant owner attach) —
+  now verified via `getOwnerById(orgId, …)`, like `createLeadAction`.
+- Also fixed: the "converted X into Y" activity was a separate action fired
+  *before* the convert, so a failed convert left an orphan activity in Postgres.
+  It's now written inside the convert transaction (`convertLeadToDeal`).
+
+**Verified (browser + direct Neon queries):**
+1. Convert lead `cmuiapnrd…` with a deal → `POST` 200. DB: new contact and deal
+   with UUID ids (`04903a5a-…`, `dd048205-…`), deal linked to the contact and
+   the lead, correct `orgId`, "converted…" activity present.
+2. In-app nav to Pipeline, move that deal → `[200, 200]`, no server errors.
+   DB: deal `stage proposal`, `probability 45`, and a `stage` activity linked to
+   that deal id.
+3. Add a task and tick its checkbox immediately (before the add responded) →
+   `[200, 200]`; DB row has the UUID id, `done: true`.
+4. New Lead regression: success path (row + activities correct, list 5 → 6, no
+   reload, detail page opens at the UUID) and the bad-owner rollback (modal
+   stays open with error, list unchanged, 0 DB rows) both still pass.
+- This also closes the audit's open question on with-deal convert persistence
+  (#5): it does write the Contact, Deal and activity.
+
+**Still not covered (known):** `moveDeal`, `setLeadStatus`, `toggleTask` and
+`pushActivity` still have no rollback/error handling if their action fails
+(the optimistic change stays and the error surfaces as an unhandled rejection).
+`ConvertModal`/`RecordDetail` keep a local `converted` flag that isn't reset
+if a convert fails (it's UI-file state; the deal/contact/lead state itself does
+roll back). Existing rows created before this change keep their cuid ids —
+nothing to migrate.
+
 ## Functional audit (Sep 26 2026)
 
 Full click-through audit of the 14 core flows, tested live in a real
@@ -147,25 +221,26 @@ read-through). Verdicts are PASS, FAIL (exact error included), NOT
 TESTABLE (blocked by an earlier failure), or NOT YET BUILT.
 
 > **Items 1 and 2 were subsequently fixed** — see "Fixed: Clerk
-> org-selection redirect loop" above. Items 3–14 are unblocked but have
-> not been re-tested yet, so they remain unverified.
+> org-selection redirect loop" above. Items 3–8 and 13 were re-run in the
+> browser on Sep 26 2026 (second pass, below). Items 9–12 and 14 were not
+> reached — the audit was stopped after the dev server repeatedly degraded.
 
 | # | Flow | Verdict |
 |---|------|---------|
 | 1 | Sign up / sign in | ✅ PASS (was PARTIAL — fixed) |
 | 2 | Create an organization | ✅ PASS (was FAIL — fixed) |
-| 3 | Create a lead | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 4 | Edit a lead | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 5 | Convert a lead (contact-only) | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 6 | Create a contact directly | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 7 | Create a company | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 8 | Create a deal | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 9 | Drag a deal across pipeline stages + persist | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 10 | Create a task, mark it complete | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 11 | Log an activity, confirm in timeline | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 12 | Global search | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 13 | Dashboard — real vs. mock metrics | ⬜ UNVERIFIED (unblocked, not yet tested) |
-| 14 | Team settings — invite user, change role | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 3 | Create a lead | ✅ PASS (built + DB-verified Sep 26 2026, after the audit — see "New lead creation" under Done) |
+| 4 | Edit a lead | ⚠️ PASS (status only) — persisted, but bounced user to `/create-org` |
+| 5 | Convert a lead (contact-only) | 🚧 NOT YET BUILT (UI) — with-deal convert unverified in DB |
+| 6 | Create a contact directly | 🚧 NOT YET BUILT |
+| 7 | Create a company | 🚧 NOT YET BUILT (no Company entity exists) |
+| 8 | Create a deal | 🚧 NOT YET BUILT |
+| 9 | Drag a deal across pipeline stages + persist | ⬜ NOT TESTED |
+| 10 | Create a task, mark it complete | ⬜ NOT TESTED |
+| 11 | Log an activity, confirm in timeline | ⬜ NOT TESTED |
+| 12 | Global search | ⬜ NOT TESTED |
+| 13 | Dashboard — real vs. mock metrics | ✅ PASS (excluding known-mock `monthlyPerformance`) |
+| 14 | Team settings — invite user, change role | ⬜ NOT TESTED |
 
 ### 1. Sign up / sign in — ⚠️ PARTIAL
 
@@ -257,17 +332,120 @@ app route.
   which isn't available to the agent; this is flagged as the fastest next
   diagnostic step for a human to try (see "Next up").
 
-### 3–14. All remaining flows — 🚫 NOT TESTABLE (blocked by #2)
+### 3–14. Second pass (Sep 26 2026, after the redirect-loop fix)
 
-Every flow from "Create a lead" through "Team settings" requires an
-authenticated session with a resolved `orgId` to reach any `(app)` route.
-Since no session in this audit could get past org-selection, these could
-not be exercised in the browser and are **not** given a PASS — they are
-explicitly unverified, regardless of how the underlying code reads. This
-includes the Dashboard mock-data question (#13) and Team settings (#14),
-both of which have real, wired implementations in code (see "Done" below)
-but neither of which has been re-confirmed working end-to-end via the
-browser since the redirect loop appeared.
+Tested as `nexoverify1@mailinator.com` in "Nexo Verified Org". Test data
+seeded via `scripts/seed-audit.js` (4× "Alice Audit" lead — duplicates from
+script retries — 3× "Bob Audit" contact, "Audit Deal Alpha" $25K discovery,
+"Audit Deal Beta" $8K proposal). DB state checked with
+`scripts/check-lead.js` / `scripts/check-convert.js`.
+
+**#3 Create a lead — 🚧 NOT YET BUILT (at audit time; since built — see
+"New lead creation" under Done).** "New lead" button on `/leads` rendered
+but had no `onClick`. Git history shows it never had one (all 9 commits,
+including the first Next.js migration commit) — a placeholder, not a
+regression.
+
+**#4 Edit a lead — ⚠️ PASS (status only).** "Change status" → Qualified on
+lead `cmuiaraii0001f8dk8yznejnp`: `POST /leads/<id> 200` (13.9s — cold
+Neon), DB confirmed `status: "qualified"`, and after re-selecting the org
+the Leads funnel showed "Qualified 1" and the dashboard showed the
+activity. Caveats: (a) only status is editable — no UI to edit name,
+email, company, etc.; (b) immediately after the save, the
+`router.refresh()` in `CrmProvider` re-rendered the `(app)` layout without
+an active org, and `resolveAuth()` redirected to `/create-org` (see
+"Every mutation bounces the user to `/create-org`" in Known gaps).
+
+**#5 Convert a lead (contact-only) — 🚧 NOT YET BUILT (UI).**
+`ConvertModal` in `src/screens/RecordDetail.tsx` always submits a `deal`
+payload; there's no contact-only option, although `convertLeadAction`
+accepts `deal: undefined`. The with-deal path was clicked: UI showed
+"Converted", "A deal and a contact record were created", Deals 2→3 — but
+**no Contact or Deal row was written** (later shown to be an artifact of that
+session — with-deal convert does persist; see "Fixed: phantom deals" above). A Fast Refresh full reload
+(triggered by an agent code edit mid-test) happened at the same time and
+the `convertLeadAction` POST never appeared in the server log, so with-deal
+convert persistence is **unverified**, not proven broken.
+
+**#6 Create a contact — 🚧 NOT YET BUILT.** "New contact" button has no
+`onClick`; no action or store method.
+
+**#7 Create a company — 🚧 NOT YET BUILT.** There is no Company model;
+company is a free-text string on Lead/Contact/Deal.
+
+**#8 Create a deal — 🚧 NOT YET BUILT.** "New deal" buttons (Pipeline,
+Dashboard) have no `onClick`; no `createDealAction`. Deals can only be
+created via lead conversion.
+
+**#9–12, #14 — ⬜ NOT TESTED.** Stopped before these were reached. Code
+paths exist for #9 (`moveDealAction`), #10 (`addTaskAction`,
+`toggleTaskAction`, working form on `/tasks`), #11 (`logActivityAction`,
+`addNoteAction`), #14 (Clerk `useOrganization()` in Settings), but none
+were exercised in the browser this pass.
+
+**#13 Dashboard — ✅ PASS.** After seeding, dashboard showed
+"$33,000 across 2 open deals", Discovery 1 / $25K, Proposal 1 / $8K,
+"Closing in 30 days: $33K committed" with both Audit Corp deals, "4 leads
+never contacted" (→ 3 after #4), and the recent-activity feed from the DB.
+All match the database. (`monthlyPerformance` chart is known-mock — not
+re-reported.)
+
+### Server-action reliability — ❌ FAIL (blocks trustworthy verdicts)
+
+In **two separate dev-server sessions**, server actions degraded until
+none reached the DB:
+
+- Session 1 (~56 min uptime): four status changes on lead
+  `cmuiaraii0001f8dk8yznejnp` showed optimistically in the UI; DB stayed
+  `status: "new"`. A temporary `console.log` at the top of
+  `setLeadStatusAction` **never printed** — the action body was never
+  entered. The server log contained ~20,000 lines of:
+  ```
+  failed to forward action response [TypeError: fetch failed] {
+    [cause]: [Error [HeadersTimeoutError]: Headers Timeout Error] {
+      code: 'UND_ERR_HEADERS_TIMEOUT'
+    }
+  }
+  ```
+  interleaved with `POST /tasks 404 in ~318000–491000ms` and one
+  `POST /leads/cmuiaraii0001f8dk8yznejnp 404 in 324333ms`.
+- Session 2 (fresh restart): actions initially worked (#4 above:
+  `POST 200`, DB updated). After ~15 min it hit the same
+  `HeadersTimeoutError` flood (~2,500 lines) and the process exited.
+  Also logged: `TypeError: __webpack_modules__[moduleId] is not a function`
+  on first render, and a `GET /leads 500` with
+  `OrganizationSwitcher can only be used within the <ClerkProvider />`
+  during an HMR cycle.
+
+**Root cause: not yet identified (investigation in progress, Sep 26 2026 —
+not concluded).** What was established so far:
+- `lib/prisma.ts` is the correct HMR-safe singleton; the only other
+  `new PrismaClient` calls are the one-off `scripts/*.js`. Prisma pool
+  exhaustion would surface as Prisma errors (`P2024`), not as the logged
+  `HeadersTimeoutError` — so it's unlikely to be the cause.
+- `failed to forward action response` comes from Next's
+  `createForwardedActionResponse` (`next/dist/server/app-render/action-handler.js`):
+  when the POSTed page isn't in the action's `workers` list in the dev
+  server-reference manifest, Next `fetch`es the request to another page on
+  itself. That manifest is built incrementally in dev. undici's default
+  headers timeout is 300 s, which matches the logged `POST … 404 in
+  318000–491000ms`. So the failing hop is Next's self-forward, not the DB.
+- Every action currently triggers a full re-render of the `(app)` layout
+  (`revalidatePath('/', 'layout')` → `resolveAuth()` → 2 Clerk API calls +
+  ~8 Neon queries) — single-insert actions took 3–7 s locally, and the
+  response body streamed ~8 s after headers.
+- **Not reproduced.** Clean-server runs (add task ×3, lead create ×2, lead
+  status, with ~6 Fast Refresh full reloads triggered mid-run by code edits)
+  produced 0 forward/timeout errors, and every mutation that got a response
+  matched the DB. The idle-then-mutate (>60 s) and server-module-edit-then-
+  mutate experiments were planned but not run.
+
+Hypotheses still to check: stale action IDs
+after HMR (404 on action POST), Next's action forwarding between
+workers/routes timing out, or slow cold-start Neon queries in
+`requireAuth()` holding requests open. Because the UI is optimistic,
+**a mutation "looking" successful proves nothing** — every future audit
+verdict must be confirmed against the DB.
 
 ## Done
 
@@ -370,6 +548,58 @@ browser since the redirect loop appeared.
 - `lib/data/leads.ts` updated to include `convertedDeal: { select: { id:
   true } }` so the mapper can produce `convertedDealId`.
 
+### New lead creation (complete, verified against the DB — Sep 26 2026)
+
+- **UI:** the "New lead" button in `src/screens/Leads.tsx` opens a
+  `NewLeadModal` (built from the existing `Modal`, `Input`, `Select`,
+  `Textarea`, `Label` components and the same local `Field` wrapper pattern
+  as `ConvertModal` — no new visual pattern). Fields: name, company, email,
+  phone, source, status (default New), owner (default current user), notes.
+  Name and company are required; email is format-checked when present.
+  The button is disabled until valid; on failure the modal stays open with an
+  inline error.
+- **Server action:** `createLeadAction` in `lib/actions/crm.ts` — `requireAuth()`
+  → validates/trims all input server-side (required fields, lengths, email
+  format, `source`/`status` against the enums) → verifies the client-supplied
+  `ownerId` belongs to the caller's org via `getOwnerById(orgId, …)` (otherwise
+  a crafted request could attach a lead to another tenant's owner) →
+  `createLead` in `lib/data/leads.ts` → `revalidatePath`. The lead and its
+  activities are written in one nested Prisma create, so it's atomic.
+- **Store:** `addLead` on `CrmState` (`src/store/crm.tsx`). Optimistic insert
+  so the lead appears in the list immediately with no reload. The lead's id is
+  a client-generated UUID that the server stores as the row id, so it's
+  openable/editable straight away (this originally used a post-hoc temp-id
+  swap; replaced Sep 27 — see "Fixed: phantom deals from optimistic temp ids").
+  If the save fails, the optimistic lead and its activities are rolled back and
+  the promise rejects so the modal can show the error.
+- **Notes:** `Lead` has no notes column, so notes are stored as a `note`
+  Activity on the lead (same shape as `addNote`), alongside a `created`
+  activity. No schema change.
+- **Not stored:** `title`, `location` are saved as empty strings, `score` and
+  `estValue` as 0 (the form doesn't collect them; schema requires the strings).
+
+**Verification (browser + direct Neon queries, not UI-only):**
+1. Signed in as `nexoverify1@mailinator.com` (Clerk sign-in ticket), opened
+   `/leads` (4 rows), created "Zed Tester 592320" / "Zed Corp 592320",
+   `zed592320@example.com`, source Referral, status Contacted, with notes.
+2. `POST /leads` → 200 in ~5.2 s. Rows 4 → 5 with no page reload (a
+   `window` marker set before the click survived); clicking the new row
+   navigated to `/leads/cmuiqvl9w0019f8rsfibphhr1` (the real DB id) and the
+   detail page rendered.
+3. Direct query: exactly **1** row — `orgId cmui9z4s60005f8g8w9tchde5`
+   ("Nexo Verified Org"), all typed fields match, `status contacted`,
+   `source Referral`, `ownerId` = the current user's Owner in the same org.
+   Two Activity rows with the same `orgId`, `subjectType lead`, linked to the
+   lead: `created` ("created lead Zed Tester 592320") and `note` (body
+   `note-body-592320`).
+4. Failure path: injected an owner id not in the org → server threw
+   `Owner not found` (500), modal stayed open with the inline error, list
+   rolled back (5 → 5), and a direct query found **0** rows for that email.
+- Not tested: creating from a non-default owner that *is* valid, and the
+  client-side email-format error message (logic covered by the server check).
+- Test data left in "Nexo Verified Org": lead "Zed Tester 592320" plus tasks
+  "Probe task r1 94801" and "E0 baseline 29824" from the reliability probing.
+
 ### Prisma + PostgreSQL schema (complete)
 
 - 7 models: **Organization** (new), Owner, Lead, Contact, Deal, Task,
@@ -466,9 +696,27 @@ still imported by Dashboard and Reports only for the chart array above.
 
 Signing in produces an `active` session with `activeOrg: null`, so
 `resolveAuth()` sends the user to `/create-org` to pick their org on every
-fresh sign-in, even when they belong to exactly one. Functional but an
-extra click. Worth revisiting — either persist/restore the last active org,
-or auto-activate when the user has exactly one membership.
+fresh sign-in, even when they belong to exactly one. Worth revisiting —
+either persist/restore the last active org, or auto-activate when the user
+has exactly one membership.
+
+**Worse than first thought (found in the Sep 26 audit):** the active org
+is also lost on any full page load *and* on server re-renders triggered by
+`router.refresh()`. The org picked in `<OrganizationList>` is visible to
+the client but not to the next server request, so `auth()` returns
+`orgId: null` and `resolveAuth()` redirects to `/create-org`.
+
+### Every mutation bounced the user to `/create-org` — patched, not fixed
+
+`CrmProvider` (`src/store/crm.tsx`) used to call `router.refresh()` after
+every server action. Because of the gap above, each refresh landed on
+`/create-org`. **Stopgap applied Sep 26 2026:** all seven
+`router.refresh()` calls (and the `useRouter` import) were removed. The
+UI now relies on optimistic state; `revalidatePath` in the actions still
+invalidates the server cache, so the next navigation loads fresh data.
+Trade-off: if an action fails, the UI keeps showing the unsaved optimistic
+change with no error or rollback. Revert once active-org persistence is
+fixed, or replace it with proper error handling and rollback.
 
 ### `force_organization_selection` must stay off on the Clerk instance
 
@@ -532,7 +780,26 @@ No test framework configured. No unit, integration, or E2E tests.
 
 The API and store now support contact-only conversion (omit `input.deal`),
 but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
-`deal` block. No "Convert to contact only" UI path exists.
+`deal` block. No "Convert to contact only" UI path exists. (Confirmed in
+the browser, Sep 26 audit #5. Adding it requires a UI change in
+`src/screens/`, so it needs explicit sign-off.)
+
+### No create flows for Contact / Deal; no Company entity
+
+**Lead creation is done** (see "New lead creation" under Done). "New contact"
+and "New deal" buttons (Contacts, Pipeline, Dashboard, RecordDetail) still
+render with no `onClick` — confirmed via git history that they never had one
+(placeholders, not a regression). There are no create server actions or store
+methods for them; `lib/data/*` has `createContact`/`createDeal` but they're
+unused. Wiring them up needs forms/modals in `src/screens/` (a UI change —
+needs sign-off). There's no Company model at all — company is a free-text
+field.
+
+### Server actions degrade and stop persisting (dev server)
+
+See "Server-action reliability" in the audit. Root cause unknown. Until
+fixed, confirm every mutation against the DB — the optimistic UI hides
+failures.
 
 ### `monthlyPerformance` mock in Dashboard + Reports — must fix before real customers
 
@@ -559,11 +826,23 @@ Champions) have hardcoded counts and are not real saved queries.
 
 ## Next up
 
-- **Run audit items #3–14 now that auth is unblocked** (lead/contact/
-  company/deal CRUD, pipeline drag persistence, tasks, activity timeline,
-  global search, dashboard metrics, team settings) for real verdicts.
-- Auto-activate the org on sign-in when the user has exactly one
-  membership, to remove the extra `/create-org` click (see Known gaps).
+- **Root-cause the server-action degradation** (`HeadersTimeoutError` /
+  action POST 404s). Nothing else can be verified reliably until this is fixed.
+- **Make the active org persist server-side** (after `<OrganizationList>`
+  selection, on full reloads, and on server re-renders), then restore
+  `router.refresh()` or add proper rollback/error handling in `CrmProvider`.
+  Also auto-activate when the user has exactly one membership.
+- **Finish the audit: #9–12 and #14.** (#5 with-deal convert is now verified
+  against the DB, and moving a deal + its activity on a converted deal is
+  verified; a drag-and-drop gesture itself, and #10 task completion via
+  the row checkbox on pre-existing tasks, are still untested.)
+- Add rollback/error handling to `moveDeal`, `setLeadStatus`, `toggleTask`,
+  `pushActivity` (only `addLead`, `convertLead`, `addTask` have it).
+- ~~New lead creation~~ — done. Decide on (and sign off on the UI changes
+  for) create flows for Contact / Deal, and whether a Company entity is in
+  scope.
+- Delete the duplicate "Alice Audit" / "Bob Audit" seed rows in
+  "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).
 - Register the Clerk webhook endpoint and test org/member sync.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
@@ -590,5 +869,6 @@ Champions) have hardcoded counts and are not real saved queries.
 | UI cutover | Optimistic updates + server actions | Mutations update local state immediately (for instant UI feedback) and fire a server action in a `startTransition`. After the server action completes, `router.refresh()` re-fetches the layout's data to sync from the database. |
 | Auth | Disabled Clerk's `force_organization_selection` instead of adopting its task UI | The app already gates every `(app)` route on an active org in `resolveAuth()`, server-side. Clerk's `choose-organization` task was a redundant second gate, and its hosted UI never issued the request that resolves it. Removing the duplicate gate leaves the working, server-enforced one in charge. |
 | Auth | Clerk URL config in code (`clerkMiddleware`/`ClerkProvider`) rather than `NEXT_PUBLIC_CLERK_*_URL` env vars | `.env` is untracked and per-developer; an unset `signInUrl` silently falls back to the hosted Account Portal and reintroduces the redirect loop. Pinning it in code makes the setting reviewable and impossible to forget. |
+| Optimistic UI | Client-generated UUIDs stored as the DB row ids (not counters, not post-hoc swaps) | A counter id (`d1005`) that exists only in the browser makes every follow-up action on that row fail, and a post-hoc swap leaves a window where it still fails. A UUID the server adopts as the primary key makes the optimistic row the real row; Next's ordered action queue guarantees the create lands first. Server validates the id is a UUID. |
 | Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
 | Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |
