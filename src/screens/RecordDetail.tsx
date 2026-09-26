@@ -27,6 +27,7 @@ import { Modal } from '@/components/ui/Modal'
 import { MenuItem, Popover } from '@/components/ui/Menu'
 import { ActivityTimeline } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
+import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
 import {
   DEAL_STAGE_LABEL,
@@ -93,6 +94,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
   const [note, setNote] = useState('')
   const [newTask, setNewTask] = useState('')
   const [convertOpen, setConvertOpen] = useState(false)
+  const [newDealOpen, setNewDealOpen] = useState(false)
   const [converted, setConverted] = useState<{ dealId: string | null; contactId: string } | null>(null)
 
   const owner = ownerById(record.ownerId)
@@ -175,7 +177,12 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
               {lead.convertedDealId ?? converted ? 'Converted' : 'Convert to deal'}
             </Button>
           ) : (
-            <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus size={14} />}
+              onClick={() => setNewDealOpen(true)}
+            >
               New deal
             </Button>
           )}
@@ -543,6 +550,10 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
           onClose={() => setConvertOpen(false)}
           onConverted={(result) => setConverted(result)}
         />
+      )}
+
+      {newDealOpen && (
+        <NewDealModal onClose={() => setNewDealOpen(false)} defaultContactId={contact?.id} />
       )}
     </PageShell>
   )

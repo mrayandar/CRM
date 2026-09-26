@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { Link } from '@/lib/router-compat'
 import { ArrowUpRight, ChevronRight, Plus, TriangleAlert } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
@@ -11,6 +12,7 @@ import { BarChart, EmptyState } from '@/components/ui/Display'
 import { MetricRow } from '@/components/common/MetricTile'
 import { ActivityFeed } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
+import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
 import { monthlyPerformance } from '@/data/mock'
 import {
@@ -36,6 +38,7 @@ const TREND = { pipeline: 12.4, active: 6.1, won: -8.3, conversion: 4.2 }
 
 export function Dashboard() {
   const { deals, leads, tasks, activities, currentUser, ownerById } = useCrm()
+  const [newDealOpen, setNewDealOpen] = useState(false)
 
   const openDeals = deals.filter((d) => OPEN_STAGES.includes(d.stage))
   const openValue = sum(openDeals.map((d) => d.value))
@@ -83,7 +86,12 @@ export function Dashboard() {
           <Button variant="secondary" size="sm">
             Last 30 days
           </Button>
-          <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus size={14} />}
+            onClick={() => setNewDealOpen(true)}
+          >
             New deal
           </Button>
         </>
@@ -278,6 +286,8 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {newDealOpen && <NewDealModal onClose={() => setNewDealOpen(false)} />}
     </PageShell>
   )
 }

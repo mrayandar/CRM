@@ -26,6 +26,7 @@ import { DEAL_STAGE_LABEL } from '@/data/types'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
+  createDealAction,
   moveDealAction,
   setLeadStatusAction,
   convertLeadAction,
@@ -64,6 +65,17 @@ export interface NewLeadInput {
   notes?: string
 }
 
+export interface NewDealInput {
+  name: string
+  company: string
+  value: number
+  stage: DealStage
+  /** ISO timestamp */
+  closeDate: string
+  ownerId: string
+  contactId?: string
+}
+
 interface CrmState {
   owners: Owner[]
   currentUser: Owner
@@ -76,6 +88,8 @@ interface CrmState {
   moveDeal: (dealId: string, stage: DealStage) => void
   /** Adds the lead to local state immediately; resolves once persisted, rejects (after rolling back) if the save fails. */
   addLead: (input: NewLeadInput) => Promise<Lead>
+  /** Adds the deal to local state immediately; rolls back and shows a toast if the save fails. Returns the new deal's id. */
+  addDeal: (input: NewDealInput) => string
   setLeadStatus: (leadId: string, status: LeadStatus) => void
   convertLead: (
     leadId: string,
@@ -289,6 +303,81 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
     },
     [currentUser.id],
+  )
+
+  const addDeal = useCallback(
+    (input: NewDealInput): string => {
+      const id = newEntityId()
+      const now = new Date().toISOString()
+      const name = input.name.trim()
+      const contact = input.contactId ? contacts.find((c) => c.id === input.contactId) : undefined
+      const company = input.company.trim() || contact?.company || ''
+      // Deal.source is required; inherit it from the contact's originating lead when there is one.
+      const originLead = contact?.leadId ? leads.find((l) => l.id === contact.leadId) : undefined
+      const source: LeadSource = originLead?.source ?? 'Inbound'
+      const priority: Priority = 'medium'
+
+      const deal: Deal = {
+        id,
+        name,
+        company,
+        contactId: contact?.id,
+        value: input.value,
+        stage: input.stage,
+        ownerId: input.ownerId,
+        probability: STAGE_PROBABILITY[input.stage],
+        closeDate: input.closeDate,
+        updatedAt: now,
+        priority,
+        source,
+      }
+      // Written to Postgres in the same nested create as the deal (see createDealAction).
+      const activity: Activity = {
+        id: nextId('a'),
+        kind: 'created',
+        title: `created deal ${name}`,
+        at: now,
+        actorId: currentUser.id,
+        subject: { type: 'deal', id, label: name },
+      }
+
+      setDeals((prev) => [deal, ...prev])
+      setActivities((prev) => [activity, ...prev])
+      if (contact) {
+        setContacts((prev) =>
+          prev.map((c) => (c.id === contact.id ? { ...c, openDeals: c.openDeals + 1 } : c)),
+        )
+      }
+
+      persist(
+        () =>
+          createDealAction({
+            id,
+            name,
+            company,
+            value: input.value,
+            stage: input.stage,
+            closeDate: input.closeDate,
+            ownerId: input.ownerId,
+            contactId: contact?.id,
+            source,
+            priority,
+          }),
+        () => {
+          setDeals((prev) => prev.filter((d) => d.id !== id))
+          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+          if (contact) {
+            setContacts((prev) =>
+              prev.map((c) => (c.id === contact.id ? { ...c, openDeals: contact.openDeals } : c)),
+            )
+          }
+        },
+        undefined,
+        "Couldn't create the deal, please try again.",
+      )
+      return id
+    },
+    [contacts, leads, currentUser.id, persist],
   )
 
   const setLeadStatus = useCallback(
@@ -514,6 +603,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ownerById,
       moveDeal,
       addLead,
+      addDeal,
       setLeadStatus,
       convertLead,
       toggleTask,
@@ -532,6 +622,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ownerById,
       moveDeal,
       addLead,
+      addDeal,
       setLeadStatus,
       convertLead,
       toggleTask,

@@ -16,6 +16,7 @@ import { Badge, DEAL_STAGE_TONE, StatusDot } from '@/components/ui/Badge'
 import { Avatar, CompanyMark } from '@/components/ui/Avatar'
 import { SearchInput, Segmented, Select } from '@/components/ui/Field'
 import { MenuDivider, MenuItem, MenuLabel, Popover } from '@/components/ui/Menu'
+import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
 import {
   DEAL_STAGE_LABEL,
@@ -33,6 +34,7 @@ export function Pipeline() {
   const [query, setQuery] = useState('')
   const [owner, setOwner] = useState('all')
   const [scope, setScope] = useState<'all' | 'mine'>('all')
+  const [newDealOpen, setNewDealOpen] = useState(false)
   const [dragging, setDragging] = useState<string | null>(null)
   const [overStage, setOverStage] = useState<DealStage | null>(null)
 
@@ -85,7 +87,12 @@ export function Pipeline() {
           <Button variant="secondary" size="sm" icon={<Settings2 size={14} />}>
             Customize stages
           </Button>
-          <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus size={14} />}
+            onClick={() => setNewDealOpen(true)}
+          >
             New deal
           </Button>
         </>
@@ -217,6 +224,8 @@ export function Pipeline() {
           )
         })}
       </div>
+
+      {newDealOpen && <NewDealModal onClose={() => setNewDealOpen(false)} />}
     </PageShell>
   )
 }

@@ -8,12 +8,15 @@ import {
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
 import { getOwnerById } from '@lib/data/owners'
-import { moveDealToStage as dbMoveDealToStage } from '@lib/data/deals'
+import { getContactById } from '@lib/data/contacts'
+import { createDeal as dbCreateDeal, moveDealToStage as dbMoveDealToStage } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
 import type { DealStage, LeadSource, LeadStatus, Priority, ActivityKind } from '@prisma/client'
 
 const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualified', 'lost']
+const DEAL_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contract', 'won', 'lost']
+const PRIORITIES: Priority[] = ['low', 'medium', 'high']
 const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -107,6 +110,75 @@ export async function createLeadAction(input: {
   })
   revalidatePath('/', 'layout')
   return { id: lead.id, createdAt: lead.createdAt.toISOString() }
+}
+
+export async function createDealAction(input: {
+  id: string
+  name: string
+  company: string
+  value: number
+  stage: DealStage
+  closeDate: string
+  ownerId: string
+  contactId?: string
+  source: LeadSource
+  priority: Priority
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.id)
+
+  const name = input.name.trim()
+  const companyInput = input.company.trim()
+  const closeDate = new Date(input.closeDate)
+  if (!name || name.length > 200) throw new Error('Name is required')
+  if (companyInput.length > 200) throw new Error('Company is too long')
+  if (!Number.isInteger(input.value) || input.value <= 0 || input.value > 1_000_000_000) {
+    throw new Error('Invalid value')
+  }
+  if (!DEAL_STAGES.includes(input.stage)) throw new Error('Invalid stage')
+  if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
+  if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
+  if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
+
+  // ownerId and contactId come from the client — both must belong to this org.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+  let contact = null
+  if (input.contactId) {
+    contact = await getContactById(orgId, input.contactId)
+    if (!contact) throw new Error('Contact not found')
+  }
+
+  const company = companyInput || contact?.company || ''
+  if (!company) throw new Error('Company is required')
+
+  const deal = await dbCreateDeal(orgId, {
+    id: input.id,
+    name,
+    company,
+    value: input.value,
+    stage: input.stage,
+    priority: input.priority,
+    source: input.source,
+    probability: STAGE_PROBABILITY[input.stage] ?? 25,
+    closeDate,
+    owner: { connect: { id: owner.id } },
+    ...(contact && { contact: { connect: { id: contact.id } } }),
+    activities: {
+      create: [
+        {
+          orgId,
+          kind: 'created',
+          title: `created deal ${name}`,
+          actor: { connect: { id: actorId } },
+          subjectType: 'deal',
+          subjectLabel: name,
+        },
+      ],
+    },
+  })
+  revalidatePath('/', 'layout')
+  return { id: deal.id }
 }
 
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {

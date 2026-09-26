@@ -325,7 +325,7 @@ TESTABLE (blocked by an earlier failure), or NOT YET BUILT.
 | 5 | Convert a lead (contact-only) | 🚧 NOT YET BUILT (UI) — with-deal convert unverified in DB |
 | 6 | Create a contact directly | 🚧 NOT YET BUILT |
 | 7 | Create a company | 🚧 NOT YET BUILT (no Company entity exists) |
-| 8 | Create a deal | 🚧 NOT YET BUILT |
+| 8 | Create a deal | ✅ PASS (built + DB-verified Sep 27 2026 — see "New deal creation" under Done) |
 | 9 | Drag a deal across pipeline stages + persist | ⬜ NOT TESTED |
 | 10 | Create a task, mark it complete | ⬜ NOT TESTED |
 | 11 | Log an activity, confirm in timeline | ⬜ NOT TESTED |
@@ -691,6 +691,53 @@ verdict must be confirmed against the DB.
 - Test data left in "Nexo Verified Org": lead "Zed Tester 592320" plus tasks
   "Probe task r1 94801" and "E0 baseline 29824" from the reliability probing.
 
+### New deal creation (complete, verified against the DB — Sep 27 2026)
+
+- **UI:** `src/components/common/NewDealModal.tsx` (one shared modal, built from
+  the existing `Modal`/`Input`/`Select`/`Label`, same layout as `ConvertModal`),
+  opened by all three "New deal" buttons: `Pipeline.tsx`, `Dashboard.tsx`,
+  `RecordDetail.tsx` (contact page — prefills that contact and its company). The
+  Pipeline column "+" buttons are still unwired. Fields: name, value, stage
+  (default Discovery — the first pipeline stage; Discovery→Contract offered),
+  expected close date (default +30 days), linked contact (optional), owner
+  (default current user).
+- **Fields the schema requires that weren't in the spec:** `Deal.company` is
+  required, so the modal has a Company field that autofills from the linked
+  contact (editable; required if no contact). `source` is inherited from the
+  linked contact's originating lead when there is one, else `Inbound` (not
+  user-visible — worth a UI field later). `priority` = `medium`; `probability`
+  comes from the stage (same table `moveDeal` uses).
+- **Server:** `createDealAction` in `lib/actions/crm.ts` — `requireAuth()` →
+  `assertClientId` (UUID) → validates name/value (positive int ≤ 1e9)/stage/
+  source/priority/close date → **verifies `ownerId` via `getOwnerById(orgId, …)`
+  and `contactId` via `getContactById(orgId, …)`** (both `{ id, orgId }`-scoped,
+  so another tenant's ids read as "not found") → `createDeal` with the deal and
+  its `created` activity in one nested create (atomic) → `revalidatePath`.
+- **Store:** `addDeal` in `src/store/crm.tsx` — client UUID as the row id,
+  optimistic deal + activity + the linked contact's `openDeals` +1, persisted
+  through `persist()`; on failure it removes the deal/activity, restores
+  `openDeals`, and shows the toast ("Couldn't create the deal, please try
+  again."). The modal closes immediately (unlike New lead, which awaits and shows
+  an inline error, because `persist()` is fire-and-forget).
+
+**Verification (browser + direct Neon queries) — 23/23 checks:**
+1. Pipeline, linked contact "Bob Audit": Create disabled when empty; stage
+   defaults to Discovery; company autofills; modal closes at once; the card shows
+   in Discovery with no page reload. DB: 1 row, UUID id, `orgId`, value 25000,
+   `discovery`/probability 20, `contactId`, `ownerId`, `company`, close date ≈ +30
+   days, one `created deal …` activity in the same org; the contact's deal count
+   2 → 3.
+2. Dashboard button, no contact, typed company, Proposal: DB row `contactId
+   null`, probability 45; shows in the Proposal column on Pipeline.
+3. Contact page button: contact + company prefilled; DB row linked to that
+   contact.
+4. Tenant checks with **real 500s** (request rewritten so the id is not in this
+   org): a foreign `contactId` and a foreign `ownerId` are each rejected by the
+   server; the optimistic card appears, then the toast appears and the card is
+   removed; 0 DB rows for each. Net DB change: exactly +3 deals.
+- Test deals/activities were deleted afterwards (org back to seed state).
+- Not done: a Company entity (still free text); editing a deal after creation.
+
 ### Prisma + PostgreSQL schema (complete)
 
 - 7 models: **Organization** (new), Owner, Lead, Contact, Deal, Task,
@@ -877,16 +924,17 @@ but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
 the browser, Sep 26 audit #5. Adding it requires a UI change in
 `src/screens/`, so it needs explicit sign-off.)
 
-### No create flows for Contact / Deal; no Company entity
+### No Contact create flow; no Company entity
 
-**Lead creation is done** (see "New lead creation" under Done). "New contact"
-and "New deal" buttons (Contacts, Pipeline, Dashboard, RecordDetail) still
-render with no `onClick` — confirmed via git history that they never had one
-(placeholders, not a regression). There are no create server actions or store
-methods for them; `lib/data/*` has `createContact`/`createDeal` but they're
-unused. Wiring them up needs forms/modals in `src/screens/` (a UI change —
-needs sign-off). There's no Company model at all — company is a free-text
-field.
+**Lead and Deal creation are done** (see "New lead creation" / "New deal
+creation" under Done). The "New contact" button (Contacts) still renders with no
+`onClick` — confirmed via git history that it never had one (a placeholder, not a
+regression) — and there's no `createContactAction` / `addContact`; `createContact`
+in `lib/data/contacts.ts` is unused. It needs a form/modal in `src/screens/` (a UI
+change — needs sign-off). Note: New deal's spec assumed Contact creation already
+existed; it doesn't, so a deal can only be linked to a contact that came from a
+lead conversion or the seed. The Pipeline column "+" buttons are also still
+unwired. There's no Company model at all — company is a free-text field.
 
 ### Server actions degrade and stop persisting (dev server)
 
@@ -932,9 +980,9 @@ Champions) have hardcoded counts and are not real saved queries.
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
   done. Follow-up: the "couldn't save" toast is
   done (see "Added: failure toast").
-- ~~New lead creation~~ — done. Decide on (and sign off on the UI changes
-  for) create flows for Contact / Deal, and whether a Company entity is in
-  scope.
+- ~~New lead creation~~ and ~~New deal creation~~ — done. Decide on (and sign
+  off on the UI changes for) a Contact create flow, wiring the Pipeline column
+  "+" buttons, and whether a Company entity is in scope.
 - Delete the duplicate "Alice Audit" / "Bob Audit" seed rows in
   "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).
@@ -966,5 +1014,6 @@ Champions) have hardcoded counts and are not real saved queries.
 | Optimistic UI | Client-generated UUIDs stored as the DB row ids (not counters, not post-hoc swaps) | A counter id (`d1005`) that exists only in the browser makes every follow-up action on that row fail, and a post-hoc swap leaves a window where it still fails. A UUID the server adopts as the primary key makes the optimistic row the real row; Next's ordered action queue guarantees the create lands first. Server validates the id is a UUID. |
 | Optimistic UI | Persist the activity log only after its mutation succeeds; one shared `persist()` helper does run → rollback-on-failure → log | Logging first (the old order) left orphan "moved X to Y" rows in Postgres when the mutation failed. A single helper keeps the revert + activity handling identical across moveDeal / setLeadStatus / toggleTask / addNote instead of four hand-rolled try/catches. |
 | Optimistic UI | Toast lives in `CrmProvider` and is fired only from `persist()`; `convertLead`/`addTask` routed through `persist()` | Keeps the "revert + tell the user" behaviour in one place so a new mutation can't forget it, and avoids touching any screen JSX (UI hands-off policy). `addLead` keeps its inline modal error rather than also toasting. |
+| Create flows | New deal closes its modal immediately and relies on `persist()` rollback + toast, rather than awaiting like New lead | `persist()` is fire-and-forget by design; the user explicitly asked for the `persist()`-based pattern. Trade-off: no inline field errors, but every failure path (including tenant-ownership rejections) reverts and toasts. |
 | Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
 | Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |
