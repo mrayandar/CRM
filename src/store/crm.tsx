@@ -117,25 +117,63 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [owners, currentUser],
   )
 
-  const pushActivity = useCallback(
-    (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => {
-      setActivities((prev) => [
-        {
-          id: nextId('a'),
-          kind,
-          title,
-          body,
-          at: new Date().toISOString(),
-          actorId: currentUser.id,
-          subject,
-        },
-        ...prev,
-      ])
-      startTransition(async () => {
-        await logActivityAction(kind, title, subject, body)
-      })
+  const removeActivity = useCallback(
+    (id: string) => setActivities((prev) => prev.filter((a) => a.id !== id)),
+    [],
+  )
+
+  const addLocalActivity = useCallback(
+    (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string): Activity => {
+      const activity: Activity = {
+        id: nextId('a'),
+        kind,
+        title,
+        body,
+        at: new Date().toISOString(),
+        actorId: currentUser.id,
+        subject,
+      }
+      setActivities((prev) => [activity, ...prev])
+      return activity
     },
     [currentUser.id],
+  )
+
+  /**
+   * Runs a server mutation for an optimistic change. If it fails, `rollback` reverts the local
+   * state and the optimistic activity is dropped. The activity is only persisted *after* the
+   * mutation succeeded, so a failed change never leaves a log entry in the database. Pass a null
+   * `run` for a standalone activity.
+   */
+  const persist = useCallback(
+    (run: (() => Promise<unknown>) | null, rollback: () => void, activity?: Activity) => {
+      startTransition(async () => {
+        if (run) {
+          try {
+            await run()
+          } catch {
+            rollback()
+            if (activity) removeActivity(activity.id)
+            return
+          }
+        }
+        if (activity) {
+          try {
+            await logActivityAction(activity.kind, activity.title, activity.subject, activity.body)
+          } catch {
+            removeActivity(activity.id)
+          }
+        }
+      })
+    },
+    [removeActivity],
+  )
+
+  const pushActivity = useCallback(
+    (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => {
+      persist(null, () => {}, addLocalActivity(kind, title, subject, body))
+    },
+    [addLocalActivity, persist],
   )
 
   const moveDeal = useCallback(
@@ -160,13 +198,22 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           : stage === 'lost'
             ? `marked ${deal.name} as Lost`
             : `moved ${deal.name} to ${DEAL_STAGE_LABEL[stage]}`
-      pushActivity(kind, title, { type: 'deal', id: deal.id, label: deal.name })
+      const activity = addLocalActivity(kind, title, { type: 'deal', id: deal.id, label: deal.name })
 
-      startTransition(async () => {
-        await moveDealAction(dealId, stage)
-      })
+      persist(
+        () => moveDealAction(dealId, stage),
+        () =>
+          setDeals((prev) =>
+            prev.map((d) =>
+              d.id === dealId
+                ? { ...d, stage: deal.stage, probability: deal.probability, updatedAt: deal.updatedAt }
+                : d,
+            ),
+          ),
+        activity,
+      )
     },
-    [deals, pushActivity],
+    [deals, addLocalActivity, persist],
   )
 
   const addLead = useCallback(
@@ -218,26 +265,30 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   const setLeadStatus = useCallback(
     (leadId: string, status: LeadStatus) => {
+      const lead = leads.find((l) => l.id === leadId)
+      if (!lead) return
       setLeads((prev) =>
-        prev.map((lead) =>
-          lead.id === leadId
-            ? { ...lead, status, lastTouchedAt: new Date().toISOString() }
-            : lead,
+        prev.map((l) =>
+          l.id === leadId ? { ...l, status, lastTouchedAt: new Date().toISOString() } : l,
         ),
       )
-      const lead = leads.find((l) => l.id === leadId)
-      if (lead) {
-        pushActivity('stage', `set ${lead.name} to ${status}`, {
-          type: 'lead',
-          id: lead.id,
-          label: lead.name,
-        })
-      }
-      startTransition(async () => {
-        await setLeadStatusAction(leadId, status)
+      const activity = addLocalActivity('stage', `set ${lead.name} to ${status}`, {
+        type: 'lead',
+        id: lead.id,
+        label: lead.name,
       })
+      persist(
+        () => setLeadStatusAction(leadId, status),
+        () =>
+          setLeads((prev) =>
+            prev.map((l) =>
+              l.id === leadId ? { ...l, status: lead.status, lastTouchedAt: lead.lastTouchedAt } : l,
+            ),
+          ),
+        activity,
+      )
     },
-    [leads, pushActivity],
+    [leads, addLocalActivity, persist],
   )
 
   const convertLead = useCallback(
@@ -338,26 +389,20 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   const toggleTask = useCallback(
     (taskId: string) => {
-      let completedTitle: string | null = null
-      let subject: SubjectRef | undefined
-      setTasks((prev) =>
-        prev.map((task) => {
-          if (task.id !== taskId) return task
-          if (!task.done) {
-            completedTitle = task.title
-            subject = task.relatedTo
-          }
-          return { ...task, done: !task.done }
-        }),
-      )
-      if (completedTitle) pushActivity('task', `completed ${completedTitle}`, subject)
-
       const task = tasks.find((t) => t.id === taskId)
-      startTransition(async () => {
-        await toggleTaskAction(taskId, !(task?.done ?? false))
-      })
+      if (!task) return
+      const done = !task.done
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, done } : t)))
+      const activity = done
+        ? addLocalActivity('task', `completed ${task.title}`, task.relatedTo)
+        : undefined
+      persist(
+        () => toggleTaskAction(taskId, done),
+        () => setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, done: task.done } : t))),
+        activity,
+      )
     },
-    [tasks, pushActivity],
+    [tasks, addLocalActivity, persist],
   )
 
   const addTask = useCallback<CrmState['addTask']>(
@@ -389,23 +434,43 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   const addNote = useCallback(
     (subject: SubjectRef, body: string) => {
-      pushActivity('note', `added a note on ${subject.label}`, subject, body)
+      // addNoteAction logs the note activity itself; don't also call logActivityAction (that saved every note twice).
+      const activity = addLocalActivity('note', `added a note on ${subject.label}`, subject, body)
       const now = new Date().toISOString()
-      if (subject.type === 'contact') {
+      const prevContact = subject.type === 'contact' ? contacts.find((c) => c.id === subject.id) : undefined
+      const prevLead = subject.type === 'lead' ? leads.find((l) => l.id === subject.id) : undefined
+      if (prevContact) {
         setContacts((prev) =>
           prev.map((c) => (c.id === subject.id ? { ...c, lastInteractionAt: now } : c)),
         )
       }
-      if (subject.type === 'lead') {
+      if (prevLead) {
         setLeads((prev) =>
           prev.map((l) => (l.id === subject.id ? { ...l, lastTouchedAt: now } : l)),
         )
       }
-      startTransition(async () => {
-        await addNoteAction(subject, body)
-      })
+      persist(
+        () => addNoteAction(subject, body),
+        () => {
+          removeActivity(activity.id)
+          if (prevContact) {
+            setContacts((prev) =>
+              prev.map((c) =>
+                c.id === subject.id ? { ...c, lastInteractionAt: prevContact.lastInteractionAt } : c,
+              ),
+            )
+          }
+          if (prevLead) {
+            setLeads((prev) =>
+              prev.map((l) =>
+                l.id === subject.id ? { ...l, lastTouchedAt: prevLead.lastTouchedAt } : l,
+              ),
+            )
+          }
+        },
+      )
     },
-    [pushActivity],
+    [contacts, leads, addLocalActivity, persist, removeActivity],
   )
 
   const value = useMemo<CrmState>(

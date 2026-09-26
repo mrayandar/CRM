@@ -205,13 +205,60 @@ after the create.
 - This also closes the audit's open question on with-deal convert persistence
   (#5): it does write the Contact, Deal and activity.
 
-**Still not covered (known):** `moveDeal`, `setLeadStatus`, `toggleTask` and
-`pushActivity` still have no rollback/error handling if their action fails
-(the optimistic change stays and the error surfaces as an unhandled rejection).
-`ConvertModal`/`RecordDetail` keep a local `converted` flag that isn't reset
-if a convert fails (it's UI-file state; the deal/contact/lead state itself does
-roll back). Existing rows created before this change keep their cuid ids —
+**Still not covered (known):** `RecordDetail`/`ConvertModal` keep a local
+`converted` flag that isn't reset if a convert fails (it's UI-file state; the
+deal/contact/lead state itself does roll back). The other mutations' rollback is
+covered in the next section. Existing rows created before this change keep their cuid ids —
 nothing to migrate.
+
+## Fixed: optimistic mutations now roll back on failure (Sep 27 2026)
+
+Before, only `addLead`, `convertLead` and `addTask` reverted when their server
+action failed. `moveDeal`, `setLeadStatus`, `toggleTask` and the activity logger
+kept showing an unsaved "success" (and the error surfaced as an unhandled
+rejection). All four now revert, via one shared helper in `src/store/crm.tsx`:
+
+- `persist(run, rollback, activity?)` runs the server action inside the
+  transition; if it throws, `rollback()` reverts exactly the fields that
+  mutation changed (deal `stage/probability/updatedAt`, lead
+  `status/lastTouchedAt`, task `done`, contact/lead touch times) and the
+  optimistic activity is removed.
+- **The activity is now persisted only after the mutation succeeded.**
+  Previously `moveDeal`/`setLeadStatus`/`toggleTask` fired the activity log
+  *before* the mutation, so a failed change still left a "moved X to Y" entry in
+  Postgres. Now: mutation → (on success) log activity; a failed mutation logs
+  nothing. If only the activity log fails, just the activity is dropped.
+- `pushActivity` (the standalone activity logger used by RecordDetail) uses the
+  same path: optimistic entry, removed if the server rejects it.
+- **Bug found and fixed on the way:** `addNote` called `pushActivity` *and*
+  `addNoteAction` (which logs the same activity), so **every note was saved to
+  the database twice**. It now logs once (verified: exactly 1 row).
+
+**Verification — simulated real server failures, checked in the UI and in
+Neon.** A Playwright request interceptor rewrote the record id in each action's
+request body to a bogus id, so the real server threw its genuine "not found" →
+HTTP 500 (no code edits, nothing reached the DB). For each of the four:
+1. The optimistic change appeared in the UI first (so the revert isn't a no-op):
+   card moved to Negotiation / lead badge → Contacted / checkbox ticked / note
+   shown in the timeline.
+2. Server returned 500.
+3. UI reverted: card back in Discovery / badge New / checkbox unchecked / note
+   removed.
+4. Direct DB query: deal still `discovery`, lead still `new`, task `done=false`,
+   0 activity rows for the note — and the total activity count unchanged for the
+   first three (no orphan log entry).
+Success controls (same actions, unmodified): deal → `negotiation` with exactly 1
+`stage` activity; lead → `contacted` with 1 activity; task `done=true` with 1
+`completed…` activity; note saved exactly once. **21/21 checks passed.** Test
+rows were reverted afterwards (Alpha back to discovery/30%, lead back to `new`,
+test task/activities deleted).
+
+**Still not covered:** rollback for a failure *of the activity log alone* only
+drops the activity (the mutation stays, correctly). Drag-and-drop uses the same
+`moveDeal` path but the gesture itself wasn't driven (the card menu was).
+`RecordDetail`'s local `converted` flag still isn't reset after a failed convert
+(UI-file state). Errors are swallowed silently after the revert — there's no
+toast telling the user the change didn't save.
 
 ## Functional audit (Sep 26 2026)
 
@@ -714,8 +761,10 @@ every server action. Because of the gap above, each refresh landed on
 `router.refresh()` calls (and the `useRouter` import) were removed. The
 UI now relies on optimistic state; `revalidatePath` in the actions still
 invalidates the server cache, so the next navigation loads fresh data.
-Trade-off: if an action fails, the UI keeps showing the unsaved optimistic
-change with no error or rollback. Revert once active-org persistence is
+Trade-off (partly resolved Sep 27 2026): if an action failed, the UI kept
+showing the unsaved optimistic change — every optimistic mutation now rolls
+back on failure (see "Fixed: optimistic mutations now roll back"), though the
+user still gets no error message. Revert once active-org persistence is
 fixed, or replace it with proper error handling and rollback.
 
 ### `force_organization_selection` must stay off on the Clerk instance
@@ -836,8 +885,9 @@ Champions) have hardcoded counts and are not real saved queries.
   against the DB, and moving a deal + its activity on a converted deal is
   verified; a drag-and-drop gesture itself, and #10 task completion via
   the row checkbox on pre-existing tasks, are still untested.)
-- Add rollback/error handling to `moveDeal`, `setLeadStatus`, `toggleTask`,
-  `pushActivity` (only `addLead`, `convertLead`, `addTask` have it).
+- ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
+  done. Follow-up: surface a "couldn't save" message to the user when a change
+  is rolled back (needs a UI element — needs sign-off).
 - ~~New lead creation~~ — done. Decide on (and sign off on the UI changes
   for) create flows for Contact / Deal, and whether a Company entity is in
   scope.
@@ -870,5 +920,6 @@ Champions) have hardcoded counts and are not real saved queries.
 | Auth | Disabled Clerk's `force_organization_selection` instead of adopting its task UI | The app already gates every `(app)` route on an active org in `resolveAuth()`, server-side. Clerk's `choose-organization` task was a redundant second gate, and its hosted UI never issued the request that resolves it. Removing the duplicate gate leaves the working, server-enforced one in charge. |
 | Auth | Clerk URL config in code (`clerkMiddleware`/`ClerkProvider`) rather than `NEXT_PUBLIC_CLERK_*_URL` env vars | `.env` is untracked and per-developer; an unset `signInUrl` silently falls back to the hosted Account Portal and reintroduces the redirect loop. Pinning it in code makes the setting reviewable and impossible to forget. |
 | Optimistic UI | Client-generated UUIDs stored as the DB row ids (not counters, not post-hoc swaps) | A counter id (`d1005`) that exists only in the browser makes every follow-up action on that row fail, and a post-hoc swap leaves a window where it still fails. A UUID the server adopts as the primary key makes the optimistic row the real row; Next's ordered action queue guarantees the create lands first. Server validates the id is a UUID. |
+| Optimistic UI | Persist the activity log only after its mutation succeeds; one shared `persist()` helper does run → rollback-on-failure → log | Logging first (the old order) left orphan "moved X to Y" rows in Postgres when the mutation failed. A single helper keeps the revert + activity handling identical across moveDeal / setLeadStatus / toggleTask / addNote instead of four hand-rolled try/catches. |
 | Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
 | Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |
