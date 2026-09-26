@@ -418,8 +418,13 @@ so the dev data follows the new rule.
 
 ## Clerk webhook: registered, fixed and verified end to end (Sep 27 2026)
 
-**Status: WORKING — with one thing you must still do: commit and push the fix**
-(see "Action needed" below).
+**Status: WORKING and DEPLOYED FROM GIT.** The handler fixes, the cursor/popover
+fix and these docs are committed and pushed (`6d005fb`, `8ea2454`, `efd4e7c` on
+`origin/main`). Vercel's production deployment was built from git commit
+`efd4e7c68d13cd27f7d14eaaa09d06c10b4f468b` (recorded by Vercel: `source: git`,
+`gitSource.sha` equal to local `HEAD` and `origin/main`), and was re-verified
+there: a live role change reached Neon, and on the production site every enabled
+button shows a pointer and the account menu opens upward with a working Sign out.
 
 **What was true before (answer to "is it registered?"): no.** Four independent
 checks agreed: Svix (Clerk's webhook backend) had **0 endpoints**; the Vercel `crm`
@@ -489,12 +494,11 @@ Files: `app/api/webhooks/clerk/route.ts`, `lib/data/owners.ts`.
   Riley Hart (mailinator addresses). Remove them from Settings → Team if unwanted.
 
 ### Action needed / caveats
-- ⚠️ **The fix is only in the working tree and in a one-off production deploy
-  made from a clean copy of `origin/main` + the two changed files — it is NOT
-  committed.** The next git-triggered Vercel build will *revert* to the crashing
-  handler unless `app/api/webhooks/clerk/route.ts` and `lib/data/owners.ts` are
-  committed and pushed. (The uncommitted cursor/popover UI fix and PROGRESS.md
-  were deliberately not in that deploy.)
+- ✅ **Committed and pushed** (was the outstanding action item): the handler fix
+  first shipped as a one-off CLI production deploy built from a clean copy of
+  `origin/main` + the two files; it is now in git (`6d005fb`) and the next
+  git-triggered Vercel build contains it (verified — see the status line above).
+  Any *future* CLI deploy must start from a checkout of `main`, not a stale copy.
 - **Not exercised:** `organization.deleted` (destructive; `deleteOrg` removes the
   Organization row but tenant tables have no FK to it, so their rows would be
   orphaned) and `organizationMembership.deleted` isn't subscribed (removing a
@@ -1404,9 +1408,8 @@ on Sep 27 2026 (local `.env` and Vercel Production).
 ### Webhook endpoint — registered (Sep 27 2026)
 
 Registered at `https://crm-amber-eight-81.vercel.app/api/webhooks/clerk` and
-verified end to end; see "Clerk webhook: registered, fixed and verified". The fix
-that makes it work is **uncommitted** — commit and push it, or the next Vercel
-build reverts it.
+verified end to end; see "Clerk webhook: registered, fixed and verified". The
+handler fixes are committed (`6d005fb`) and deployed from git.
 
 ### Frontend types diverge from Prisma types
 
@@ -1520,8 +1523,8 @@ Champions) have hardcoded counts and are not real saved queries.
   and Reports values (trend deltas, target, quota, saved-view counts) with real or
   hidden ones (~~fix "this quarter", set the close date when a deal moves to
   Won~~ — done Sep 27); (3)
-  ~~register the Clerk webhook so invited members get an `Owner`~~ (done Sep 27 —
-  **commit + push the handler fix**); (4) field editing for
+  ~~register the Clerk webhook so invited members get an `Owner`~~ (done Sep 27,
+  committed and deployed); (4) field editing for
   leads/contacts/deals; (5) a "New task" form with due date/priority/assignee.
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
   done. Follow-up: the "couldn't save" toast is
@@ -1532,9 +1535,9 @@ Champions) have hardcoded counts and are not real saved queries.
   "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).
 - ~~Register the Clerk webhook endpoint and test org/member sync~~ — done Sep 27
-  2026. **Still to do: commit and push `route.ts` + `owners.ts`** (see the webhook
-  section), and optionally use Clerk's `orgRole` in `resolveAuth()` so the
-  on-demand Owner gets the right role.
+  2026, committed and deployed from git. Optional follow-up: use Clerk's `orgRole`
+  in `resolveAuth()` so the on-demand Owner gets the right role (see the webhook
+  section's caveats).
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
 - Replace `monthlyPerformance` mock in Dashboard + Reports with real
   closed-won-by-month aggregation queries (pre-onboarding blocker).
