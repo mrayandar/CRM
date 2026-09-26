@@ -416,6 +416,157 @@ so the dev data follows the new rule.
   deal "Meridian Health — Compliance suite" ($27,000, Sep 12) was added, Calloway
   was back-filled.
 
+## Clerk webhook: registered, fixed and verified end to end (Sep 27 2026)
+
+**Status: WORKING — with one thing you must still do: commit and push the fix**
+(see "Action needed" below).
+
+**What was true before (answer to "is it registered?"): no.** Four independent
+checks agreed: Svix (Clerk's webhook backend) had **0 endpoints**; the Vercel `crm`
+project had **no `CLERK_WEBHOOK_SECRET`**; the live route answered
+`500 "Webhook secret not configured"`; and the local `.env` had none. Earlier
+reports that it was set up were wrong.
+
+**Path used: Vercel** (not ngrok). Production URL
+`https://crm-amber-eight-81.vercel.app` (Vercel project `crm`, team
+`rayans-projects-bb024454`, auto-deploys from `mrayandar/CRM` `main`).
+
+### What was done
+1. **Pushed the 11 pending commits** to `origin/main` (fast-forward; secret-scanned
+   first) — Vercel auto-built and deployed them.
+2. **Registered the endpoint** through Clerk's embedded Svix portal (Clerk's own
+   Backend API issues the portal link, so no dashboard login was needed): URL
+   `https://crm-amber-eight-81.vercel.app/api/webhooks/clerk`, endpoint
+   `ep_3JspuSFZu2zElbtF7zizNqkQLBe`, subscribed to exactly
+   `organization.created`, `organization.updated`, `organization.deleted`,
+   `organizationMembership.created`, `organizationMembership.updated`.
+   To do the same by hand: Clerk Dashboard → Configure → Webhooks → Add Endpoint,
+   paste that URL, tick those five events, then copy the *Signing Secret*.
+3. **Signing secret** stored as `CLERK_WEBHOOK_SECRET` in the local `.env`
+   (gitignored) and in Vercel **Production** env vars (never printed or committed);
+   production redeployed so it takes effect. A forged signature is rejected (400).
+
+### It did NOT work at first — three real bugs in the handler
+Registering it exposed them (the handler had never run before):
+1. **Every delivery crashed with `TypeError … reading 'type'`.** In the installed
+   `svix` 2.5.0, `Webhook.verify()` returns `undefined` (it only validates and
+   throws); the code did `event = wh.verify(...)`. Found in Vercel runtime logs.
+   Fix: verify, then `JSON.parse(body)`.
+2. **Roles were always stored as "Member".** Clerk sends `role: "org:admin"` /
+   `"org:member"` (confirmed from real payloads in Svix); the code compared to
+   `'admin'`. Fix: map `org:admin` (and `admin`) → `Admin`.
+3. **Role changes never reached Postgres.** `upsertOwnerFromClerk`'s `update`
+   branch didn't write `role`, so `organizationMembership.updated` was a silent
+   no-op. Fix: it now updates `role` (safe: `resolveAuth()` only calls it when no
+   Owner exists yet).
+Files: `app/api/webhooks/clerk/route.ts`, `lib/data/owners.ts`.
+
+### Verification (real path: Clerk → Svix → Vercel → Neon; Neon queried directly)
+- **New member who never signed in:** a fresh member was added to the org through
+  Clerk's API (`sessions = 0`, `last_sign_in_at = null` — so `resolveAuth()`'s
+  on-demand fallback could not have run). About **3 seconds** later Neon had the
+  **Owner row** (name, email, role `Member`, avatar, `clerkUserId`) — created by
+  the webhook. (API-added rather than an accepted invitation, because accepting
+  requires signing in; the event fired is the same `organizationMembership.created`.)
+- **Role change** (`org:member` → `org:admin` via Clerk): Neon `Owner.role` became
+  `Admin` within ~20 s (was permanently `Member` before fix 2/3).
+- **`organization.updated`:** renaming the org in Clerk changed
+  `Organization.name` in Neon; reverting it restored it. Neon is back to
+  "Nexo Verified Org".
+- **Svix delivery log:** the new events show **Succeeded**; the older deliveries
+  from the crashing build were then re-sent one at a time in their original order
+  and also succeeded (sent in order on purpose: two old `organization.updated`
+  events, rename then revert, could otherwise have landed reversed and left a
+  wrong org name).
+- Also confirmed locally beforehand with validly signed replays of the real
+  payload shapes; the unknown/unsubscribed event type is ignored with 200; a
+  forged signature returns 400.
+- **Back-filled by real events:** Jordan Ellis (added before the webhook existed)
+  got his Owner row via a role toggle. All 4 Clerk members now have an Owner row;
+  Neon roles match Clerk except `nexoverify1` (below).
+- The pending invite `nexo.invitee.18517@mailinator.com` was left untouched.
+- Fixture members in Clerk (kept, all `Member`): Jordan Ellis, Casey Morgan,
+  Riley Hart (mailinator addresses). Remove them from Settings → Team if unwanted.
+
+### Action needed / caveats
+- ⚠️ **The fix is only in the working tree and in a one-off production deploy
+  made from a clean copy of `origin/main` + the two changed files — it is NOT
+  committed.** The next git-triggered Vercel build will *revert* to the crashing
+  handler unless `app/api/webhooks/clerk/route.ts` and `lib/data/owners.ts` are
+  committed and pushed. (The uncommitted cursor/popover UI fix and PROGRESS.md
+  were deliberately not in that deploy.)
+- **Not exercised:** `organization.deleted` (destructive; `deleteOrg` removes the
+  Organization row but tenant tables have no FK to it, so their rows would be
+  orphaned) and `organizationMembership.deleted` isn't subscribed (removing a
+  member leaves their Owner row).
+- **`nexoverify1` shows `Member` in Neon while Clerk says `org:admin`:** the
+  on-demand path in `resolveAuth()` hardcodes `role: 'Member'` (the webhook only
+  fires on *changes*). Small fix: use Clerk's `orgRole` there.
+- Events aren't ordered/idempotent by timestamp: an out-of-order redelivery of an
+  older event can overwrite newer data (compare `updated_at` if this matters).
+- The deployment uses Clerk's **development** instance keys.
+- Svix's portal login link is single-use; mint a new one via
+  `POST /v1/webhooks/svix_url` (Clerk Backend API) each time.
+
+## Fixed: buttons had no pointer cursor; the Sign out menu was off-screen (Sep 27 2026)
+
+### 1. No pointer cursor on buttons
+**Cause (measured, not assumed):** every click target in the app is already a real
+`<button>`, a `NavLink` anchor, or a `Tr` that sets `cursor-pointer` when clickable
+(the four `<span onClick>` hits only call `stopPropagation()` and aren't targets).
+The problem was global: **Tailwind v4's preflight resets buttons to `cursor:
+default`** and `app/globals.css` had no rule restoring it. A computed-style scan of
+9 screens found **145 buttons with `cursor: default`** (primary/secondary/icon
+buttons, the `role="checkbox"` buttons, segmented tabs, the account button); links,
+table rows and selects were already `pointer`, and the 9 draggable deal cards
+intentionally show `grab`.
+
+**Fix:** one rule in the `@layer base` of `app/globals.css` — `button:not(:disabled),
+[role='button']:not([aria-disabled='true']), summary { cursor: pointer }` — so it
+covers the shared `Button`/`IconButton`, `MenuItem`, segmented tabs, checkbox and
+switch buttons, and any future button with no per-component change. No component
+was edited for this. Disabled buttons correctly keep the default cursor.
+
+**Verified:** re-running the scan → **292 pointer targets, 0 `default`, only the 9
+`grab` cards**; real mouse hovers on primary button, secondary button, icon button,
+sidebar link, table row, select, top-bar search and the account button all report
+`pointer`. Also checked the parts a page scan can't see: modal buttons (Cancel, X;
+the *disabled* "Create lead" correctly isn't a pointer), row-action menu items,
+command-palette rows, Settings switches, lead-page tabs, Tasks checkboxes.
+
+### 2. "No way to sign out"
+**A "Sign out" item already existed** — the bottom-left account card opens a menu
+whose last entry calls `useClerk().signOut({ redirectUrl: '/sign-in' })`
+(`Sidebar.tsx` `UserMenu`). It was unusable for two reasons, so I fixed those
+instead of adding a duplicate control:
+- **The menu opened downward from a button at the very bottom of the window**, so
+  the panel (and "Sign out") rendered **below the viewport** (measured: item at
+  y=1032 in a 900px window) — nothing visible happened on click.
+- The account button showed no pointer cursor (fix 1), so it didn't look clickable.
+
+**Fix:** the shared `Popover` (`src/components/ui/Menu.tsx`) is now
+collision-aware: it opens below its trigger as before; if that won't fit it opens
+**above**; if it fits neither way it uses the roomier side and scrolls inside a
+`max-height`. Measured in a layout effect so it never flashes off-screen. This also
+protects every other menu near a screen edge (row-action menus, card menus).
+
+**Verified (real Chrome + Clerk's Backend API):** the account menu now opens upward
+with "Sign out" fully on-screen (y=798–829 of 900), the element at its centre pixel
+is that button, and a **real mouse click** lands on `/sign-in`; Clerk's client has
+no session/user and **Clerk ended the session server-side (active sessions 43 → 42)**;
+`/leads`, `/pipeline`, `/settings` then redirect to `/sign-in` and show no CRM
+data. Popover regression checks: with room it still opens below and doesn't scroll;
+in 520px and 420px-tall windows **all 10 row menus stay fully on-screen** (flipping
+up or scrolling as needed).
+
+**Notes / not changed:**
+- In `next dev` a black **"N" Next.js dev badge overlaps the account avatar** at the
+  bottom-left (dev-only; not in production builds). Hide it with
+  `devIndicators: false` in `next.config.ts` if it's in the way.
+- The other account-menu items ("Profile & preferences", "Notification settings",
+  "Keyboard shortcuts") are dead — they only close the menu.
+- `<UserButton>` wasn't needed; the existing `useClerk().signOut()` works.
+
 ## Functional audit — re-run with real usage (Sep 27 2026)
 
 Full re-run of the 14 flows **as a user would use the app**, in a real Chrome
@@ -453,7 +604,8 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
   page "Email", "Call"; Leads row menu "Log activity", "Send email", "Delete
   lead" (verified nothing is deleted); Leads bulk "Email", "Reassign"; Leads and
   Contacts "Export"; Pipeline card menu "Log activity", "Edit deal"; Pipeline
-  "Customize stages"; Settings Profile/Workspace "Save".
+  "Customize stages"; Settings Profile/Workspace "Save"; account-menu
+  "Profile & preferences" / "Notification settings" / "Keyboard shortcuts".
 
 ### #5 Convert a lead (recheck after the recent fixes)
 Priya Raman → "Northwind Logistics — Fleet analytics" ($48,000, Proposal) and
@@ -547,9 +699,10 @@ activity, sidebar Leads/Tasks badges, and the "Untouched leads" saved-view count
 - **Gaps:** the Team table lists **memberships only — pending invitations are
   invisible** (no list, revoke or resend). Role-change and remove **failures are
   swallowed silently** (`catch {}`), and Remove has **no confirmation**. **New
-  members get no CRM `Owner` row until they sign in** (Clerk webhook still not
-  registered), so they don't appear in any Owner dropdown and can't be assigned
-  leads/deals/tasks (Neon owners: only `nexoverify1`).
+  members get no CRM `Owner` row until they sign in** (Clerk webhook was not
+  registered when this audit ran — **fixed the same day**, see "Clerk webhook:
+  registered, fixed and verified"), so they didn't appear in any Owner dropdown and
+  couldn't be assigned leads/deals/tasks (Neon owners: only `nexoverify1`).
 - Fixtures: a real second member "Jordan Ellis" (Member) was created through
   Clerk to test role changes; a throwaway member used for the Remove test was
   removed and its Clerk user deleted.
@@ -1245,14 +1398,15 @@ reached `resolveAuth()` in the embedded browser.
 ### Clerk keys are configured locally
 
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` are set in
-`.env` (not committed). Sign-in/sign-up render. `CLERK_WEBHOOK_SECRET`
-is still missing, so the webhook handler will reject events.
+`.env` (not committed). Sign-in/sign-up render. `CLERK_WEBHOOK_SECRET` was added
+on Sep 27 2026 (local `.env` and Vercel Production).
 
-### Webhook endpoint not registered
+### Webhook endpoint — registered (Sep 27 2026)
 
-The webhook handler exists at `/api/webhooks/clerk` but it's not registered
-in Clerk's dashboard yet. Until it is, organization and member sync relies
-entirely on the on-demand fallback in `resolveAuth()`.
+Registered at `https://crm-amber-eight-81.vercel.app/api/webhooks/clerk` and
+verified end to end; see "Clerk webhook: registered, fixed and verified". The fix
+that makes it work is **uncommitted** — commit and push it, or the next Vercel
+build reverts it.
 
 ### Frontend types diverge from Prisma types
 
@@ -1307,8 +1461,8 @@ the browser, Sep 26 audit #5. Adding it requires a UI change in
   deal, Customize stages, header "New task", Settings profile/workspace "Save").
 - **Team settings:** pending invitations aren't listed (no revoke/resend); role
   change/remove failures are silent and Remove has no confirmation; new members
-  have no `Owner` row until they sign in (webhook unregistered) so they can't be
-  assigned records.
+  had no `Owner` row until they sign in (webhook was unregistered — fixed Sep 27,
+  see the webhook section) so they couldn't be assigned records.
 - **Search:** the palette doesn't cover email/phone/tasks/activities, and deal
   results open the board, not the deal.
 - **Tasks:** title is the only input (no due date/priority/assignee).
@@ -1366,8 +1520,8 @@ Champions) have hardcoded counts and are not real saved queries.
   and Reports values (trend deltas, target, quota, saved-view counts) with real or
   hidden ones (~~fix "this quarter", set the close date when a deal moves to
   Won~~ — done Sep 27); (3)
-  register the Clerk webhook (and/or create an `Owner` for new members) so
-  invited members can be assigned records; (4) field editing for
+  ~~register the Clerk webhook so invited members get an `Owner`~~ (done Sep 27 —
+  **commit + push the handler fix**); (4) field editing for
   leads/contacts/deals; (5) a "New task" form with due date/priority/assignee.
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
   done. Follow-up: the "couldn't save" toast is
@@ -1377,7 +1531,10 @@ Champions) have hardcoded counts and are not real saved queries.
 - Delete the duplicate "Alice Audit" / "Bob Audit" seed rows in
   "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).
-- Register the Clerk webhook endpoint and test org/member sync.
+- ~~Register the Clerk webhook endpoint and test org/member sync~~ — done Sep 27
+  2026. **Still to do: commit and push `route.ts` + `owners.ts`** (see the webhook
+  section), and optionally use Clerk's `orgRole` in `resolveAuth()` so the
+  on-demand Owner gets the right role.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
 - Replace `monthlyPerformance` mock in Dashboard + Reports with real
   closed-won-by-month aggregation queries (pre-onboarding blocker).
@@ -1404,6 +1561,8 @@ Champions) have hardcoded counts and are not real saved queries.
 | Auth | Clerk URL config in code (`clerkMiddleware`/`ClerkProvider`) rather than `NEXT_PUBLIC_CLERK_*_URL` env vars | `.env` is untracked and per-developer; an unset `signInUrl` silently falls back to the hosted Account Portal and reintroduces the redirect loop. Pinning it in code makes the setting reviewable and impossible to forget. |
 | Optimistic UI | Client-generated UUIDs stored as the DB row ids (not counters, not post-hoc swaps) | A counter id (`d1005`) that exists only in the browser makes every follow-up action on that row fail, and a post-hoc swap leaves a window where it still fails. A UUID the server adopts as the primary key makes the optimistic row the real row; Next's ordered action queue guarantees the create lands first. Server validates the id is a UUID. |
 | Optimistic UI | Persist the activity log only after its mutation succeeds; one shared `persist()` helper does run → rollback-on-failure → log | Logging first (the old order) left orphan "moved X to Y" rows in Postgres when the mutation failed. A single helper keeps the revert + activity handling identical across moveDeal / setLeadStatus / toggleTask / addNote instead of four hand-rolled try/catches. |
+| UI | Cursor fixed with one global `@layer base` rule, not per-component classes | The cause was Tailwind v4's preflight resetting `button` to `cursor: default`; every clickable is already a real `<button>`/`<a>`, so a single rule covers all current and future buttons and keeps disabled ones default. |
+| UI | `Popover` picks its side by measuring (below → above → roomier side + scroll) instead of a fixed `top-full` | A fixed downward menu was rendered off-screen for the bottom-left account menu, hiding the (already working) Sign out. Fixing the shared component fixes every edge-of-screen menu, rather than special-casing one. |
 | Optimistic UI | Toast lives in `CrmProvider` and is fired only from `persist()`; `convertLead`/`addTask` routed through `persist()` | Keeps the "revert + tell the user" behaviour in one place so a new mutation can't forget it, and avoids touching any screen JSX (UI hands-off policy). `addLead` keeps its inline modal error rather than also toasting. |
 | Create flows | New deal closes its modal immediately and relies on `persist()` rollback + toast, rather than awaiting like New lead | `persist()` is fire-and-forget by design; the user explicitly asked for the `persist()`-based pattern. Trade-off: no inline field errors, but every failure path (including tenant-ownership rejections) reverts and toasts. |
 | Create flows | `createContactAction` returns `{ ok: false, error }` for the duplicate-email rejection instead of throwing; the New contact modal awaits and shows it inline | Thrown server-action messages are redacted in production, so a specific message can only reach the UI as a return value. Trade-off: New contact no longer uses the fire-and-forget `persist()`/toast path that New deal does. |
