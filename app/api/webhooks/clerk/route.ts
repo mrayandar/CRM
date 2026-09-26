@@ -1,7 +1,9 @@
 import { headers } from 'next/headers'
+import { clerkClient } from '@clerk/nextjs/server'
 import { Webhook } from 'svix'
 import { upsertOrg, updateOrg, deleteOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { upsertOwnerFromClerk } from '@lib/data/owners'
+import { ownerRoleFromClerk } from '@lib/roles'
 
 interface WebhookEvent {
   type: string
@@ -86,14 +88,28 @@ async function handleOrgCreated(data: Record<string, unknown>) {
   await upsertOrg({ clerkOrgId, name })
 }
 
+/**
+ * Svix retries and replays can deliver an older event after a newer one, so the payload is not a
+ * reliable "latest state". For update events we read the current state from Clerk instead; that makes
+ * a redelivery harmless. Failures other than "not found" throw, so Svix retries the event.
+ */
 async function handleOrgUpdated(data: Record<string, unknown>) {
   const clerkOrgId = data.id as string
-  const name = data.name as string | undefined
-  if (name) {
-    await updateOrg(clerkOrgId, { name }).catch(() => {
-      // Org might not exist yet if created on-demand hasn't run
-    })
+  if (!clerkOrgId) return
+
+  const clerk = await clerkClient()
+  let name: string | undefined
+  try {
+    name = (await clerk.organizations.getOrganization({ organizationId: clerkOrgId })).name
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return // deleted since the event was sent
+    throw err
   }
+  if (!name) return
+
+  await updateOrg(clerkOrgId, { name }).catch(() => {
+    // Org might not exist yet if created on-demand hasn't run
+  })
 }
 
 async function handleOrgDeleted(data: Record<string, unknown>) {
@@ -113,22 +129,22 @@ async function handleMemberCreated(data: Record<string, unknown>) {
   const org = await getOrgByClerkId(clerkOrgId)
   if (!org) return // org not synced yet; on-demand auth will handle it
 
-  const name = [
-    publicUserData?.first_name,
-    publicUserData?.last_name,
-  ].filter(Boolean).join(' ') || (publicUserData?.identifier as string) || 'Team Member'
+  // Current membership from Clerk, not the (possibly stale) payload — see handleOrgUpdated.
+  const clerk = await clerkClient()
+  const memberships = await clerk.users.getOrganizationMembershipList({ userId: clerkUserId, limit: 100 })
+  const current = memberships.data.find((m) => m.organization.id === clerkOrgId)
+  // No longer a member: a stale event must not (re)create their Owner row.
+  if (!current) return
 
-  const email = (publicUserData?.identifier as string) ?? ''
-  // Clerk sends the prefixed key ("org:admin" / "org:member").
-  const clerkRole = data.role as string
-  const role = clerkRole === 'org:admin' || clerkRole === 'admin' ? 'Admin' : 'Member'
-  const avatarUrl = publicUserData?.image_url as string | undefined
+  const person = current.publicUserData
+  const name =
+    [person?.firstName, person?.lastName].filter(Boolean).join(' ') || person?.identifier || 'Team Member'
 
   await upsertOwnerFromClerk(org.id, clerkUserId, {
     name,
-    email,
-    role,
-    avatarUrl: avatarUrl ?? null,
+    email: person?.identifier ?? '',
+    role: ownerRoleFromClerk(current.role),
+    avatarUrl: person?.imageUrl ?? null,
   })
 }
 

@@ -4,6 +4,7 @@ import { auth, clerkClient } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import { upsertOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { getOwnerByClerkUserId, upsertOwnerFromClerk } from '@lib/data/owners'
+import { ownerRoleFromClerk } from '@lib/roles'
 
 /**
  * Resolves the current request's Clerk auth into our internal
@@ -15,7 +16,7 @@ import { getOwnerByClerkUserId, upsertOwnerFromClerk } from '@lib/data/owners'
  * create-org page flow if no Clerk organization is active.
  */
 export async function resolveAuth() {
-  const { userId, orgId: clerkOrgId } = await auth()
+  const { userId, orgId: clerkOrgId, orgRole } = await auth()
 
   if (!userId) redirect('/sign-in')
   if (!clerkOrgId) redirect('/create-org')
@@ -47,7 +48,8 @@ export async function resolveAuth() {
     owner = await upsertOwnerFromClerk(org.id, userId, {
       name,
       email: primaryEmail,
-      role: 'Member',
+      // The session's org role ("org:admin" / "org:member"), not a hardcoded default.
+      role: ownerRoleFromClerk(orgRole),
       avatarUrl: clerkUser.imageUrl,
     })
   }
