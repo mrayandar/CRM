@@ -75,6 +75,8 @@ export interface NewContactInput {
   ownerId: string
 }
 
+export type NewContactResult = { ok: true; id: string } | { ok: false; error: string }
+
 export interface NewDealInput {
   name: string
   company: string
@@ -98,8 +100,12 @@ interface CrmState {
   moveDeal: (dealId: string, stage: DealStage) => void
   /** Adds the lead to local state immediately; resolves once persisted, rejects (after rolling back) if the save fails. */
   addLead: (input: NewLeadInput) => Promise<Lead>
-  /** Adds the contact to local state immediately; rolls back and shows a toast if the save fails. Returns the new contact's id. */
-  addContact: (input: NewContactInput) => string
+  /**
+   * Adds the contact to local state immediately and resolves once it's saved. If it isn't (duplicate
+   * email, or any failure) the optimistic contact is rolled back and the result carries the message
+   * for the modal to display.
+   */
+  addContact: (input: NewContactInput) => Promise<NewContactResult>
   /** Adds the deal to local state immediately; rolls back and shows a toast if the save fails. Returns the new deal's id. */
   addDeal: (input: NewDealInput) => string
   setLeadStatus: (leadId: string, status: LeadStatus) => void
@@ -123,6 +129,7 @@ const nextId = (prefix: string) => `${prefix}${++sequence}`
 const newEntityId = () => crypto.randomUUID()
 
 const SAVE_FAILED = "Couldn't save change, please try again."
+const DUPLICATE_EMAIL = "A contact with this email already exists"
 const LOG_FAILED = "Change saved, but couldn't add it to the activity log."
 
 interface CrmProviderProps {
@@ -318,7 +325,13 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   )
 
   const addContact = useCallback(
-    (input: NewContactInput): string => {
+    async (input: NewContactInput): Promise<NewContactResult> => {
+      const email = input.email.trim()
+      // Instant feedback from local state; the server re-checks (other users / stale clients).
+      if (email && contacts.some((c) => c.email.toLowerCase() === email.toLowerCase())) {
+        return { ok: false, error: DUPLICATE_EMAIL }
+      }
+
       const id = newEntityId()
       const now = new Date().toISOString()
       const name = input.name.trim()
@@ -327,7 +340,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         name,
         title: input.title.trim(),
         company: input.company.trim(),
-        email: input.email.trim(),
+        email,
         phone: input.phone.trim(),
         ownerId: input.ownerId,
         tags: [],
@@ -350,28 +363,32 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
       setContacts((prev) => [contact, ...prev])
       setActivities((prev) => [activity, ...prev])
+      const rollback = () => {
+        setContacts((prev) => prev.filter((c) => c.id !== id))
+        setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+      }
 
-      persist(
-        () =>
-          createContactAction({
-            id,
-            name,
-            title: contact.title,
-            company: contact.company,
-            email: contact.email,
-            phone: contact.phone,
-            ownerId: input.ownerId,
-          }),
-        () => {
-          setContacts((prev) => prev.filter((c) => c.id !== id))
-          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
-        },
-        undefined,
-        "Couldn't create the contact, please try again.",
-      )
-      return id
+      try {
+        const result = await createContactAction({
+          id,
+          name,
+          title: contact.title,
+          company: contact.company,
+          email: contact.email,
+          phone: contact.phone,
+          ownerId: input.ownerId,
+        })
+        if (!result.ok) {
+          rollback()
+          return { ok: false, error: result.error }
+        }
+        return { ok: true, id }
+      } catch {
+        rollback()
+        return { ok: false, error: "Couldn't create the contact, please try again." }
+      }
     },
-    [currentUser.id, persist],
+    [contacts, currentUser.id],
   )
 
   const addDeal = useCallback(

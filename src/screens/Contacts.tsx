@@ -287,30 +287,39 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [ownerId, setOwnerId] = useState(currentUser.id)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid
+  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid && !saving
 
-  const submit = () => {
+  const submit = async () => {
     if (!canSubmit) return
-    addContact({ name, title, company, email, phone, ownerId })
-    onClose()
+    setSaving(true)
+    setError(null)
+    const result = await addContact({ name, title, company, email, phone, ownerId })
+    if (result.ok) {
+      onClose()
+    } else {
+      setError(result.error)
+      setSaving(false)
+    }
   }
 
   return (
     <Modal
       open
-      onClose={onClose}
+      onClose={saving ? () => {} : onClose}
       width={560}
       title="New contact"
       description="Add a person you already work with. To track a prospect, create a lead instead."
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
           <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-            Create contact
+            {saving ? 'Creating…' : 'Create contact'}
           </Button>
         </>
       }
@@ -319,7 +328,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          submit()
+          void submit()
         }}
       >
         <div className="grid gap-4 sm:grid-cols-2">
@@ -345,9 +354,12 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
             <Input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value)
+                setError(null)
+              }}
               placeholder="jane@acme.com"
-              aria-invalid={emailInvalid}
+              aria-invalid={emailInvalid || error !== null}
             />
           </Field>
           <Field label="Phone">
@@ -355,6 +367,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
           </Field>
         </div>
         {emailInvalid && <p className="text-[11.5px] leading-4 text-negative">Enter a valid email address.</p>}
+        {error && <p className="text-[11.5px] leading-4 text-negative">{error}</p>}
       </form>
     </Modal>
   )

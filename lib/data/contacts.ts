@@ -43,6 +43,14 @@ export function getContactById(orgId: string, id: string) {
   })
 }
 
+/** Case-insensitive lookup within one org; used to reject duplicate emails. */
+export function getContactByEmail(orgId: string, email: string) {
+  return prisma.contact.findFirst({
+    where: { orgId, email: { equals: email, mode: 'insensitive' } },
+    select: { id: true },
+  })
+}
+
 export function createContact(
   orgId: string,
   data: Omit<Prisma.ContactCreateInput, 'orgId'>,

@@ -8,7 +8,11 @@ import {
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
 import { getOwnerById } from '@lib/data/owners'
-import { createContact as dbCreateContact, getContactById } from '@lib/data/contacts'
+import {
+  createContact as dbCreateContact,
+  getContactByEmail,
+  getContactById,
+} from '@lib/data/contacts'
 import { createDeal as dbCreateDeal, moveDealToStage as dbMoveDealToStage } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
@@ -139,6 +143,12 @@ export async function createContactAction(input: {
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
 
+  // Email is optional; only a non-blank email can collide. Returned (not thrown) because it's an
+  // expected validation failure — thrown messages are redacted from the client in production.
+  if (email && (await getContactByEmail(orgId, email))) {
+    return { ok: false as const, error: 'A contact with this email already exists' }
+  }
+
   const contact = await dbCreateContact(orgId, {
     id: input.id,
     name,
@@ -164,7 +174,7 @@ export async function createContactAction(input: {
     },
   })
   revalidatePath('/', 'layout')
-  return { id: contact.id }
+  return { ok: true as const, id: contact.id }
 }
 
 export async function createDealAction(input: {

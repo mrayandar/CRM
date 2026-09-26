@@ -744,9 +744,11 @@ verdict must be confirmed against the DB.
   `NewContactModal` (local to the screen, like `NewLeadModal`; built from the
   existing `Modal`/`Input`/`Select`/`Label` and the same local `Field` pattern).
   Fields: name, title, company, owner (default current user), email, phone.
-  Name and company are required; email is format-checked when present. The modal
-  closes immediately (optimistic) — no inline server errors; failures toast.
-  Company is a plain string (no Company model).
+  Name and company are required; email is format-checked when present. Company is
+  a plain string (no Company model). *Updated Sep 27 2026:* the modal no longer
+  closes instantly — it awaits the result, stays open on failure and shows the
+  message inline (the same pattern as New lead), so it can display the
+  duplicate-email error.
 - **Server:** `createContactAction` in `lib/actions/crm.ts` — `requireAuth()` →
   `assertClientId` (UUID) → trims/validates every field (required name/company,
   lengths, email format) → **verifies `ownerId` via `getOwnerById(orgId, …)`** →
@@ -755,9 +757,11 @@ verdict must be confirmed against the DB.
   fields the form doesn't collect use fixed defaults: `lifecycle Prospect`,
   `tags []`, `location ''`, `accountValue 0`, no origin lead.
 - **Store:** `addContact` in `src/store/crm.tsx` — client UUID as the row id,
-  optimistic contact + activity, persisted via `persist()`; on failure the
-  contact and activity are removed and the toast says "Couldn't create the
-  contact, please try again."
+  optimistic contact + activity; returns `Promise<{ ok: true, id } | { ok: false,
+  error }>`. On any failure the contact and activity are rolled back and the error
+  string goes to the modal. (It no longer goes through `persist()`/the toast,
+  because the modal has to await the outcome — an accepted deviation from the
+  Deal flow.)
 
 **Verification (browser + direct Neon queries) — 17/17 checks:**
 1. Create is disabled when empty and when the email is invalid. Creating "NC
@@ -773,8 +777,38 @@ verdict must be confirmed against the DB.
    optimistic row appears, then the toast appears and the row is removed; 0 DB
    rows. Net DB change: exactly +1 contact.
 - Test rows were deleted afterwards (org back to seed state).
-- Not done: editing a contact, tags/lifecycle/location fields in the form,
-  duplicate detection (same email can be created twice).
+- Not done: editing a contact, tags/lifecycle/location fields in the form.
+
+**Duplicate-email rejection (Sep 27 2026):**
+- `createContactAction` looks up the email **within the caller's org,
+  case-insensitively** (`getContactByEmail` in `lib/data/contacts.ts`, Prisma
+  `mode: 'insensitive'`) before creating; on a hit it **returns**
+  `{ ok: false, error: "A contact with this email already exists" }` instead of
+  creating. It's returned rather than thrown because thrown messages are redacted
+  from the client in production builds. A **blank email is skipped** (it's
+  optional), so any number of contacts can have no email. Success now returns
+  `{ ok: true, id }`.
+- `addContact` also checks local state first for instant feedback with no
+  optimistic flicker or server call; the server check remains the authority
+  (other users, stale clients).
+- The modal shows the error under the form, keeps the entered values, and clears
+  the error when the email is edited.
+- **Verified against Neon (16/16):** (a) create "Dup.N@Example.com" → 1 row;
+  (b) same email upper-cased on a fresh page → modal stays open with the message,
+  **0 server requests**, no ghost row, DB unchanged; (c) same email lower-cased
+  from a **stale second page** (loaded before the first contact existed, so only
+  the server can catch it) → action returned 200 with the message, modal stayed
+  open, optimistic row rolled back, DB still exactly 1 row and no activity for
+  the rejected contact; editing the email clears the error and a different email
+  then succeeds; (d) two contacts with a blank email both created; (e) the same
+  email existing in **another org** is not a duplicate here (one row in each org).
+  Test rows deleted afterwards.
+- **Known limits:** it's a check-then-create, not a database constraint, so two
+  simultaneous creates with the same email could both pass (a
+  `@@unique([orgId, email])` isn't viable as-is: blank emails would collide and
+  the seed data already has repeated emails). Pre-existing duplicates aren't
+  cleaned up or blocked from editing. Only the *contact* email is checked —
+  leads with the same email are not.
 
 ### Prisma + PostgreSQL schema (complete)
 
@@ -1051,5 +1085,6 @@ Champions) have hardcoded counts and are not real saved queries.
 | Optimistic UI | Persist the activity log only after its mutation succeeds; one shared `persist()` helper does run → rollback-on-failure → log | Logging first (the old order) left orphan "moved X to Y" rows in Postgres when the mutation failed. A single helper keeps the revert + activity handling identical across moveDeal / setLeadStatus / toggleTask / addNote instead of four hand-rolled try/catches. |
 | Optimistic UI | Toast lives in `CrmProvider` and is fired only from `persist()`; `convertLead`/`addTask` routed through `persist()` | Keeps the "revert + tell the user" behaviour in one place so a new mutation can't forget it, and avoids touching any screen JSX (UI hands-off policy). `addLead` keeps its inline modal error rather than also toasting. |
 | Create flows | New deal closes its modal immediately and relies on `persist()` rollback + toast, rather than awaiting like New lead | `persist()` is fire-and-forget by design; the user explicitly asked for the `persist()`-based pattern. Trade-off: no inline field errors, but every failure path (including tenant-ownership rejections) reverts and toasts. |
+| Create flows | `createContactAction` returns `{ ok: false, error }` for the duplicate-email rejection instead of throwing; the New contact modal awaits and shows it inline | Thrown server-action messages are redacted in production, so a specific message can only reach the UI as a return value. Trade-off: New contact no longer uses the fire-and-forget `persist()`/toast path that New deal does. |
 | Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
 | Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |
