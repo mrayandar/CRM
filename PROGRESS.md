@@ -4,11 +4,141 @@
 
 ## Status
 
-**Phase: Auth + real data.** Clerk authentication and multi-tenancy are
-integrated. The UI reads from the database via `lib/data/*` (through the
-CrmProvider's server-loaded initial data). Mutations call server actions
-that persist to PostgreSQL. Mock data is no longer the primary data source
-(though the mock dataset files still exist for reference).
+**Phase: Auth + real data — BLOCKED by a Clerk organization-selection bug.**
+Clerk authentication and multi-tenancy are integrated, and the data layer
+(Prisma/Postgres, `lib/data/*`, server actions) is real and previously
+verified working. However, as of the Sep 26 2026 functional audit below,
+**no browser session can currently get past the "choose an organization"
+step**, which means the app itself (`/`) is unreachable through the UI
+right now for any newly-created or newly-selected organization. This is
+the top-priority item to fix. See "Functional audit (Sep 26 2026)" for
+full details.
+
+## Functional audit (Sep 26 2026)
+
+Full click-through audit of the 14 core flows, tested live in a real
+browser against the running dev server and Neon database (not a code
+read-through). Verdicts are PASS, FAIL (exact error included), NOT
+TESTABLE (blocked by an earlier failure), or NOT YET BUILT.
+
+| # | Flow | Verdict |
+|---|------|---------|
+| 1 | Sign up / sign in | ⚠️ PARTIAL — see below |
+| 2 | Create an organization | ❌ FAIL |
+| 3 | Create a lead | 🚫 NOT TESTABLE (blocked by #2) |
+| 4 | Edit a lead | 🚫 NOT TESTABLE (blocked by #2) |
+| 5 | Convert a lead (contact-only) | 🚫 NOT TESTABLE (blocked by #2) |
+| 6 | Create a contact directly | 🚫 NOT TESTABLE (blocked by #2) |
+| 7 | Create a company | 🚫 NOT TESTABLE (blocked by #2) |
+| 8 | Create a deal | 🚫 NOT TESTABLE (blocked by #2) |
+| 9 | Drag a deal across pipeline stages + persist | 🚫 NOT TESTABLE (blocked by #2) |
+| 10 | Create a task, mark it complete | 🚫 NOT TESTABLE (blocked by #2) |
+| 11 | Log an activity, confirm in timeline | 🚫 NOT TESTABLE (blocked by #2) |
+| 12 | Global search | 🚫 NOT TESTABLE (blocked by #2) |
+| 13 | Dashboard — real vs. mock metrics | 🚫 NOT TESTABLE (blocked by #2) |
+| 14 | Team settings — invite user, change role | 🚫 NOT TESTABLE (blocked by #2) |
+
+### 1. Sign up / sign in — ⚠️ PARTIAL
+
+- **Sign-up mechanics: PASS.** Created a fresh account
+  (`nexoaudit_test@mailinator.com`) via `/sign-up` with email + password.
+  Email verification code was retrieved from the real Mailinator public
+  inbox and entered successfully. Clerk accepted the account with no
+  errors.
+- **Sign-in mechanics: PASS.** Signed out and signed back in with the
+  same email/password via `/sign-in` with no errors.
+- **Post-auth org resolution: FAIL.** Immediately after sign-up (and
+  again after sign-in), Clerk presents a "Choose an organization" task
+  screen. Selecting *any* organization — a pre-existing one or a newly
+  created one — triggers an infinite redirect loop and the browser never
+  reaches the app (see #2 for full detail). So while the credential
+  mechanics of sign-up/sign-in work, **no session created via
+  email/password in this environment can currently reach the CRM.**
+
+### 2. Create an organization — ❌ FAIL
+
+**Exact reproduction:**
+1. Sign up or sign in at `/sign-up` or `/sign-in`.
+2. Clerk presents "Choose an organization" (either at Clerk's hosted
+   `https://superb-cowbird-9296.accounts.dev/sign-in/tasks/choose-organization`
+   or our embedded `/sign-in/tasks/choose-organization`).
+3. Click any existing org, or "Create new organization" → name it → submit.
+4. The browser redirects to `https://superb-cowbird-9296.accounts.dev/sign-in/tasks/choose-organization?redirect_url=...`
+   with the `redirect_url` query param wrapping the *previous* URL
+   (URL-encoded), then redirects back to our embedded route with the same
+   pattern, then back out to `accounts.dev` again — looping indefinitely.
+   Example of the nesting after two hops:
+   ```
+   https://superb-cowbird-9296.accounts.dev/sign-in/tasks/choose-organization
+     ?redirect_url=http%3A%2F%2Flocalhost%3A3000%2Fsign-in%2Ftasks%2Fchoose-organization
+       %3Fsign_in_fallback_redirect_url%3Dhttp%3A%2F%2Flocalhost%3A3000%2F
+   ```
+5. The browser never reaches `http://localhost:3000/`. No JS console
+   error is thrown — Clerk's hosted task UI simply keeps redirecting.
+
+**Reproduced 4+ times**, independently, across:
+- Selecting a pre-existing, never-activated org ("Nexo Audit Org") right
+  after sign-up.
+- Navigating directly to `/` mid-loop — still redirects back into the loop.
+- Signing in (a different entry path than sign-up) and reaching the
+  embedded task screen, then selecting the same org.
+- Creating a brand-new org ("Nexo Fresh Org") instead of selecting an
+  existing one.
+
+**Confirmed via direct DB query** that neither "Nexo Audit Org" nor
+"Nexo Fresh Org" was ever written to the `Organization` table — proving
+`resolveAuth()` never runs, because the session never reaches an actual
+app route.
+
+**Root-cause investigation:**
+- Ruled out: missing `DATABASE_URL`/migrations (already fixed, confirmed
+  working via a prior successful Google-OAuth session — see below).
+- Ruled out: our `middleware.ts` — `/sign-in(.*)` and `/sign-up(.*)` are
+  fully public; `auth.protect()` is never invoked on them, so our
+  middleware is not the source of the redirect.
+- **Attempted fix:** added explicit `fallbackRedirectUrl="/"` and
+  `signInUrl`/`signUpUrl` props to `<SignIn>`/`<SignUp>` in
+  `app/sign-in/[[...sign-in]]/page.tsx` and
+  `app/sign-up/[[...sign-up]]/page.tsx` (previously neither component had
+  any redirect/routing props set, which was a real gap regardless). This
+  **did not fix the loop** — after retrying end-to-end, the loop still
+  occurs, and critically it occurs on Clerk's *hosted* `accounts.dev`
+  domain, before the browser ever reaches our app or our React tree at
+  all. That confirms this is not fixable from `<SignIn>`/`<SignUp>` props
+  in our code; the loop originates in Clerk's own org-selection
+  task-resolution logic (hosted-UI ↔ embedded-UI handoff), most likely
+  tied to a Clerk Dashboard-side configuration (e.g. organization
+  settings, allowed redirect origins, or the "Personal accounts" /
+  "Require organization" setting). The props change is being kept because
+  it's a correctness improvement regardless (explicit redirect targets
+  instead of relying on unset defaults), but it does not close this bug.
+- **Important asymmetry:** one account (`mrayandar123@gmail.com`, via
+  Google OAuth, in an earlier session before this audit) *did* successfully
+  create an Organization + Owner row — confirmed via direct query:
+  ```
+  Organization: cmuemqi9n0000f8wcq60yvwvw ("Muhammad Rayan's Organization")
+  Owner:        cmuemqklh0001f8wcmyfqzfus (mrayandar123@gmail.com)
+  ```
+  This proves `resolveAuth()`, the Prisma schema, and the on-demand
+  Organization/Owner sync all work correctly *when a session reaches the
+  app*. The bug is specifically in the browser's ability to get past the
+  Clerk org-selection task in **this current environment** — attempting to
+  re-verify by signing in as that same Google account was not completed in
+  this audit because it requires the real Google account password/2FA,
+  which isn't available to the agent; this is flagged as the fastest next
+  diagnostic step for a human to try (see "Next up").
+
+### 3–14. All remaining flows — 🚫 NOT TESTABLE (blocked by #2)
+
+Every flow from "Create a lead" through "Team settings" requires an
+authenticated session with a resolved `orgId` to reach any `(app)` route.
+Since no session in this audit could get past org-selection, these could
+not be exercised in the browser and are **not** given a PASS — they are
+explicitly unverified, regardless of how the underlying code reads. This
+includes the Dashboard mock-data question (#13) and Team settings (#14),
+both of which have real, wired implementations in code (see "Done" below)
+but neither of which has been re-confirmed working end-to-end via the
+browser since the redirect loop appeared.
 
 ## Done
 
@@ -39,7 +169,10 @@ that persist to PostgreSQL. Mock data is no longer the primary data source
 - `middleware.ts` — protects all routes except `/sign-in`, `/sign-up`, and
   `/api/webhooks`. Unauthenticated users redirect to sign-in.
 - Sign-in at `/sign-in`, sign-up at `/sign-up` using Clerk's prebuilt
-  components.
+  components, now with explicit `fallbackRedirectUrl`/`signInUrl`/
+  `signUpUrl` props (added during the Sep 26 2026 audit — see "Known
+  gaps" for the redirect-loop bug this did *not* fix, but is still a
+  correctness improvement over the previous unset defaults).
 - `/create-org` page for users who haven't selected an organization yet.
 - `<ClerkProvider>` wraps the entire app in `app/layout.tsx`.
 
@@ -199,6 +332,31 @@ still imported by Dashboard and Reports only for the chart array above.
 
 ## Known gaps / explicitly deferred
 
+### 🔴 BLOCKER — Clerk organization-selection infinite redirect loop
+
+Discovered during the Sep 26 2026 functional audit (see above for full
+repro steps and evidence). After sign-up or sign-in, Clerk's "Choose an
+organization" task screen redirects in an infinite loop between our
+embedded `/sign-in/tasks/choose-organization` route and Clerk's hosted
+`accounts.dev` domain, and the browser never reaches the actual app.
+Confirmed via direct DB query that the Organization row is never created
+for any session stuck in this loop. This currently blocks **every**
+downstream flow (leads, contacts, deals, pipeline, tasks, activities,
+search, dashboard, team settings) from being verified — or used — via the
+browser at all for new/selected organizations.
+
+Ruled out: missing env vars/migrations, our own `middleware.ts`. Attempted
+fix (explicit `fallbackRedirectUrl`/`signInUrl`/`signUpUrl` props on
+`<SignIn>`/`<SignUp>`) did not resolve it — the loop happens on Clerk's
+hosted domain before the request ever reaches our app. Most likely a
+Clerk Dashboard-side configuration issue (organization/redirect settings)
+rather than something fixable purely in this repo. One account
+(`mrayandar123@gmail.com`, via Google OAuth) is known to have successfully
+resolved an org in an earlier session — re-testing with that account would
+help confirm whether this is provider-specific (email/password vs. OAuth)
+or universal, but requires real account credentials not available to the
+agent. **This is now the single highest-priority item to fix.**
+
 ### Initial Prisma migration is applied
 
 `prisma/migrations/20260923211426_init` is in the repo and has been
@@ -280,10 +438,21 @@ Champions) have hardcoded counts and are not real saved queries.
 
 ## Next up
 
-No specific task queued — waiting for direction. Likely candidates:
-
-- Finish Clerk org-selection → `resolveAuth()` and confirm Organization
-  + Owner rows in Neon (handshake stalled in the last browser check).
+- **Fix the Clerk organization-selection redirect loop (top priority —
+  blocks everything else).** Suggested next diagnostic steps:
+  - In the Clerk Dashboard, check Organizations settings (is "Require
+    organization" / personal-account settings consistent with what the
+    app expects?) and the allowed redirect origins / paths list for
+    `http://localhost:3000`.
+  - Try signing in as `mrayandar123@gmail.com` via Google OAuth (the one
+    account known to have worked before) to see if the loop is specific
+    to email/password sessions or universal — this needs a human with the
+    real credentials, the agent could not complete it.
+  - Check Clerk's dashboard/session logs for the affected session IDs for
+    a more specific error than "infinite redirect."
+- Once unblocked, re-run audit items #3–14 (lead/contact/company/deal
+  CRUD, pipeline drag persistence, tasks, activity timeline, global
+  search, dashboard metrics, team settings) for real verdicts.
 - Seed initial CRM data for a new org (optional).
 - Register the Clerk webhook endpoint and test org/member sync.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
