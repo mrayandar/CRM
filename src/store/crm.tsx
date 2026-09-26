@@ -27,6 +27,7 @@ import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
   createDealAction,
+  createContactAction,
   moveDealAction,
   setLeadStatusAction,
   convertLeadAction,
@@ -65,6 +66,15 @@ export interface NewLeadInput {
   notes?: string
 }
 
+export interface NewContactInput {
+  name: string
+  email: string
+  phone: string
+  company: string
+  title: string
+  ownerId: string
+}
+
 export interface NewDealInput {
   name: string
   company: string
@@ -88,6 +98,8 @@ interface CrmState {
   moveDeal: (dealId: string, stage: DealStage) => void
   /** Adds the lead to local state immediately; resolves once persisted, rejects (after rolling back) if the save fails. */
   addLead: (input: NewLeadInput) => Promise<Lead>
+  /** Adds the contact to local state immediately; rolls back and shows a toast if the save fails. Returns the new contact's id. */
+  addContact: (input: NewContactInput) => string
   /** Adds the deal to local state immediately; rolls back and shows a toast if the save fails. Returns the new deal's id. */
   addDeal: (input: NewDealInput) => string
   setLeadStatus: (leadId: string, status: LeadStatus) => void
@@ -303,6 +315,63 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
     },
     [currentUser.id],
+  )
+
+  const addContact = useCallback(
+    (input: NewContactInput): string => {
+      const id = newEntityId()
+      const now = new Date().toISOString()
+      const name = input.name.trim()
+      const contact: Contact = {
+        id,
+        name,
+        title: input.title.trim(),
+        company: input.company.trim(),
+        email: input.email.trim(),
+        phone: input.phone.trim(),
+        ownerId: input.ownerId,
+        tags: [],
+        lifecycle: 'Prospect',
+        location: '',
+        lastInteractionAt: now,
+        createdAt: now,
+        openDeals: 0,
+        accountValue: 0,
+      }
+      // Written to Postgres in the same nested create as the contact (see createContactAction).
+      const activity: Activity = {
+        id: nextId('a'),
+        kind: 'created',
+        title: `created contact ${name}`,
+        at: now,
+        actorId: currentUser.id,
+        subject: { type: 'contact', id, label: name },
+      }
+
+      setContacts((prev) => [contact, ...prev])
+      setActivities((prev) => [activity, ...prev])
+
+      persist(
+        () =>
+          createContactAction({
+            id,
+            name,
+            title: contact.title,
+            company: contact.company,
+            email: contact.email,
+            phone: contact.phone,
+            ownerId: input.ownerId,
+          }),
+        () => {
+          setContacts((prev) => prev.filter((c) => c.id !== id))
+          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+        },
+        undefined,
+        "Couldn't create the contact, please try again.",
+      )
+      return id
+    },
+    [currentUser.id, persist],
   )
 
   const addDeal = useCallback(
@@ -603,6 +672,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ownerById,
       moveDeal,
       addLead,
+      addContact,
       addDeal,
       setLeadStatus,
       convertLead,
@@ -622,6 +692,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ownerById,
       moveDeal,
       addLead,
+      addContact,
       addDeal,
       setLeadStatus,
       convertLead,

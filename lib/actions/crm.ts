@@ -8,7 +8,7 @@ import {
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
 import { getOwnerById } from '@lib/data/owners'
-import { getContactById } from '@lib/data/contacts'
+import { createContact as dbCreateContact, getContactById } from '@lib/data/contacts'
 import { createDeal as dbCreateDeal, moveDealToStage as dbMoveDealToStage } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
@@ -110,6 +110,61 @@ export async function createLeadAction(input: {
   })
   revalidatePath('/', 'layout')
   return { id: lead.id, createdAt: lead.createdAt.toISOString() }
+}
+
+export async function createContactAction(input: {
+  id: string
+  name: string
+  email: string
+  phone: string
+  company: string
+  title: string
+  ownerId: string
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.id)
+
+  const name = input.name.trim()
+  const company = input.company.trim()
+  const title = input.title.trim()
+  const email = input.email.trim()
+  const phone = input.phone.trim()
+  if (!name || name.length > 200) throw new Error('Name is required')
+  if (!company || company.length > 200) throw new Error('Company is required')
+  if (title.length > 200) throw new Error('Title is too long')
+  if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
+  if (phone.length > 60) throw new Error('Invalid phone')
+
+  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+
+  const contact = await dbCreateContact(orgId, {
+    id: input.id,
+    name,
+    title,
+    company,
+    email,
+    phone,
+    location: '',
+    tags: [],
+    lifecycle: 'Prospect',
+    owner: { connect: { id: owner.id } },
+    activities: {
+      create: [
+        {
+          orgId,
+          kind: 'created',
+          title: `created contact ${name}`,
+          actor: { connect: { id: actorId } },
+          subjectType: 'contact',
+          subjectLabel: name,
+        },
+      ],
+    },
+  })
+  revalidatePath('/', 'layout')
+  return { id: contact.id }
 }
 
 export async function createDealAction(input: {

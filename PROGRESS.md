@@ -323,7 +323,7 @@ TESTABLE (blocked by an earlier failure), or NOT YET BUILT.
 | 3 | Create a lead | ✅ PASS (built + DB-verified Sep 26 2026, after the audit — see "New lead creation" under Done) |
 | 4 | Edit a lead | ⚠️ PASS (status only) — persisted, but bounced user to `/create-org` |
 | 5 | Convert a lead (contact-only) | 🚧 NOT YET BUILT (UI) — with-deal convert unverified in DB |
-| 6 | Create a contact directly | 🚧 NOT YET BUILT |
+| 6 | Create a contact directly | ✅ PASS (built + DB-verified Sep 27 2026 — see "New contact creation" under Done) |
 | 7 | Create a company | 🚧 NOT YET BUILT (no Company entity exists) |
 | 8 | Create a deal | ✅ PASS (built + DB-verified Sep 27 2026 — see "New deal creation" under Done) |
 | 9 | Drag a deal across pipeline stages + persist | ⬜ NOT TESTED |
@@ -738,6 +738,44 @@ verdict must be confirmed against the DB.
 - Test deals/activities were deleted afterwards (org back to seed state).
 - Not done: a Company entity (still free text); editing a deal after creation.
 
+### New contact creation (complete, verified against the DB — Sep 27 2026)
+
+- **UI:** the "New contact" button in `src/screens/Contacts.tsx` opens a
+  `NewContactModal` (local to the screen, like `NewLeadModal`; built from the
+  existing `Modal`/`Input`/`Select`/`Label` and the same local `Field` pattern).
+  Fields: name, title, company, owner (default current user), email, phone.
+  Name and company are required; email is format-checked when present. The modal
+  closes immediately (optimistic) — no inline server errors; failures toast.
+  Company is a plain string (no Company model).
+- **Server:** `createContactAction` in `lib/actions/crm.ts` — `requireAuth()` →
+  `assertClientId` (UUID) → trims/validates every field (required name/company,
+  lengths, email format) → **verifies `ownerId` via `getOwnerById(orgId, …)`** →
+  `createContact` in `lib/data/contacts.ts` with the contact and its `created`
+  activity in one nested create (atomic) → `revalidatePath`. Schema-required
+  fields the form doesn't collect use fixed defaults: `lifecycle Prospect`,
+  `tags []`, `location ''`, `accountValue 0`, no origin lead.
+- **Store:** `addContact` in `src/store/crm.tsx` — client UUID as the row id,
+  optimistic contact + activity, persisted via `persist()`; on failure the
+  contact and activity are removed and the toast says "Couldn't create the
+  contact, please try again."
+
+**Verification (browser + direct Neon queries) — 17/17 checks:**
+1. Create is disabled when empty and when the email is invalid. Creating "NC
+   Person": modal closes at once, the contact shows in the list with no page
+   reload (window marker survived).
+2. DB: exactly 1 row, UUID id, correct `orgId`, all typed fields, owner = current
+   user, `Prospect`, no tags/origin lead, plus one `created contact …` activity
+   in the same org linked to the contact.
+3. Integration: after in-app navigation the new contact is already in the New
+   deal modal's contact dropdown (no reload), autofills the company, and a deal
+   created against it persisted with `contactId` = the new contact.
+4. Tenant check with a **real 500** (owner id rewritten to one not in the org):
+   optimistic row appears, then the toast appears and the row is removed; 0 DB
+   rows. Net DB change: exactly +1 contact.
+- Test rows were deleted afterwards (org back to seed state).
+- Not done: editing a contact, tags/lifecycle/location fields in the form,
+  duplicate detection (same email can be created twice).
+
 ### Prisma + PostgreSQL schema (complete)
 
 - 7 models: **Organization** (new), Owner, Lead, Contact, Deal, Task,
@@ -924,17 +962,15 @@ but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
 the browser, Sep 26 audit #5. Adding it requires a UI change in
 `src/screens/`, so it needs explicit sign-off.)
 
-### No Contact create flow; no Company entity
+### No Company entity; Pipeline column "+" buttons unwired
 
-**Lead and Deal creation are done** (see "New lead creation" / "New deal
-creation" under Done). The "New contact" button (Contacts) still renders with no
-`onClick` — confirmed via git history that it never had one (a placeholder, not a
-regression) — and there's no `createContactAction` / `addContact`; `createContact`
-in `lib/data/contacts.ts` is unused. It needs a form/modal in `src/screens/` (a UI
-change — needs sign-off). Note: New deal's spec assumed Contact creation already
-existed; it doesn't, so a deal can only be linked to a contact that came from a
-lead conversion or the seed. The Pipeline column "+" buttons are also still
-unwired. There's no Company model at all — company is a free-text field.
+**Lead, Deal and Contact creation are all done** (see "New lead / New deal /
+New contact creation" under Done). The Pipeline column "+" ("Add deal to
+<stage>") buttons are still unwired placeholders. There's no Company model at
+all — company is a free-text string on Lead/Contact/Deal, so nothing prevents
+"Acme" and "Acme Inc." from being treated as different companies. Contacts and
+deals can't be edited after creation (only lead status changes, deal stage moves
+and task/note actions persist).
 
 ### Server actions degrade and stop persisting (dev server)
 
@@ -980,9 +1016,9 @@ Champions) have hardcoded counts and are not real saved queries.
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
   done. Follow-up: the "couldn't save" toast is
   done (see "Added: failure toast").
-- ~~New lead creation~~ and ~~New deal creation~~ — done. Decide on (and sign
-  off on the UI changes for) a Contact create flow, wiring the Pipeline column
-  "+" buttons, and whether a Company entity is in scope.
+- ~~New lead / New deal / New contact creation~~ — done. Decide on (and sign
+  off on the UI changes for) wiring the Pipeline column "+" buttons, editing
+  existing leads/contacts/deals, and whether a Company entity is in scope.
 - Delete the duplicate "Alice Audit" / "Bob Audit" seed rows in
   "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).

@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from '@/lib/router-compat'
 import {
   Building2,
@@ -16,7 +16,8 @@ import { Card } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
 import { Badge, Tag, type Tone } from '@/components/ui/Badge'
 import { Avatar, CompanyMark } from '@/components/ui/Avatar'
-import { SearchInput, Segmented, Select } from '@/components/ui/Field'
+import { Input, Label, SearchInput, Segmented, Select } from '@/components/ui/Field'
+import { Modal } from '@/components/ui/Modal'
 import { MenuDivider, MenuItem, Popover } from '@/components/ui/Menu'
 import { EmptyState } from '@/components/ui/Display'
 import { GroupRow, Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
@@ -40,6 +41,7 @@ export function Contacts() {
   const [params, setParams] = useSearchParams()
 
   const tagFilter = params.get('tag')
+  const [newContactOpen, setNewContactOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [owner, setOwner] = useState('all')
   const [lifecycle, setLifecycle] = useState('all')
@@ -95,7 +97,12 @@ export function Contacts() {
           <Button variant="secondary" size="sm" icon={<Download size={14} />}>
             Export
           </Button>
-          <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus size={14} />}
+            onClick={() => setNewContactOpen(true)}
+          >
             New contact
           </Button>
         </>
@@ -266,7 +273,99 @@ export function Contacts() {
           )}
         </Card>
       </div>
+
+      {newContactOpen && <NewContactModal onClose={() => setNewContactOpen(false)} />}
     </PageShell>
+  )
+}
+
+function NewContactModal({ onClose }: { onClose: () => void }) {
+  const { addContact, owners, currentUser } = useCrm()
+  const [name, setName] = useState('')
+  const [title, setTitle] = useState('')
+  const [company, setCompany] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [ownerId, setOwnerId] = useState(currentUser.id)
+
+  const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid
+
+  const submit = () => {
+    if (!canSubmit) return
+    addContact({ name, title, company, email, phone, ownerId })
+    onClose()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      width={560}
+      title="New contact"
+      description="Add a person you already work with. To track a prospect, create a lead instead."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            Create contact
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit()
+        }}
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Full name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Cooper" autoFocus />
+          </Field>
+          <Field label="Title">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="VP of Operations" />
+          </Field>
+          <Field label="Company">
+            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Inc." />
+          </Field>
+          <Field label="Owner">
+            <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name} · {o.role}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Email">
+            <Input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="jane@acme.com"
+              aria-invalid={emailInvalid}
+            />
+          </Field>
+          <Field label="Phone">
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 010 0199" />
+          </Field>
+        </div>
+        {emailInvalid && <p className="text-[11.5px] leading-4 text-negative">Enter a valid email address.</p>}
+      </form>
+    </Modal>
+  )
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      {children}
+    </div>
   )
 }
 
