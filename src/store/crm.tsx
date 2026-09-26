@@ -23,6 +23,7 @@ import type {
   Task,
 } from '@/data/types'
 import { DEAL_STAGE_LABEL } from '@/data/types'
+import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
   moveDealAction,
@@ -95,6 +96,9 @@ let sequence = 1000
 const nextId = (prefix: string) => `${prefix}${++sequence}`
 const newEntityId = () => crypto.randomUUID()
 
+const SAVE_FAILED = "Couldn't save change, please try again."
+const LOG_FAILED = "Change saved, but couldn't add it to the activity log."
+
 interface CrmProviderProps {
   children: ReactNode
   initialData: CrmInitialData
@@ -111,6 +115,22 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [activities, setActivities] = useState<Activity[]>(initialData.activities)
   const [owners] = useState<Owner[]>(initialData.owners)
   const [currentUser] = useState<Owner>(initialData.currentUser)
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+
+  const dismissToast = useCallback(
+    (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)),
+    [],
+  )
+
+  const notifyError = useCallback(
+    (message: string) => {
+      const id = newEntityId()
+      // A burst of identical failures shows one toast, not a stack.
+      setToasts((prev) => [...prev.filter((t) => t.message !== message), { id, message }].slice(-3))
+      window.setTimeout(() => dismissToast(id), 6000)
+    },
+    [dismissToast],
+  )
 
   const ownerById = useCallback(
     (id: string) => owners.find((o) => o.id === id) ?? currentUser,
@@ -141,12 +161,17 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   /**
    * Runs a server mutation for an optimistic change. If it fails, `rollback` reverts the local
-   * state and the optimistic activity is dropped. The activity is only persisted *after* the
-   * mutation succeeded, so a failed change never leaves a log entry in the database. Pass a null
-   * `run` for a standalone activity.
+   * state, the optimistic activity is dropped and the user is told via a toast. The activity is
+   * only persisted *after* the mutation succeeded, so a failed change never leaves a log entry in
+   * the database. Pass a null `run` for a standalone activity.
    */
   const persist = useCallback(
-    (run: (() => Promise<unknown>) | null, rollback: () => void, activity?: Activity) => {
+    (
+      run: (() => Promise<unknown>) | null,
+      rollback: () => void,
+      activity?: Activity,
+      failureMessage = SAVE_FAILED,
+    ) => {
       startTransition(async () => {
         if (run) {
           try {
@@ -154,6 +179,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           } catch {
             rollback()
             if (activity) removeActivity(activity.id)
+            notifyError(failureMessage)
             return
           }
         }
@@ -162,11 +188,13 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
             await logActivityAction(activity.kind, activity.title, activity.subject, activity.body)
           } catch {
             removeActivity(activity.id)
+            // Only the activity-log write failed; the change itself was saved.
+            notifyError(run ? LOG_FAILED : failureMessage)
           }
         }
       })
     },
-    [removeActivity],
+    [removeActivity, notifyError],
   )
 
   const pushActivity = useCallback(
@@ -357,9 +385,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       )
       setActivities((prev) => [activity, ...prev])
 
-      startTransition(async () => {
-        try {
-          await convertLeadAction(leadId, {
+      persist(
+        () =>
+          convertLeadAction(leadId, {
             ownerId: input.ownerId,
             contactId,
             dealId: dealId ?? undefined,
@@ -372,19 +400,21 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
                   priority: input.deal.priority,
                 }
               : undefined,
-          })
-        } catch {
+          }),
+        () => {
           // Nothing was written: drop the rows that never existed and restore the lead.
           setContacts((prev) => prev.filter((c) => c.id !== contactId))
           if (dealId) setDeals((prev) => prev.filter((d) => d.id !== dealId))
           setActivities((prev) => prev.filter((a) => a.id !== activity.id))
           setLeads((prev) => prev.map((l) => (l.id === leadId ? lead : l)))
-        }
-      })
+        },
+        undefined,
+        "Couldn't convert the lead, please try again.",
+      )
 
       return { contactId, dealId }
     },
-    [leads, currentUser.id],
+    [leads, currentUser.id, persist],
   )
 
   const toggleTask = useCallback(
@@ -421,15 +451,14 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         },
         ...prev,
       ])
-      startTransition(async () => {
-        try {
-          await addTaskAction({ id, title, dueDate, priority, subject })
-        } catch {
-          setTasks((prev) => prev.filter((t) => t.id !== id))
-        }
-      })
+      persist(
+        () => addTaskAction({ id, title, dueDate, priority, subject }),
+        () => setTasks((prev) => prev.filter((t) => t.id !== id)),
+        undefined,
+        "Couldn't add the task, please try again.",
+      )
     },
-    [currentUser.id],
+    [currentUser.id, persist],
   )
 
   const addNote = useCallback(
@@ -512,7 +541,12 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     ],
   )
 
-  return <CrmContext.Provider value={value}>{children}</CrmContext.Provider>
+  return (
+    <CrmContext.Provider value={value}>
+      {children}
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+    </CrmContext.Provider>
+  )
 }
 
 const STAGE_PROBABILITY: Record<DealStage, number> = {

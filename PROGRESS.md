@@ -257,8 +257,52 @@ test task/activities deleted).
 drops the activity (the mutation stays, correctly). Drag-and-drop uses the same
 `moveDeal` path but the gesture itself wasn't driven (the card menu was).
 `RecordDetail`'s local `converted` flag still isn't reset after a failed convert
-(UI-file state). Errors are swallowed silently after the revert — there's no
-toast telling the user the change didn't save.
+(UI-file state). (A failure toast now tells the user — see the next section.)
+
+## Added: failure toast when an optimistic change is rolled back (Sep 27 2026)
+
+When a server action fails and the store reverts the optimistic change, the
+user now sees a toast (previously the revert was silent).
+
+- **Component:** `src/components/ui/Toast.tsx` (`ToastViewport`). There was no
+  existing toast/notification pattern in the app, so it's minimal and built only
+  from existing tokens: `bg-surface`, `border-line`, `shadow-pop`,
+  `rounded-panel`, the `text-negative` alert icon, the existing
+  `animate-slide-in`, and `IconButton` for dismiss. Fixed bottom-right (clear of
+  the sidebar), `role="alert"` inside an `aria-live` region.
+- **Wiring:** `CrmProvider` owns the toast state and renders `<ToastViewport>`,
+  so **no screen files were touched**. Toasts auto-dismiss after 6 s, can be
+  dismissed manually, identical messages collapse into one, max 3 stacked.
+- **Fires from the shared `persist()` helper**, so it covers moveDeal,
+  setLeadStatus, toggleTask, addNote and pushActivity ("Couldn't save change,
+  please try again."). `convertLead` and `addTask` were moved onto `persist()`
+  too (they had hand-rolled try/catch), with their own messages ("Couldn't
+  convert the lead, …" / "Couldn't add the task, …"). If only the activity-log
+  write fails after the change itself saved, the message says so ("Change saved,
+  but couldn't add it to the activity log.") instead of implying it was
+  reverted. `persist()` is now the only place a server mutation is awaited.
+- **`addLead` is intentionally not toasted:** its modal already shows an inline
+  error and stays open; a toast would double up.
+
+**Verification (forced real 500s — same interceptor technique as above: the
+record id in each action request rewritten to a bogus one, so the real server
+throws; for `addTask` the UUID was replaced with a non-UUID so
+`assertClientId` rejects it):** for all six paths the optimistic change showed
+first, then the toast appeared with the right text alongside the visual revert
+(card back in Discovery, badge back to New, checkbox unchecked, note gone,
+added task row gone, lead status back), and direct DB queries showed no change
+and no orphan activity. Toast dismiss button and 6 s auto-dismiss verified.
+Success controls (convert → +1 contact/+1 deal/+1 activity; add task persisted)
+showed no toast. 26/29 checks on the first run, then 7/7 on a rerun of just the convert paths — the
+first-run convert failures were test-design issues (Next queues the Pipeline
+navigation behind the in-flight action, so the page arrived after the 6 s toast
+had expired; and Next's own route announcer is also a `role="alert"`, which my
+"no toast" assertion counted), not product bugs. Test rows were reverted.
+
+**Known limits:** the toast has no retry action (just the message). If a user
+navigates away and back, in-flight failures that resolve later still toast (the
+provider persists across routes, which is intended). `RecordDetail`'s local
+`converted` flag still isn't reset after a failed convert.
 
 ## Functional audit (Sep 26 2026)
 
@@ -764,7 +808,7 @@ invalidates the server cache, so the next navigation loads fresh data.
 Trade-off (partly resolved Sep 27 2026): if an action failed, the UI kept
 showing the unsaved optimistic change — every optimistic mutation now rolls
 back on failure (see "Fixed: optimistic mutations now roll back"), though the
-user still gets no error message. Revert once active-org persistence is
+user now also gets a toast — see "Added: failure toast". Revert once active-org persistence is
 fixed, or replace it with proper error handling and rollback.
 
 ### `force_organization_selection` must stay off on the Clerk instance
@@ -886,8 +930,8 @@ Champions) have hardcoded counts and are not real saved queries.
   verified; a drag-and-drop gesture itself, and #10 task completion via
   the row checkbox on pre-existing tasks, are still untested.)
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
-  done. Follow-up: surface a "couldn't save" message to the user when a change
-  is rolled back (needs a UI element — needs sign-off).
+  done. Follow-up: the "couldn't save" toast is
+  done (see "Added: failure toast").
 - ~~New lead creation~~ — done. Decide on (and sign off on the UI changes
   for) create flows for Contact / Deal, and whether a Company entity is in
   scope.
@@ -921,5 +965,6 @@ Champions) have hardcoded counts and are not real saved queries.
 | Auth | Clerk URL config in code (`clerkMiddleware`/`ClerkProvider`) rather than `NEXT_PUBLIC_CLERK_*_URL` env vars | `.env` is untracked and per-developer; an unset `signInUrl` silently falls back to the hosted Account Portal and reintroduces the redirect loop. Pinning it in code makes the setting reviewable and impossible to forget. |
 | Optimistic UI | Client-generated UUIDs stored as the DB row ids (not counters, not post-hoc swaps) | A counter id (`d1005`) that exists only in the browser makes every follow-up action on that row fail, and a post-hoc swap leaves a window where it still fails. A UUID the server adopts as the primary key makes the optimistic row the real row; Next's ordered action queue guarantees the create lands first. Server validates the id is a UUID. |
 | Optimistic UI | Persist the activity log only after its mutation succeeds; one shared `persist()` helper does run → rollback-on-failure → log | Logging first (the old order) left orphan "moved X to Y" rows in Postgres when the mutation failed. A single helper keeps the revert + activity handling identical across moveDeal / setLeadStatus / toggleTask / addNote instead of four hand-rolled try/catches. |
+| Optimistic UI | Toast lives in `CrmProvider` and is fired only from `persist()`; `convertLead`/`addTask` routed through `persist()` | Keeps the "revert + tell the user" behaviour in one place so a new mutation can't forget it, and avoids touching any screen JSX (UI hands-off policy). `addLead` keeps its inline modal error rather than also toasting. |
 | Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
 | Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |
