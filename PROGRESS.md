@@ -4,15 +4,140 @@
 
 ## Status
 
-**Phase: Auth + real data — BLOCKED by a Clerk organization-selection bug.**
-Clerk authentication and multi-tenancy are integrated, and the data layer
-(Prisma/Postgres, `lib/data/*`, server actions) is real and previously
-verified working. However, as of the Sep 26 2026 functional audit below,
-**no browser session can currently get past the "choose an organization"
-step**, which means the app itself (`/`) is unreachable through the UI
-right now for any newly-created or newly-selected organization. This is
-the top-priority item to fix. See "Functional audit (Sep 26 2026)" for
-full details.
+**Phase: Auth + real data — auth flow now working end to end.** Clerk
+authentication and multi-tenancy are integrated, the data layer
+(Prisma/Postgres, `lib/data/*`, server actions) is real, and the
+organization-selection redirect loop that blocked the whole app has been
+root-caused and fixed (see "Fixed: Clerk org-selection redirect loop"
+below). Verified in a real browser: fresh sign-up → email verification →
+create organization → select organization → the actual dashboard, plus
+sign-out → sign-in → select org → dashboard. `Organization` and `Owner`
+rows are created correctly in Postgres by `resolveAuth()`.
+
+Audit items #3–14 (lead/contact/deal/task CRUD, pipeline drag persistence,
+activity timeline, search, dashboard metrics, team settings) are now
+**unblocked but still unverified** — they have not been exercised in a
+browser yet.
+
+## Fixed: Clerk org-selection redirect loop (Sep 26 2026)
+
+The bug: after sign-up or sign-in, Clerk showed "Choose an organization";
+selecting any org (existing or new) sent the browser into an infinite
+redirect loop and never reached the app.
+
+### Observed redirect sequence (captured in the browser)
+
+```
+localhost:3000/sign-in/tasks/choose-organization   (org clicked)
+  -> localhost:3000/                               (Clerk navigates to fallback)
+  -> [middleware auth.protect() sees sessionStatus === "pending"]
+  -> superb-cowbird-9296.accounts.dev/sign-in/tasks?redirect_url=localhost:3000/...
+  -> back to localhost:3000/sign-in/tasks/choose-organization
+  -> ... loop, with redirect_url nesting one level deeper each hop
+```
+
+### Root cause
+
+Four compounding defects, not one:
+
+**1. `signInUrl` / `signUpUrl` were never configured** — absent from `.env`,
+from `<ClerkProvider>`, and from `clerkMiddleware`. `createRedirect` in
+`@clerk/backend` falls back to the hosted Account Portal origin when
+`signInUrl` is unset, and appends `/tasks` for a pending session:
+
+```js
+const targetUrl = signInUrl || accountsSignInUrl;   // -> *.accounts.dev
+if (hasPendingStatus) return redirectToTasks(targetUrl, { returnBackUrl });
+```
+
+So every redirect for a pending session left our origin entirely.
+
+**2. `auth.protect()` treats a pending-task session as unauthenticated.**
+From `@clerk/nextjs/dist/esm/server/protect.js`:
+
+```js
+if (authObject.sessionStatus === "pending") {
+  return handleUnauthenticated();   // -> redirectToSignIn()
+}
+```
+
+`middleware.ts` blanket-protected everything except `/sign-in`, `/sign-up`
+and `/api/webhooks`, so both `/` and `/create-org` fed pending sessions
+into defect 1. The Account Portal then redirected back to `redirect_url`,
+the middleware bounced it straight back out, and the two sides ping-ponged
+forever. **This is why the middleware was the trigger — not through
+`auth().orgId`, but through `auth.protect()` rejecting `"pending"`.**
+
+**3. Routing-mode mismatch.** `<SignIn>`/`<SignUp>` had no `routing`/`path`
+props, so Clerk rendered task sub-routes with **hash** routing
+(`/sign-in#/tasks/choose-organization`) while the middleware's redirect
+target was the **path** `/sign-in/tasks`. Each convention redirected to the
+other's URL.
+
+**4. The real blocker underneath: `force_organization_selection: true` on
+the Clerk instance.** That setting mints a `choose-organization` session
+task, and Clerk's task UI never issued the request that would resolve it.
+Proven two ways — resource timing after clicking an org showed only a token
+mint and no session `touch`, and querying the Frontend API directly
+returned:
+
+```json
+{ "status": "pending",
+  "tasks": [{ "key": "choose-organization" }],
+  "last_active_organization_id": null }
+```
+
+Calling the endpoint by hand, `POST /v1/client/sessions/<sid>/touch` with
+`active_organization_id`, immediately returned `"status": "active"` with the
+org set. The server was always willing; Clerk's hosted task UI was the
+broken link.
+
+Critically, this task is a **redundant second gate**. The app already
+enforces org membership server-side in `resolveAuth()`, which redirects to
+`/create-org` on every `(app)` route — a stronger guarantee than a
+client-side task. Two competing org-selection mechanisms *were* the
+conflict, which is what question 3 was pointing at.
+
+**Also real (question 2):** an explicit after-select URL was required and
+entirely missing. `<CreateOrganization>` had no `skipInvitationScreen`, so
+after creating an org Clerk parked the user on an invite step without ever
+activating it — `resolveAuth()` then sent them back to `/create-org`
+indefinitely. And no `<OrganizationList>` existed at all, so a user with
+memberships but no *active* org had no way to select one.
+
+### The fix
+
+| File / target | Change |
+|---|---|
+| `middleware.ts` | Explicit `signInUrl: '/sign-in'`, `signUpUrl: '/sign-up'` on `clerkMiddleware`; added `/create-org(.*)` to the unprotected matcher so pending sessions aren't bounced out of the page meant to resolve them |
+| `app/layout.tsx` | `<ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up">` so client-side task URLs stay on our origin |
+| `app/sign-in/[[...sign-in]]/page.tsx` | `routing="path"`, `path="/sign-in"`, `signUpUrl`, `fallbackRedirectUrl="/"` |
+| `app/sign-up/[[...sign-up]]/page.tsx` | `routing="path"`, `path="/sign-up"`, `signInUrl`, `fallbackRedirectUrl="/"` |
+| `app/create-org/page.tsx` | `<OrganizationList hidePersonal afterSelectOrganizationUrl="/" afterCreateOrganizationUrl="/">` when the user has memberships; otherwise `<CreateOrganization skipInvitationScreen afterCreateOrganizationUrl="/">` |
+| Clerk instance config | `force_organization_selection: false` via `scripts/clerk-org-settings.js` (Backend API) |
+
+`scripts/clerk-org-settings.js` is committed because that instance setting
+is otherwise invisible to the repo — it can read the current settings and
+re-apply the fix on a new Clerk instance.
+
+Note the middleware/provider config is set **in code**, not via
+`NEXT_PUBLIC_CLERK_*_URL` env vars. `.env` only had the publishable and
+secret keys; pinning these in code means the fix doesn't depend on
+per-developer env setup.
+
+### Verified end to end in a real browser
+
+1. Fresh sign-up (`nexoverify1@mailinator.com`) → email code → **PASS**
+2. Redirected to `/create-org`, created "Nexo Verified Org" → **PASS**
+3. Selected the org → landed on the real dashboard at `/` with the org in
+   the sidebar → **PASS**
+4. Signed out, signed back in, selected org → dashboard → **PASS**
+5. Confirmed in Postgres by direct query:
+   ```
+   Organization cmui9z4s60005f8g8w9tchde5  org_3JrXKqe266Pfd5lgMo4O9A5wAQz  "Nexo Verified Org"
+   Owner        cmui9z7g40006f8g8kyykna7t  nexoverify1@mailinator.com
+   ```
+   Also confirmed for "Nexo Audit Org" once its session was activated.
 
 ## Functional audit (Sep 26 2026)
 
@@ -21,22 +146,26 @@ browser against the running dev server and Neon database (not a code
 read-through). Verdicts are PASS, FAIL (exact error included), NOT
 TESTABLE (blocked by an earlier failure), or NOT YET BUILT.
 
+> **Items 1 and 2 were subsequently fixed** — see "Fixed: Clerk
+> org-selection redirect loop" above. Items 3–14 are unblocked but have
+> not been re-tested yet, so they remain unverified.
+
 | # | Flow | Verdict |
 |---|------|---------|
-| 1 | Sign up / sign in | ⚠️ PARTIAL — see below |
-| 2 | Create an organization | ❌ FAIL |
-| 3 | Create a lead | 🚫 NOT TESTABLE (blocked by #2) |
-| 4 | Edit a lead | 🚫 NOT TESTABLE (blocked by #2) |
-| 5 | Convert a lead (contact-only) | 🚫 NOT TESTABLE (blocked by #2) |
-| 6 | Create a contact directly | 🚫 NOT TESTABLE (blocked by #2) |
-| 7 | Create a company | 🚫 NOT TESTABLE (blocked by #2) |
-| 8 | Create a deal | 🚫 NOT TESTABLE (blocked by #2) |
-| 9 | Drag a deal across pipeline stages + persist | 🚫 NOT TESTABLE (blocked by #2) |
-| 10 | Create a task, mark it complete | 🚫 NOT TESTABLE (blocked by #2) |
-| 11 | Log an activity, confirm in timeline | 🚫 NOT TESTABLE (blocked by #2) |
-| 12 | Global search | 🚫 NOT TESTABLE (blocked by #2) |
-| 13 | Dashboard — real vs. mock metrics | 🚫 NOT TESTABLE (blocked by #2) |
-| 14 | Team settings — invite user, change role | 🚫 NOT TESTABLE (blocked by #2) |
+| 1 | Sign up / sign in | ✅ PASS (was PARTIAL — fixed) |
+| 2 | Create an organization | ✅ PASS (was FAIL — fixed) |
+| 3 | Create a lead | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 4 | Edit a lead | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 5 | Convert a lead (contact-only) | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 6 | Create a contact directly | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 7 | Create a company | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 8 | Create a deal | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 9 | Drag a deal across pipeline stages + persist | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 10 | Create a task, mark it complete | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 11 | Log an activity, confirm in timeline | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 12 | Global search | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 13 | Dashboard — real vs. mock metrics | ⬜ UNVERIFIED (unblocked, not yet tested) |
+| 14 | Team settings — invite user, change role | ⬜ UNVERIFIED (unblocked, not yet tested) |
 
 ### 1. Sign up / sign in — ⚠️ PARTIAL
 
@@ -166,13 +295,14 @@ browser since the redirect loop appeared.
 ### Clerk authentication (complete)
 
 - **`@clerk/nextjs`** installed and wired.
-- `middleware.ts` — protects all routes except `/sign-in`, `/sign-up`, and
-  `/api/webhooks`. Unauthenticated users redirect to sign-in.
+- `middleware.ts` — protects all routes except `/sign-in`, `/sign-up`,
+  `/create-org`, and `/api/webhooks`. Unauthenticated users redirect to
+  sign-in. `signInUrl`/`signUpUrl` are pinned so Clerk never falls back to
+  the hosted Account Portal origin.
 - Sign-in at `/sign-in`, sign-up at `/sign-up` using Clerk's prebuilt
-  components, now with explicit `fallbackRedirectUrl`/`signInUrl`/
-  `signUpUrl` props (added during the Sep 26 2026 audit — see "Known
-  gaps" for the redirect-loop bug this did *not* fix, but is still a
-  correctness improvement over the previous unset defaults).
+  components, with explicit `routing="path"` + `path` + `fallbackRedirectUrl`
+  + cross-links. The routing mode is load-bearing, not cosmetic — see
+  "Fixed: Clerk org-selection redirect loop".
 - `/create-org` page for users who haven't selected an organization yet.
 - `<ClerkProvider>` wraps the entire app in `app/layout.tsx`.
 
@@ -332,30 +462,21 @@ still imported by Dashboard and Reports only for the chart array above.
 
 ## Known gaps / explicitly deferred
 
-### 🔴 BLOCKER — Clerk organization-selection infinite redirect loop
+### Active org is not restored on sign-in
 
-Discovered during the Sep 26 2026 functional audit (see above for full
-repro steps and evidence). After sign-up or sign-in, Clerk's "Choose an
-organization" task screen redirects in an infinite loop between our
-embedded `/sign-in/tasks/choose-organization` route and Clerk's hosted
-`accounts.dev` domain, and the browser never reaches the actual app.
-Confirmed via direct DB query that the Organization row is never created
-for any session stuck in this loop. This currently blocks **every**
-downstream flow (leads, contacts, deals, pipeline, tasks, activities,
-search, dashboard, team settings) from being verified — or used — via the
-browser at all for new/selected organizations.
+Signing in produces an `active` session with `activeOrg: null`, so
+`resolveAuth()` sends the user to `/create-org` to pick their org on every
+fresh sign-in, even when they belong to exactly one. Functional but an
+extra click. Worth revisiting — either persist/restore the last active org,
+or auto-activate when the user has exactly one membership.
 
-Ruled out: missing env vars/migrations, our own `middleware.ts`. Attempted
-fix (explicit `fallbackRedirectUrl`/`signInUrl`/`signUpUrl` props on
-`<SignIn>`/`<SignUp>`) did not resolve it — the loop happens on Clerk's
-hosted domain before the request ever reaches our app. Most likely a
-Clerk Dashboard-side configuration issue (organization/redirect settings)
-rather than something fixable purely in this repo. One account
-(`mrayandar123@gmail.com`, via Google OAuth) is known to have successfully
-resolved an org in an earlier session — re-testing with that account would
-help confirm whether this is provider-specific (email/password vs. OAuth)
-or universal, but requires real account credentials not available to the
-agent. **This is now the single highest-priority item to fix.**
+### `force_organization_selection` must stay off on the Clerk instance
+
+The org-selection redirect loop fix depends on
+`force_organization_selection: false` for the Clerk instance (see the fix
+section above). If someone re-enables it in the Clerk Dashboard, or a new
+Clerk instance is provisioned with it on, the loop returns. Re-apply with
+`node scripts/clerk-org-settings.js --disable-force-selection`.
 
 ### Initial Prisma migration is applied
 
@@ -438,21 +559,11 @@ Champions) have hardcoded counts and are not real saved queries.
 
 ## Next up
 
-- **Fix the Clerk organization-selection redirect loop (top priority —
-  blocks everything else).** Suggested next diagnostic steps:
-  - In the Clerk Dashboard, check Organizations settings (is "Require
-    organization" / personal-account settings consistent with what the
-    app expects?) and the allowed redirect origins / paths list for
-    `http://localhost:3000`.
-  - Try signing in as `mrayandar123@gmail.com` via Google OAuth (the one
-    account known to have worked before) to see if the loop is specific
-    to email/password sessions or universal — this needs a human with the
-    real credentials, the agent could not complete it.
-  - Check Clerk's dashboard/session logs for the affected session IDs for
-    a more specific error than "infinite redirect."
-- Once unblocked, re-run audit items #3–14 (lead/contact/company/deal
-  CRUD, pipeline drag persistence, tasks, activity timeline, global
-  search, dashboard metrics, team settings) for real verdicts.
+- **Run audit items #3–14 now that auth is unblocked** (lead/contact/
+  company/deal CRUD, pipeline drag persistence, tasks, activity timeline,
+  global search, dashboard metrics, team settings) for real verdicts.
+- Auto-activate the org on sign-in when the user has exactly one
+  membership, to remove the extra `/create-org` click (see Known gaps).
 - Seed initial CRM data for a new org (optional).
 - Register the Clerk webhook endpoint and test org/member sync.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
@@ -477,5 +588,7 @@ Champions) have hardcoded counts and are not real saved queries.
 | Auth | Route group `(app)` for authenticated pages | Separates authenticated pages (which need `resolveAuth()` + data loading + `CrmProvider` + `AppLayout`) from public pages (`sign-in`, `sign-up`, `create-org`) that just need `ClerkProvider`. Avoids conditional rendering in the root layout. |
 | UI cutover | Rewrote CrmProvider rather than each screen | CrmProvider's `useCrm()` interface stayed identical. Screens still call `useCrm()` for data — the only change is that data now comes from server-loaded Prisma results instead of hardcoded mock arrays. This meant zero changes to screen JSX/logic. |
 | UI cutover | Optimistic updates + server actions | Mutations update local state immediately (for instant UI feedback) and fire a server action in a `startTransition`. After the server action completes, `router.refresh()` re-fetches the layout's data to sync from the database. |
+| Auth | Disabled Clerk's `force_organization_selection` instead of adopting its task UI | The app already gates every `(app)` route on an active org in `resolveAuth()`, server-side. Clerk's `choose-organization` task was a redundant second gate, and its hosted UI never issued the request that resolves it. Removing the duplicate gate leaves the working, server-enforced one in charge. |
+| Auth | Clerk URL config in code (`clerkMiddleware`/`ClerkProvider`) rather than `NEXT_PUBLIC_CLERK_*_URL` env vars | `.env` is untracked and per-developer; an unset `signInUrl` silently falls back to the hosted Account Portal and reintroduces the redirect loop. Pinning it in code makes the setting reviewable and impossible to forget. |
 | Data layer | `convertLeadToDeal` input uses `{ ownerId, deal?: {...} }` | Contact always created; Deal only when `input.deal` is provided. |
 | Data layer | Write helpers use find-then-update in a transaction | Ensures the tenant match is checked atomically before the mutation runs. |
