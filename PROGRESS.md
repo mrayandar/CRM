@@ -416,6 +416,56 @@ so the dev data follows the new rule.
   deal "Meridian Health — Compliance suite" ($27,000, Sep 12) was added, Calloway
   was back-filled.
 
+## Fixed: Tasks header "New task" button (Sep 27 2026)
+
+**Was it one broken button or two controls? Two — on the same page.** Both
+statements in the audit were true. The Tasks screen has:
+- **(a) the toolbar "Quick add a task…" input + Add button** — works (audit #10
+  passed, DB-verified): `submit()` → `addTask({ title, dueDate: now, priority:
+  'medium' })`;
+- **(b) the header "New task" `<Button>`** — had **no `onClick`**; re-confirmed in a
+  real browser before touching code: no dialog, no navigation, 0 server actions,
+  nothing written.
+A third path exists on record pages (Tasks tab → `addTask` with a linked subject).
+All of them already funnel through the store's `addTask` → `addTaskAction` →
+`createTask`, so the fix reuses that one flow instead of adding a second.
+
+**Fix.**
+- `Tasks.tsx`: the header button opens a local `NewTaskModal` (existing `Modal`,
+  `Input`, `Select`, `Label`; same layout as the other create modals) with **task
+  title, due date, priority, type (To-do/Call/Email/Meeting) and assignee**. It
+  calls the *same* `addTask`; the modal closes immediately and failures revert +
+  toast via `persist()`. If the task is assigned to someone else the list switches to
+  "Team tasks" (the default "My tasks" view would otherwise hide it and look like the
+  save failed).
+- `addTask` (store) and `addTaskAction` (server) gained two optional fields, `type`
+  and `ownerId`, defaulting to the old behaviour (`todo`, the current user), so the
+  quick-add and record-page paths are unchanged.
+- **Tenant ownership:** an assignee other than the caller is verified with
+  `getOwnerById(orgId, id)` before it is connected (another org's owner → rejected).
+- `addTaskAction` previously trusted its inputs; it now validates title (required,
+  ≤ 500), due date, priority and type. Not included: a "related record" picker
+  (record pages still cover that).
+
+**Verified in a real browser against Neon (27/27):** the button opens the dialog;
+Create is disabled until a title exists; defaults are today / Medium / To-do / me;
+the assignee list is exactly the org's 4 owners; Cancel writes nothing. Created 3
+realistic tasks through it — "Send Kestrel the revised MSA redlines" (high, email,
+**assigned to Riley Hart**), "Call Fjord Marine legal about the redlines" (high, call,
+me, **due yesterday**) and "Prepare the Q4 pipeline review deck" (to-do, in 6 days) —
+each appeared in the list at once with no page reload, and Neon holds exactly the
+chosen owner/priority/type/due date (noon local), a UUID id and the right `orgId`.
+After a full reload they persist and land in the right buckets (Overdue / This week);
+the header count and the Dashboard "Needs attention" bar show the new overdue task,
+matching Neon. Quick-add still works with unchanged defaults. **Real server
+rejections:** an assignee id from another org, and `priority: "urgent"`, were each
+refused with the "Couldn't add the task" toast, the optimistic row removed, and 0 rows
+in Neon.
+- Test tasks were **left in place** (plus "Follow up on the Halden pilot scope" from
+  the quick-add check), so the dev org now has 1 overdue task.
+- Not changed: tasks still can't be edited or deleted after creation, and the
+  record-page task box remains title-only.
+
 ## Fixed: on-demand Owner role, order-proof webhook, data re-synced from Clerk (Sep 27 2026)
 
 **Bug:** `resolveAuth()` (`lib/auth.ts`) created a missing Owner with `role:
@@ -655,7 +705,7 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
 | 7 | Create a company | 🚧 NOT YET BUILT (confirmed) |
 | 8 | Create a deal | ✅ PASS (skipped per brief, but exercised from all four entry points) |
 | 9 | Drag a deal across stages | ✅ PASS — first real-gesture test; 7 drags + 2 no-op drops |
-| 10 | Create a task, mark complete | ✅ PASS (with limits: header "New task" button is dead; title is the only input) |
+| 10 | Create a task, mark complete | ✅ PASS (the dead header "New task" button was **fixed Sep 27** — see "Fixed: Tasks header New task button") |
 | 11 | Log an activity, see it in the timeline | ✅ PASS — the one failure the audit found (last-touched time not saved to Neon) was **fixed the same day**, see "Fixed: logging an activity…" |
 | 12 | Global search | ✅ EXISTS and works (Ctrl+K palette + per-page filters), with clear limits |
 | 13 | Dashboard | ⚠️ PARTIAL — every computed metric matches Neon; **several values are hardcoded or mis-defined** (list below) |
@@ -702,7 +752,7 @@ Four quick-added tasks + one added on a lead record + one on a contact record
 checkbox flips at once, Neon `done=true`, exactly one `completed …` activity
 each; un-ticking sets `done=false` with **no** activity; state survives reload;
 header counts ("3 open · 0 overdue · 3 completed") match Neon. **Limits:** the
-header "New task" button does nothing, and the only input is a title — no due
+header "New task" button did nothing (**fixed Sep 27**, it now opens a full form), and the quick-add's only input is a title — no due
 date, priority, type or assignee (quick-add is due "today", record tasks +2 days,
 priority always medium).
 
@@ -1525,14 +1575,16 @@ the browser, Sep 26 audit #5. Adding it requires a UI change in
   win rate) can't be computed yet.
 - **No field editing** for leads, contacts or deals; many controls are dead (Email,
   Call, Meeting, Log activity, Send email, Delete lead, Reassign, Export, Edit
-  deal, Customize stages, header "New task", Settings profile/workspace "Save").
+  deal, Customize stages, ~~header "New task"~~ (fixed Sep 27), Settings profile/workspace "Save").
 - **Team settings:** pending invitations aren't listed (no revoke/resend); role
   change/remove failures are silent and Remove has no confirmation; new members
   had no `Owner` row until they sign in (webhook was unregistered — fixed Sep 27,
   see the webhook section) so they couldn't be assigned records.
 - **Search:** the palette doesn't cover email/phone/tasks/activities, and deal
   results open the board, not the deal.
-- **Tasks:** title is the only input (no due date/priority/assignee).
+- ~~**Tasks:** title is the only input~~ — the header "New task" form now takes due
+  date, priority, type and assignee (Sep 27); quick-add and the record-page box are
+  still title-only, and tasks can't be edited or deleted.
 
 ### No Company entity
 
@@ -1589,7 +1641,7 @@ Champions) have hardcoded counts and are not real saved queries.
   Won~~ — done Sep 27); (3)
   ~~register the Clerk webhook so invited members get an `Owner`~~ (done Sep 27,
   committed and deployed); (4) field editing for
-  leads/contacts/deals; (5) a "New task" form with due date/priority/assignee.
+  leads/contacts/deals; (5) ~~a "New task" form with due date/priority/assignee~~ (done Sep 27).
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
   done. Follow-up: the "couldn't save" toast is
   done (see "Added: failure toast").

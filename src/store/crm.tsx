@@ -114,7 +114,15 @@ interface CrmState {
     input: ConvertLeadInput,
   ) => { contactId: string; dealId: string | null }
   toggleTask: (taskId: string) => void
-  addTask: (task: { title: string; dueDate: string; priority: Priority; subject?: SubjectRef }) => void
+  addTask: (task: {
+    title: string
+    dueDate: string
+    priority: Priority
+    type?: Task['type']
+    /** Assignee; defaults to the current user. */
+    ownerId?: string
+    subject?: SubjectRef
+  }) => void
   addNote: (subject: SubjectRef, body: string) => void
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
 }
@@ -630,7 +638,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   )
 
   const addTask = useCallback<CrmState['addTask']>(
-    ({ title, dueDate, priority, subject }) => {
+    ({ title, dueDate, priority, type = 'todo', ownerId, subject }) => {
       const id = newEntityId()
       setTasks((prev) => [
         {
@@ -639,14 +647,14 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           dueDate,
           done: false,
           priority,
-          ownerId: currentUser.id,
+          ownerId: ownerId ?? currentUser.id,
           relatedTo: subject,
-          type: 'todo',
+          type,
         },
         ...prev,
       ])
       persist(
-        () => addTaskAction({ id, title, dueDate, priority, subject }),
+        () => addTaskAction({ id, title, dueDate, priority, type, ownerId, subject }),
         () => setTasks((prev) => prev.filter((t) => t.id !== id)),
         undefined,
         "Couldn't add the task, please try again.",

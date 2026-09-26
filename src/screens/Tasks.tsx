@@ -1,15 +1,16 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { CheckCircle2, Plus } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Input, Segmented, Select } from '@/components/ui/Field'
+import { Input, Label, Segmented, Select } from '@/components/ui/Field'
+import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/ui/Display'
 import { TaskRow } from '@/components/common/TaskRow'
 import { useCrm } from '@/store/crm'
-import type { Task } from '@/data/types'
+import type { Priority, Task } from '@/data/types'
 import { dayDelta, sortBy } from '@/lib/utils'
 
 type Bucket = 'overdue' | 'today' | 'week' | 'later' | 'done'
@@ -36,6 +37,7 @@ export function Tasks() {
   const [scope, setScope] = useState<'all' | 'mine'>('mine')
   const [owner, setOwner] = useState('all')
   const [draft, setDraft] = useState('')
+  const [newTaskOpen, setNewTaskOpen] = useState(false)
 
   const visible = useMemo(
     () =>
@@ -71,7 +73,7 @@ export function Tasks() {
       title="Tasks"
       subtitle={`${open.length} open · ${buckets.overdue.length} overdue · ${buckets.done.length} completed`}
       actions={
-        <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+        <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setNewTaskOpen(true)}>
           New task
         </Button>
       }
@@ -146,6 +148,135 @@ export function Tasks() {
           )
         })}
       </div>
+
+      {newTaskOpen && (
+        <NewTaskModal
+          onClose={() => setNewTaskOpen(false)}
+          onCreated={(assigneeId) => {
+            // "My tasks" is the default view; don't let a task assigned to someone else vanish from sight.
+            if (assigneeId !== currentUser.id) {
+              setScope('all')
+              setOwner('all')
+            }
+          }}
+        />
+      )}
     </PageShell>
+  )
+}
+
+const TASK_TYPE_OPTIONS: Array<{ value: Task['type']; label: string }> = [
+  { value: 'todo', label: 'To-do' },
+  { value: 'call', label: 'Call' },
+  { value: 'email', label: 'Email' },
+  { value: 'meeting', label: 'Meeting' },
+]
+
+function NewTaskModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void
+  onCreated: (assigneeId: string) => void
+}) {
+  const { addTask, owners, currentUser } = useCrm()
+  const [title, setTitle] = useState('')
+  const [dueDate, setDueDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
+  const [priority, setPriority] = useState<Priority>('medium')
+  const [type, setType] = useState<Task['type']>('todo')
+  const [ownerId, setOwnerId] = useState(currentUser.id)
+
+  const canSubmit = title.trim() !== '' && dueDate !== ''
+
+  const submit = () => {
+    if (!canSubmit) return
+    addTask({
+      title: title.trim(),
+      dueDate: new Date(`${dueDate}T12:00:00`).toISOString(),
+      priority,
+      type,
+      ownerId,
+    })
+    onCreated(ownerId)
+    onClose()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      width={520}
+      title="New task"
+      description="Add a follow-up and assign it to someone on your team."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            Create task
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit()
+        }}
+      >
+        <Field label="Task">
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Send the revised proposal"
+            autoFocus
+          />
+        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Due date">
+            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </Field>
+          <Field label="Priority">
+            <Select value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className="h-9">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </Select>
+          </Field>
+          <Field label="Type">
+            <Select value={type} onChange={(e) => setType(e.target.value as Task['type'])} className="h-9">
+              {TASK_TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Assignee">
+            <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name} · {o.role}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      {children}
+    </div>
   )
 }

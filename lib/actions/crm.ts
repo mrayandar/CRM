@@ -21,11 +21,12 @@ import {
 } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
-import type { DealStage, LeadSource, LeadStatus, Priority, ActivityKind } from '@prisma/client'
+import type { DealStage, LeadSource, LeadStatus, Priority, ActivityKind, TaskType } from '@prisma/client'
 
 const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualified', 'lost']
 const DEAL_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contract', 'won', 'lost']
 const PRIORITIES: Priority[] = ['low', 'medium', 'high']
+const TASK_TYPES: TaskType[] = ['call', 'email', 'meeting', 'todo']
 const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -321,18 +322,38 @@ export async function addTaskAction(input: {
   title: string
   dueDate: string
   priority: Priority
+  type?: TaskType
+  /** Assignee; defaults to the caller. Must belong to the caller's org. */
+  ownerId?: string
   subject?: { type: 'lead' | 'contact' | 'deal'; id: string; label: string }
 }) {
-  const { orgId, ownerId } = await requireAuth()
+  const { orgId, ownerId: callerId } = await requireAuth()
   assertClientId(input.id)
+
+  const title = input.title.trim()
+  const dueDate = new Date(input.dueDate)
+  const type = input.type ?? 'todo'
+  if (!title || title.length > 500) throw new Error('Title is required')
+  if (Number.isNaN(dueDate.getTime())) throw new Error('Invalid due date')
+  if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
+  if (!TASK_TYPES.includes(type)) throw new Error('Invalid task type')
+
+  // ownerId comes from the client — an assignee other than the caller must be verified to belong to this org.
+  let assigneeId = callerId
+  if (input.ownerId && input.ownerId !== callerId) {
+    const assignee = await getOwnerById(orgId, input.ownerId)
+    if (!assignee) throw new Error('Owner not found')
+    assigneeId = assignee.id
+  }
+
   await assertSubjectInOrg(orgId, input.subject)
   await dbCreateTask(orgId, {
     id: input.id,
-    title: input.title,
-    dueDate: new Date(input.dueDate),
+    title,
+    dueDate,
     priority: input.priority,
-    type: 'todo',
-    owner: { connect: { id: ownerId } },
+    type,
+    owner: { connect: { id: assigneeId } },
     ...(input.subject?.type === 'lead' && {
       relatedToType: 'lead',
       relatedToLabel: input.subject.label,
