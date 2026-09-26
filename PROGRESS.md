@@ -416,6 +416,71 @@ so the dev data follows the new rule.
   deal "Meridian Health — Compliance suite" ($27,000, Sep 12) was added, Calloway
   was back-filled.
 
+## Fixed: on-demand Owner role, order-proof webhook, data re-synced from Clerk (Sep 27 2026)
+
+**Bug:** `resolveAuth()` (`lib/auth.ts`) created a missing Owner with `role:
+'Member'` hardcoded, so anyone who reached the app before the webhook created their
+row — including every org creator — was stored as "Member" whatever their Clerk role.
+(The webhook path was fixed earlier the same day; this was the other writer.)
+
+**Fix 1 — one shared mapping.** New `lib/roles.ts` `ownerRoleFromClerk()` maps Clerk's
+`org:admin` (and `admin`) → `Admin`, anything else → `Member`. `resolveAuth()` now
+reads `orgRole` from `auth()` and uses it; the webhook handler uses the same function,
+so the two writers can no longer disagree. (Only the *creation* path was changed on
+purpose: `resolveAuth()` does not "self-heal" an existing Owner from the session,
+because the token's `org_role` claim can lag a role change and would overwrite the
+webhook's newer value.) The only other `'Member'` literal left is the unreachable
+"no Owner found" fallback in `lib/data-loader.ts`.
+
+**Fix 2 — the existing data, re-synced from Clerk.** New script
+`scripts/resync-from-clerk.js` (dry run by default, `--apply` to write; safe to
+re-run) compares `Organization.name` and every `Owner.role` in every org with Clerk's
+live state. First run found **5 mismatches**, all corrected:
+- 3 org creators stored as `Member` although Clerk says `org:admin`:
+  **`nexoverify1@mailinator.com`** (the case you named), `nexoaudit_test@mailinator.com`,
+  `mrayandar123@gmail.com` (the original bug);
+- `Organization.name` back to `Nexo Verified Org` (Neon held my temporary
+  "… (webhook test)" name);
+- `casey.morgan…` stored `Admin` although Clerk says `org:member`.
+The last two were caused by a **second problem found on the way**, below.
+
+**Found on the way — stale webhook redeliveries corrupt data.** After the handler
+was fixed, Svix kept auto-retrying the *old failed* messages on its schedule (5 s, 5
+min, 30 min, 2 h…). **A manual "Replay" does not cancel those retries**, so they
+re-applied old payloads after the correct ones: the org name regressed to my test
+rename and Casey went back to Admin. (My earlier note that replaying in order was
+enough was wrong.)
+**Fix 3 — the handler no longer trusts the payload for updates.**
+`organization.updated`, `organizationMembership.created` and `.updated` now read the
+*current* state from Clerk (`organizations.getOrganization`,
+`users.getOrganizationMembershipList`) and write that, so any redelivery is harmless.
+A stale event for someone who is no longer a member is ignored (it can't resurrect
+their Owner); a Clerk API failure other than 404 throws so Svix retries.
+Name/email/avatar for members now also come from Clerk, not the payload.
+
+**Verified:**
+1. **On-demand path, isolated from the webhook** (Owner row deleted first, so only
+   `resolveAuth()` could recreate it; then a real Clerk sign-in through the app): a
+   member with Clerk role `org:admin` got `Owner.role = Admin` (sidebar "Admin"); the
+   same user as `org:member` got `Member` (sidebar "Member"). 8/8.
+2. **nexoverify1:** Clerk `org:admin`, Neon `Admin`, and the sidebar account card in
+   the real UI reads "Admin".
+3. **Hardened webhook, validly-signed stale payloads** (7/7): a stale
+   `organization.updated` name is ignored (Neon keeps Clerk's name); a stale
+   `membership.updated` claiming `org:admin` doesn't change a Member; a stale
+   `membership.created` for a non-member creates nothing; after changing a role in
+   Clerk, an *older* payload with the previous role still leaves Neon following
+   Clerk; a current event still works; forged signature → 400.
+4. `node scripts/resync-from-clerk.js` → **0 mismatches** across all three orgs.
+
+**⚠️ Not yet deployed.** These changes (`lib/roles.ts`, `lib/auth.ts`,
+`app/api/webhooks/clerk/route.ts`, `scripts/resync-from-clerk.js`, this file) are
+**uncommitted**, so production still runs the previous, payload-trusting handler.
+Until they are committed and pushed, Svix's remaining scheduled retries of the old
+failed messages (next round roughly 2 h after the last) can re-introduce drift.
+If that happens, run `node scripts/resync-from-clerk.js --apply`; after deploy the
+retries become harmless.
+
 ## Clerk webhook: registered, fixed and verified end to end (Sep 27 2026)
 
 **Status: WORKING and DEPLOYED FROM GIT.** The handler fixes, the cursor/popover
@@ -480,9 +545,9 @@ Files: `app/api/webhooks/clerk/route.ts`, `lib/data/owners.ts`.
   "Nexo Verified Org".
 - **Svix delivery log:** the new events show **Succeeded**; the older deliveries
   from the crashing build were then re-sent one at a time in their original order
-  and also succeeded (sent in order on purpose: two old `organization.updated`
-  events, rename then revert, could otherwise have landed reversed and left a
-  wrong org name).
+  and also succeeded. **This turned out not to be enough:** Svix kept retrying those
+  messages on its own schedule afterwards and they overwrote newer data (see "Fixed:
+  on-demand Owner role, order-proof webhook…" above, which also fixes it properly).
 - Also confirmed locally beforehand with validly signed replays of the real
   payload shapes; the unknown/unsubscribed event type is ignored with 200; a
   forged signature returns 400.
@@ -503,11 +568,10 @@ Files: `app/api/webhooks/clerk/route.ts`, `lib/data/owners.ts`.
   Organization row but tenant tables have no FK to it, so their rows would be
   orphaned) and `organizationMembership.deleted` isn't subscribed (removing a
   member leaves their Owner row).
-- **`nexoverify1` shows `Member` in Neon while Clerk says `org:admin`:** the
-  on-demand path in `resolveAuth()` hardcodes `role: 'Member'` (the webhook only
-  fires on *changes*). Small fix: use Clerk's `orgRole` there.
-- Events aren't ordered/idempotent by timestamp: an out-of-order redelivery of an
-  older event can overwrite newer data (compare `updated_at` if this matters).
+- ~~`nexoverify1` shows `Member` in Neon while Clerk says `org:admin`~~ — fixed
+  Sep 27 (`resolveAuth()` now maps the real `orgRole`; existing rows re-synced).
+- ~~Events aren't ordered/idempotent~~ — fixed Sep 27: update events now read
+  current state from Clerk, so redeliveries are harmless (pending deploy).
 - The deployment uses Clerk's **development** instance keys.
 - Svix's portal login link is single-use; mint a new one via
   `POST /v1/webhooks/svix_url` (Clerk Backend API) each time.
@@ -1535,9 +1599,10 @@ Champions) have hardcoded counts and are not real saved queries.
   "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).
 - ~~Register the Clerk webhook endpoint and test org/member sync~~ — done Sep 27
-  2026, committed and deployed from git. Optional follow-up: use Clerk's `orgRole`
-  in `resolveAuth()` so the on-demand Owner gets the right role (see the webhook
-  section's caveats).
+  2026, committed and deployed from git. The on-demand role and order-proof
+  handler follow-ups are done in the working tree — **commit and push them**
+  (`lib/roles.ts`, `lib/auth.ts`, `app/api/webhooks/clerk/route.ts`,
+  `scripts/resync-from-clerk.js`) so production gets the order-proof handler.
 - Wire Stripe billing (install SDK, create checkout flow, webhook handler).
 - Replace `monthlyPerformance` mock in Dashboard + Reports with real
   closed-won-by-month aggregation queries (pre-onboarding blocker).
