@@ -30,11 +30,13 @@ export async function POST(request: Request) {
 
   let event: WebhookEvent
   try {
-    event = wh.verify(body, {
+    // svix v2's verify() only validates (it throws on failure) and returns undefined, so parse the body ourselves.
+    wh.verify(body, {
       'svix-id': svixId,
       'svix-timestamp': svixTimestamp,
       'svix-signature': svixSignature,
-    }) as unknown as WebhookEvent
+    })
+    event = JSON.parse(body) as WebhookEvent
   } catch (err) {
     console.error('Webhook verification failed:', err)
     return new Response('Invalid signature', { status: 400 })
@@ -117,7 +119,9 @@ async function handleMemberCreated(data: Record<string, unknown>) {
   ].filter(Boolean).join(' ') || (publicUserData?.identifier as string) || 'Team Member'
 
   const email = (publicUserData?.identifier as string) ?? ''
-  const role = (data.role as string) === 'admin' ? 'Admin' : 'Member'
+  // Clerk sends the prefixed key ("org:admin" / "org:member").
+  const clerkRole = data.role as string
+  const role = clerkRole === 'org:admin' || clerkRole === 'admin' ? 'Admin' : 'Member'
   const avatarUrl = publicUserData?.image_url as string | undefined
 
   await upsertOwnerFromClerk(org.id, clerkUserId, {

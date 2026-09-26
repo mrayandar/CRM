@@ -58,6 +58,8 @@ export function upsertOwnerFromClerk(
     update: {
       name: data.name,
       email: data.email,
+      // A role change (organizationMembership.updated) must reach the Owner row.
+      role: data.role,
       avatarUrl: data.avatarUrl ?? null,
     },
   })
