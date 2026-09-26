@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -9,7 +10,11 @@ import {
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-/** Lightweight popover: trigger + anchored panel, closes on outside click or Escape. */
+/**
+ * Lightweight popover: trigger + anchored panel, closes on outside click or Escape. Opens below the
+ * trigger; if it wouldn't fit there it opens above (e.g. the account menu at the bottom of the
+ * sidebar); if it fits neither way it uses the roomier side and scrolls.
+ */
 export function Popover({
   trigger,
   children,
@@ -25,6 +30,30 @@ export function Popover({
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [place, setPlace] = useState<{ up: boolean; maxHeight?: number }>({ up: false })
+
+  // Measured before paint, so the panel never flashes off-screen first.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPlace({ up: false })
+      return
+    }
+    const panel = panelRef.current
+    const trigger = ref.current?.getBoundingClientRect()
+    if (!panel || !trigger) return
+    const gap = 6
+    const margin = 8
+    const spaceBelow = window.innerHeight - trigger.bottom - gap - margin
+    const spaceAbove = trigger.top - gap - margin
+    if (panel.offsetHeight <= spaceBelow) return
+    if (panel.offsetHeight <= spaceAbove) {
+      setPlace({ up: true })
+      return
+    }
+    const up = spaceAbove > spaceBelow
+    setPlace({ up, maxHeight: Math.max(120, up ? spaceAbove : spaceBelow) })
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -47,10 +76,13 @@ export function Popover({
       {trigger({ open, toggle: () => setOpen((v) => !v) })}
       {open && (
         <div
-          style={{ width }}
+          ref={panelRef}
+          style={{ width, maxHeight: place.maxHeight }}
           className={cn(
-            'absolute top-[calc(100%+6px)] z-50 animate-pop-in rounded-panel border border-line',
+            'absolute z-50 animate-pop-in rounded-panel border border-line',
             'bg-surface p-1 shadow-pop',
+            place.maxHeight !== undefined && 'overflow-y-auto',
+            place.up ? 'bottom-[calc(100%+6px)]' : 'top-[calc(100%+6px)]',
             align === 'end' ? 'right-0' : 'left-0',
           )}
         >

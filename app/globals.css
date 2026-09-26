@@ -86,6 +86,13 @@
     letter-spacing: -0.01em;
   }
 
+  /* Tailwind v4's preflight resets buttons to cursor: default; restore the pointer on anything clickable. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  summary {
+    cursor: pointer;
+  }
+
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-brand-500;
   }
