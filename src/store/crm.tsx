@@ -601,13 +601,24 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const activity = done
         ? addLocalActivity('task', `completed ${task.title}`, task.relatedTo)
         : undefined
+      // Logging the "completed" activity also moves the parent's last-activity time (server side).
+      const parent = done ? task.relatedTo : undefined
+      const now = new Date().toISOString()
+      const prevLead = parent?.type === 'lead' ? leads.find((l) => l.id === parent.id) : undefined
+      const prevContact = parent?.type === 'contact' ? contacts.find((c) => c.id === parent.id) : undefined
+      if (prevLead) setLeads((prev) => prev.map((l) => (l.id === prevLead.id ? { ...l, lastTouchedAt: now } : l)))
+      if (prevContact) setContacts((prev) => prev.map((c) => (c.id === prevContact.id ? { ...c, lastInteractionAt: now } : c)))
       persist(
         () => toggleTaskAction(taskId, done),
-        () => setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, done: task.done } : t))),
+        () => {
+          setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, done: task.done } : t)))
+          if (prevLead) setLeads((prev) => prev.map((l) => (l.id === prevLead.id ? { ...l, lastTouchedAt: prevLead.lastTouchedAt } : l)))
+          if (prevContact) setContacts((prev) => prev.map((c) => (c.id === prevContact.id ? { ...c, lastInteractionAt: prevContact.lastInteractionAt } : c)))
+        },
         activity,
       )
     },
-    [tasks, addLocalActivity, persist],
+    [tasks, leads, contacts, addLocalActivity, persist],
   )
 
   const addTask = useCallback<CrmState['addTask']>(

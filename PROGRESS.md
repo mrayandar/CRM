@@ -14,13 +14,14 @@ create organization → select organization → the actual dashboard, plus
 sign-out → sign-in → select org → dashboard. `Organization` and `Owner`
 rows are created correctly in Postgres by `resolveAuth()`.
 
-Audit items #3–14 were **partially re-run** in the browser on Sep 26 2026
-(see "Functional audit" below). Headline: every "create" button (lead,
-contact, deal) is unwired, contact-only convert isn't exposed in the UI,
-and **server-action persistence is unreliable** — two dev-server sessions
-degraded into a flood of `failed to forward action response` /
-`HeadersTimeoutError` errors, after which no mutation reached the DB.
-Items 9–12 and 14 remain untested.
+The full audit was **re-run with real usage on Sep 27 2026** (see "Functional
+audit — re-run with real usage"). Headline: lead / contact / deal creation,
+lead conversion, real mouse-drag on the pipeline, tasks, notes, global search and
+Clerk team invite/role-change all work and were verified against Neon/Clerk;
+field editing, a Company entity and contact-only convert are not built, and there
+are real bugs and hardcoded dashboard values listed there. The original
+`HeadersTimeoutError` from Sep 26 was **not reproduced** in ~40 minutes of heavy
+use. The dev org is now populated with realistic data (left in place).
 
 ## Fixed: Clerk org-selection redirect loop (Sep 26 2026)
 
@@ -304,7 +305,214 @@ navigates away and back, in-flight failures that resolve later still toast (the
 provider persists across routes, which is intended). `RecordDetail`'s local
 `converted` flag still isn't reset after a failed convert.
 
-## Functional audit (Sep 26 2026)
+## Fixed: logging an activity now persists the parent's last-activity time (Sep 27 2026)
+
+**Bug (found by the Sep 27 audit, #11):** logging a note on a lead bumped its
+"last activity" in the UI, but `addNoteAction` → `logActivityAction` →
+`logActivity` only inserted the Activity row. `Lead.lastTouchedAt` was written
+only by `setLeadStatus` and convert, and **`Contact.lastInteractionAt` was never
+written after creation at all** (same bug, worse) — so the bump reverted on
+reload, and the Leads/Contacts "last activity" columns, their default sort and
+any staleness logic were wrong.
+
+**Fix:** `logActivity` in `lib/data/activities.ts` now runs in a transaction: it
+creates the activity, then sets `Lead.lastTouchedAt` / `Contact.lastInteractionAt`
+to **that activity's own timestamp** (`updateMany` filtered by `id` **and**
+`orgId`, so an id from another tenant can never be touched). Because every
+activity logged through the action goes through this one function, it covers
+notes, "completed task" activities and the rest. Client side, completing a task
+that belongs to a lead/contact now mirrors the bump locally (with rollback), so
+the UI and Neon agree without a reload; `addNote` already did.
+
+**Also fixed in the same code (tenant hole, found while reading it):**
+`logActivityAction` and `addTaskAction` connected a lead/contact/deal by a
+client-supplied id **without checking it belongs to the caller's org** (by code
+inspection; not reproduced on the old code). Both now call `assertSubjectInOrg`
+(`{ id, orgId }`-scoped lookups) first.
+
+**Verified against Neon (real UI usage, then direct queries + reload):**
+1. Note on lead "Elena Petrova": `lastTouchedAt` 20:07:06 → 21:10:28 and
+   **exactly equals the note's own timestamp**; note still in the timeline after
+   a full reload; after reload the Leads list shows her as the most recently
+   touched row with "Last activity: Just now" (this is what used to revert). A
+   second note advanced it again to the second note's time.
+2. Note on contact "Ravi Menon": `lastInteractionAt` 20:09:47 → 21:11:15, equal
+   to the note time; Contacts list "Last interaction" reads "Just now" after reload.
+3. Completing a task attached to lead "Priya Raman": her `lastTouchedAt` equals
+   the `completed …` activity time; reads "8m ago" on the Leads list after reload.
+4. Forced failure (note with a bogus subject id → real 500): toast shown, Neon
+   `lastTouchedAt` unchanged, no activity written.
+5. Cross-tenant: with a lead fixture created in the *other* org (deleted
+   afterwards), a note and a task whose subject id was swapped to that lead were
+   both rejected (`lead not found`, toast); the other org's lead was untouched and
+   nothing was linked to it.
+- Not changed: deal activities don't touch the deal (`Deal.updatedAt` is
+  maintained by stage moves only); activities logged before this fix keep their
+  old parent timestamps (no backfill).
+
+## Functional audit — re-run with real usage (Sep 27 2026)
+
+Full re-run of the 14 flows **as a user would use the app**, in a real Chrome
+against the running dev server and Neon: real leads/contacts/deals created
+through the modals, leads converted, deals moved with an **actual mouse drag**,
+tasks added and completed, notes logged, search, dashboard, team settings. Every
+verdict below was checked against a **direct Neon query** (or Clerk's Backend API
+for team settings), not just the UI. ~157 checks; the harness lives in the
+scratchpad (not committed). **Test data was deliberately left in place** — see
+"Populated dev org" below.
+
+| # | Flow | Verdict |
+|---|------|---------|
+| 3 | Create a lead | ✅ PASS (skipped per brief, but exercised anyway: 6 realistic leads through the modal) |
+| 4 | Edit a lead | ⚠️ PARTIAL — **status only**. Editing name/title/company/email/phone/source/owner/value is 🚧 NOT YET BUILT (also for contacts and deals) |
+| 5 | Convert a lead | ✅ PASS end to end (with a deal). Contact-only conversion is 🚧 NOT YET BUILT in the UI |
+| 6 | Create a contact | ✅ PASS (skipped per brief, but exercised: 3 contacts) |
+| 7 | Create a company | 🚧 NOT YET BUILT (confirmed) |
+| 8 | Create a deal | ✅ PASS (skipped per brief, but exercised from all four entry points) |
+| 9 | Drag a deal across stages | ✅ PASS — first real-gesture test; 7 drags + 2 no-op drops |
+| 10 | Create a task, mark complete | ✅ PASS (with limits: header "New task" button is dead; title is the only input) |
+| 11 | Log an activity, see it in the timeline | ✅ PASS — the one failure the audit found (last-touched time not saved to Neon) was **fixed the same day**, see "Fixed: logging an activity…" |
+| 12 | Global search | ✅ EXISTS and works (Ctrl+K palette + per-page filters), with clear limits |
+| 13 | Dashboard | ⚠️ PARTIAL — every computed metric matches Neon; **several values are hardcoded or mis-defined** (list below) |
+| 14 | Team settings | ⚠️ PARTIAL — invite and role change work against real Clerk; visibility/feedback/owner-sync gaps below |
+
+### #4 Edit a lead
+- **Works:** status. All five transitions (contacted / qualified / unqualified /
+  lost / new) update the UI, Neon `status`, `lastTouchedAt`, and log exactly one
+  `set X to Y` activity each; survives a reload.
+- **Not built:** there is no editable field on the lead page (no inputs other
+  than the note and task boxes), no "Edit" button, and double-clicking a value
+  doesn't inline-edit. Same for contacts and deals.
+- **Dead controls** (click → no dialog, no navigation, no server action): lead
+  page "Email", "Call"; Leads row menu "Log activity", "Send email", "Delete
+  lead" (verified nothing is deleted); Leads bulk "Email", "Reassign"; Leads and
+  Contacts "Export"; Pipeline card menu "Log activity", "Edit deal"; Pipeline
+  "Customize stages"; Settings Profile/Workspace "Save".
+
+### #5 Convert a lead (recheck after the recent fixes)
+Priya Raman → "Northwind Logistics — Fleet analytics" ($48,000, Proposal) and
+Marcus Chen → "Halden Robotics — Pilot program" ($22,500, Discovery), each via
+the modal. For both: header shows *Converted* at once; Neon has the Deal, the
+Contact (email/phone/company copied, `originLeadId` set), lead `qualified`,
+exactly **one** `converted…` activity; deal has the right value/stage/probability,
+`contactId`, `leadId`, company, `orgId`; still *Converted* after a full reload
+and the deal is on the Pipeline in the right column (no phantom ids). The modal
+always creates a deal — no contact-only path (known gap).
+
+### #9 Drag (never tested before; menu path was)
+With real `mouse.down / move / up` (HTML5 drag & drop): Halden Discovery→Proposal,
+Kestrel Proposal→Negotiation, Fjord Negotiation→Contract Sent, Northwind
+Proposal→Negotiation→Contract Sent (two drags on one card), Calloway →Won,
+Audit Deal Beta →Lost. Each: card gets the dragging state, moves in the UI
+immediately, Neon `stage` and `probability` (20/45/65/85/100/0) update, **exactly
+one** activity is written (`moved X to Y` / `marked X as Won|Lost`); after a
+full reload every card is still in the column it was dropped in. Dropping on its
+own column and dropping outside every column are no-ops (no stage change, no
+activity).
+
+### #10 Tasks
+Four quick-added tasks + one added on a lead record + one on a contact record
+(both linked: `leadId`/`contactId`, `relatedToType`, label). Completing three:
+checkbox flips at once, Neon `done=true`, exactly one `completed …` activity
+each; un-ticking sets `done=false` with **no** activity; state survives reload;
+header counts ("3 open · 0 overdue · 3 completed") match Neon. **Limits:** the
+header "New task" button does nothing, and the only input is a title — no due
+date, priority, type or assignee (quick-add is due "today", record tasks +2 days,
+priority always medium).
+
+### #11 Activities
+Notes on a lead and a contact: appear in the timeline at once, exactly **one**
+row in Neon (kind `note`, correct `leadId`/`contactId`, `orgId`, actor, label —
+the duplicate-save bug stays fixed), still there after reload, the Activity tab
+count equals the Neon row count, the Notes tab lists it, and the Dashboard feed
+shows recent activity.
+- ❌ **FAIL / bug (FIXED Sep 27 2026 — see the section above):** logging a note bumps the lead's "last activity" (and a
+  contact's last interaction) in the UI, but **`addNoteAction` never updates
+  `Lead.lastTouchedAt` / `Contact.lastInteractionAt` in Postgres**, so the bump
+  disappears on reload (Neon: `lastTouchedAt 20:07` vs note at `20:26`). That
+  column drives the Leads "Last activity" column, sorting and staleness.
+- Call / Email / Meeting quick-log buttons are dead; free-text notes are the only
+  loggable activity.
+
+### #12 Global search — exists
+- **Ctrl+K palette** (also the top-bar "Search…" box): opens/closes with Esc,
+  7 nav shortcuts on an empty query; finds leads, contacts and deals by
+  name/company/title/status text, case-insensitive, capped at 24; company search
+  spans types ("Northwind" → lead + contact + deal); Enter / ArrowDown+Enter /
+  click open the right record (verified by id); records created through the UI
+  are searchable; a "No matches" state exists.
+- **Limits:** it does **not** search email/phone, tasks or activities/notes; a
+  *deal* result goes to `/pipeline` (the board), not to the deal.
+- **Per-page filters** are separate and differ: Leads filter *does* match email;
+  Leads/Pipeline/Contacts filters match an independent Neon query.
+
+### #13 Dashboard
+**Matches Neon:** open pipeline value ($315.5K) and weighted value ($198K),
+open-deal count (6), active deals, stalled count, won-this-month value/count,
+conversion rate, pipeline-snapshot total and per-stage values, "Closing in 30
+days" total ($279.5K) and its five deals (the sixth, closing later, correctly
+excluded), "open tasks assigned to you", the needs-attention counts, recent
+activity, sidebar Leads/Tasks badges, and the "Untouched leads" saved-view count.
+**Hardcoded or wrong (needs fixing before real customers):**
+- The four trend deltas (**+12.4% / +6.1% / −8.3% / +4.2%**) are constants
+  (`TREND` in `Dashboard.tsx`), shown to every tenant.
+- **"$280K target"** in the Won-this-month tile is a literal.
+- Conversion is captioned "**this quarter**" but counts every won/lost deal ever.
+- **Won-this-month ignores deals won by dragging**: moving a deal to Won doesn't
+  set its close date, so a deal won today with a next-month close date isn't
+  counted (Calloway: Won, close date Oct 4 → "$0 · 0 deals closed").
+- Sidebar **"Q3 quota 54% of $1.2M"** is a literal; saved-view **"Closing in 30
+  days" (`5`) and "Champions" (`3`) are literals** (Neon has 0 champions; the 5
+  only matches by coincidence).
+- Saved-view link `/pipeline?close=30` is **ignored** (board shows all 8 deals,
+  not the 5 closing within 30 days); `/leads?status=new` works and
+  `/contacts?tag=Champion` filters (to nothing).
+- Known: "Won vs. target" chart is the `monthlyPerformance` mock.
+
+### #14 Team settings (verified via Clerk's Backend API)
+- **Works:** the Team tab lists the real Clerk members (count equals Clerk); your
+  row is badged "You" with the role select disabled and no Remove. **Invite** →
+  Clerk now holds a *pending* invitation with the right email/role for this org;
+  invalid email → error shown, modal stays open; re-inviting the same email is
+  accepted idempotently (still exactly one pending invitation). **Role change**
+  (Member→Admin→Member on a real second member) updates the UI and is confirmed
+  in Clerk, and survives reload. **Remove** removes the member (Clerk confirms).
+- **Gaps:** the Team table lists **memberships only — pending invitations are
+  invisible** (no list, revoke or resend). Role-change and remove **failures are
+  swallowed silently** (`catch {}`), and Remove has **no confirmation**. **New
+  members get no CRM `Owner` row until they sign in** (Clerk webhook still not
+  registered), so they don't appear in any Owner dropdown and can't be assigned
+  leads/deals/tasks (Neon owners: only `nexoverify1`).
+- Fixtures: a real second member "Jordan Ellis" (Member) was created through
+  Clerk to test role changes; a throwaway member used for the Remove test was
+  removed and its Clerk user deleted.
+
+### Populated dev org "Nexo Verified Org" (left in place)
+- **Leads 10** — Alice Audit ×4 (seed) + Priya Raman, Marcus Chen (both
+  converted), Elena Petrova, Tomas Ortega, Aisha Bello, Daniel Okoye. Statuses:
+  new 4, contacted 1, qualified 5.
+- **Contacts 8** — Bob Audit ×3 (seed), Priya Raman & Marcus Chen (converted),
+  Sofia Lindqvist, Ravi Menon, Hannah Wolfe.
+- **Deals 8** ($315.5K open) — Audit Deal Alpha (Discovery), Audit Deal Beta
+  (**Lost**), Northwind Fleet analytics (Contract Sent), Halden Pilot program
+  (Proposal), Fjord Vessel telemetry (Contract Sent), Kestrel Enterprise license
+  (Negotiation), Oakridge Advisory portal (Discovery), Calloway Supply dashboard
+  (**Won**).
+- **Tasks 6** (3 open, 3 done), **activities 38**. Clerk: member Jordan Ellis;
+  pending invitation to `nexo.invitee.18517@mailinator.com`.
+
+### Server-side observations during this run
+~40 minutes and several hundred server actions on one dev server: **no
+`failed to forward action response` / `HeadersTimeoutError`** (still not
+reproduced — see "Server-action reliability"). Neon **dropped pooled connections
+~25 times** (`prisma:error … kind: Closed`, mostly after idle) and Prisma
+recovered each time with no failed request; worth remembering when the original
+timeout is investigated (a stalled/reconnecting pool is a candidate). Two
+`OrganizationSwitcher can only be used within <ClerkProvider>` errors appeared,
+each immediately after the *first compile* of a route (`/leads`, `/reports`) —
+a dev-only first-compile artifact; those requests still returned 200.
+
+## Functional audit (Sep 26 2026) — superseded by the Sep 27 re-run above
 
 Full click-through audit of the 14 core flows, tested live in a real
 browser against the running dev server and Neon database (not a code
@@ -1015,6 +1223,24 @@ but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
 the browser, Sep 26 audit #5. Adding it requires a UI change in
 `src/screens/`, so it needs explicit sign-off.)
 
+### Bugs and gaps found by the Sep 27 audit (details in the audit section)
+- ~~Notes don't persist last-touched~~ — fixed Sep 27 2026 (see "Fixed: logging
+  an activity now persists the parent's last-activity time").
+- **Dashboard hardcodes/definitions:** trend deltas, "$280K target", "this
+  quarter" caption, sidebar Q3 quota, saved-view counts `5` and `3`;
+  Won-this-month ignores deals dragged to Won (close date not updated); saved-view
+  link `/pipeline?close=30` is ignored.
+- **No field editing** for leads, contacts or deals; many controls are dead (Email,
+  Call, Meeting, Log activity, Send email, Delete lead, Reassign, Export, Edit
+  deal, Customize stages, header "New task", Settings profile/workspace "Save").
+- **Team settings:** pending invitations aren't listed (no revoke/resend); role
+  change/remove failures are silent and Remove has no confirmation; new members
+  have no `Owner` row until they sign in (webhook unregistered) so they can't be
+  assigned records.
+- **Search:** the palette doesn't cover email/phone/tasks/activities, and deal
+  results open the board, not the deal.
+- **Tasks:** title is the only input (no due date/priority/assignee).
+
 ### No Company entity
 
 **Lead, Deal and Contact creation are all done** (see "New lead / New deal /
@@ -1062,10 +1288,14 @@ Champions) have hardcoded counts and are not real saved queries.
   selection, on full reloads, and on server re-renders), then restore
   `router.refresh()` or add proper rollback/error handling in `CrmProvider`.
   Also auto-activate when the user has exactly one membership.
-- **Finish the audit: #9–12 and #14.** (#5 with-deal convert is now verified
-  against the DB, and moving a deal + its activity on a converted deal is
-  verified; a drag-and-drop gesture itself, and #10 task completion via
-  the row checkbox on pre-existing tasks, are still untested.)
+- ~~Finish the audit: #9–12 and #14~~ — done Sep 27 2026 (see the re-run above).
+  Fix what it found, roughly in this order: (1) ~~`addNoteAction` should update
+  `lastTouchedAt` / `lastInteractionAt`~~ (done); (2) replace the hardcoded Dashboard
+  values (trend deltas, target, quota, saved-view counts) with real or hidden
+  ones, fix "this quarter", set the close date when a deal moves to Won; (3)
+  register the Clerk webhook (and/or create an `Owner` for new members) so
+  invited members can be assigned records; (4) field editing for
+  leads/contacts/deals; (5) a "New task" form with due date/priority/assignee.
 - ~~Rollback for `moveDeal`, `setLeadStatus`, `toggleTask`, `pushActivity`~~ —
   done. Follow-up: the "couldn't save" toast is
   done (see "Added: failure toast").

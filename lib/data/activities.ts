@@ -34,9 +34,30 @@ export function listActivities(
   })
 }
 
+/**
+ * Records an activity and, in the same transaction, moves the parent record's "last activity"
+ * timestamp (Lead.lastTouchedAt / Contact.lastInteractionAt) to the activity's time. Without this
+ * the UI's optimistic bump is lost on reload. The updates are filtered by `orgId` so an id from
+ * another tenant can never be touched.
+ */
 export function logActivity(
   orgId: string,
   data: Omit<Prisma.ActivityCreateInput, 'orgId'>,
 ) {
-  return prisma.activity.create({ data: { ...data, orgId } })
+  return prisma.$transaction(async (tx) => {
+    const activity = await tx.activity.create({ data: { ...data, orgId } })
+    if (activity.leadId) {
+      await tx.lead.updateMany({
+        where: { id: activity.leadId, orgId },
+        data: { lastTouchedAt: activity.at },
+      })
+    }
+    if (activity.contactId) {
+      await tx.contact.updateMany({
+        where: { id: activity.contactId, orgId },
+        data: { lastInteractionAt: activity.at },
+      })
+    }
+    return activity
+  })
 }

@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { requireAuth } from '@lib/auth'
 import {
   createLead as dbCreateLead,
+  getLeadById,
   updateLeadStatus as dbUpdateLeadStatus,
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
@@ -13,7 +14,11 @@ import {
   getContactByEmail,
   getContactById,
 } from '@lib/data/contacts'
-import { createDeal as dbCreateDeal, moveDealToStage as dbMoveDealToStage } from '@lib/data/deals'
+import {
+  createDeal as dbCreateDeal,
+  getDealById,
+  moveDealToStage as dbMoveDealToStage,
+} from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
 import type { DealStage, LeadSource, LeadStatus, Priority, ActivityKind } from '@prisma/client'
@@ -24,6 +29,18 @@ const PRIORITIES: Priority[] = ['low', 'medium', 'high']
 const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A lead/contact/deal id from the client must belong to the caller's org before it is linked. */
+async function assertSubjectInOrg(orgId: string, subject?: { type: 'lead' | 'contact' | 'deal'; id: string }) {
+  if (!subject) return
+  const found =
+    subject.type === 'lead'
+      ? await getLeadById(orgId, subject.id)
+      : subject.type === 'contact'
+        ? await getContactById(orgId, subject.id)
+        : await getDealById(orgId, subject.id)
+  if (!found) throw new Error(`${subject.type} not found`)
+}
 
 /** Optimistic creates use a client-generated UUID as the row id; reject anything else. */
 function assertClientId(id: unknown): asserts id is string {
@@ -308,6 +325,7 @@ export async function addTaskAction(input: {
 }) {
   const { orgId, ownerId } = await requireAuth()
   assertClientId(input.id)
+  await assertSubjectInOrg(orgId, input.subject)
   await dbCreateTask(orgId, {
     id: input.id,
     title: input.title,
@@ -341,6 +359,7 @@ export async function logActivityAction(
   body?: string,
 ) {
   const { orgId, ownerId } = await requireAuth()
+  await assertSubjectInOrg(orgId, subject)
   await dbLogActivity(orgId, {
     kind,
     title,
