@@ -350,6 +350,72 @@ inspection; not reproduced on the old code). Both now call `assertSubjectInOrg`
   maintained by stage moves only); activities logged before this fix keep their
   old parent timestamps (no backfill).
 
+## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
+
+**Bug (Sep 27 audit, #13):** moving a deal to Won left its close date alone, so
+"Won this month" (which filters won deals by close date) ignored any deal whose
+old *expected* date fell in another month — e.g. Calloway was Won but the tile
+read "$0 · 0 deals closed".
+
+**Fix — close date on Won.** `moveDealToStage` (`lib/data/deals.ts`) now sets
+`closeDate = now` when a deal *enters* Won (`stage === 'won'` and it wasn't Won
+already). The store mirrors it optimistically and rolls it back with the stage on
+failure. Judgment calls:
+- **"Only if it wasn't explicitly chosen":** there's no way to tell — every deal
+  is created with a close date (default +30 days, or typed) and there is no flag
+  for "user set this". So the rule is: while a deal is open the date means
+  *expected*; once it's won it means *actual*, so entering Won always stamps
+  today. (Keeping a separate expected date would need a new column such as
+  `closedAt` — worth doing if you want to report on slippage; not done.)
+- **Leaving Won (reopened / moved by mistake): the date is preserved.**
+  `closeDate` is non-nullable so it can't be cleared, and the previous expected
+  date isn't stored so it can't be restored — keeping the last value loses
+  nothing and invents nothing. Cost: a reopened deal carries a past date (it will
+  show as overdue) until someone sets a new one, which needs deal editing (not
+  built). Re-entering Won re-stamps it.
+- **Created straight into Won** (Won column "+" / any modal): the user-typed date
+  is respected — it may be a back-filled historical win. The modal's *default*
+  date is now today (not +30 days) when opened from the Won column.
+- **Lost is unchanged** (no date is stamped), as asked. Consequence: lost deals
+  still carry their expected date, which is why the conversion caption below was
+  relabelled rather than filtered.
+
+**Fix — "this quarter" labels.** I **relabelled, not filtered.** Dashboard
+conversion caption is now "N won / M lost · all time" (it always counted every
+deal ever). Filtering by quarter isn't trustworthy yet: Won now has a real close
+date, but Lost has none (only its stale expected date), so a quarterly win rate
+would be silently wrong. The right long-term fix is a closed-at date for both
+Won and Lost, then a real quarter filter. The **same false claim was on
+Reports** ("N deals closed this quarter" over all won deals) and is fixed the
+same way ("closed-won · all time").
+
+**Data correction:** Calloway Foods — Supply dashboard (moved to Won *before* this
+fix) had its close date back-filled from its own "marked … as Won" activity time,
+so the dev data follows the new rule.
+
+**Verified (real Chrome, real mouse drag, Neon + independent calculation, 18/18):**
+1. Baseline reproduced: Dashboard "Won this month $0 · 0 deals closed" with a Won
+   deal present.
+2. Dragged "Northwind Logistics — Fleet analytics" Contract Sent → Won: the card
+   lands in Won immediately and shows today's date (was "Oct 26"); Neon: `won`,
+   probability 100, `closeDate` = now (was 2026-10-26), exactly one "marked … as
+   Won" activity.
+3. Dashboard "Won this month" = **$66.5K, 2 deals**, equal to a separate Neon sum.
+4. Reopen (drag Won → Contract Sent): stage/probability revert, `closeDate`
+   **unchanged**; the tile drops back to $18.5K / 1. Re-winning re-stamps it to
+   the new time.
+5. Created a deal into Won with a typed past date (Meridian Health, Sep 12): kept;
+   modal default was today.
+6. Forced 500 on a move to Won: card appears in Won, then toast + card returns to
+   Proposal **with its original close date** (Neon unchanged).
+7. Final Dashboard tile = **$93.5K, 3 deals**, matching Neon; caption reads
+   "all time"; Reports caption fixed.
+- **Found, not fixed:** Reports' three deltas (9.8 / 3.4 / −4.1) are hardcoded
+  like the Dashboard's, and its "This quarter" button is a dead control.
+- Dev data left in place: Northwind is now Won (close date = today), a new won
+  deal "Meridian Health — Compliance suite" ($27,000, Sep 12) was added, Calloway
+  was back-filled.
+
 ## Functional audit — re-run with real usage (Sep 27 2026)
 
 Full re-run of the 14 flows **as a user would use the app**, in a real Chrome
@@ -457,10 +523,11 @@ activity, sidebar Leads/Tasks badges, and the "Untouched leads" saved-view count
 - The four trend deltas (**+12.4% / +6.1% / −8.3% / +4.2%**) are constants
   (`TREND` in `Dashboard.tsx`), shown to every tenant.
 - **"$280K target"** in the Won-this-month tile is a literal.
-- Conversion is captioned "**this quarter**" but counts every won/lost deal ever.
-- **Won-this-month ignores deals won by dragging**: moving a deal to Won doesn't
-  set its close date, so a deal won today with a next-month close date isn't
-  counted (Calloway: Won, close date Oct 4 → "$0 · 0 deals closed").
+- ~~Conversion is captioned "this quarter" but counts every won/lost deal ever~~
+  — **fixed Sep 27** (relabelled "all time"; see "Fixed: deals moved to Won…").
+- ~~**Won-this-month ignores deals won by dragging**~~ (moving a deal to Won
+  didn't set its close date; Calloway: Won, close date Oct 4 → "$0 · 0 deals
+  closed") — **fixed Sep 27**.
 - Sidebar **"Q3 quota 54% of $1.2M"** is a literal; saved-view **"Closing in 30
   days" (`5`) and "Champions" (`3`) are literals** (Neon has 0 champions; the 5
   only matches by coincidence).
@@ -498,7 +565,9 @@ activity, sidebar Leads/Tasks badges, and the "Untouched leads" saved-view count
   (Proposal), Fjord Vessel telemetry (Contract Sent), Kestrel Enterprise license
   (Negotiation), Oakridge Advisory portal (Discovery), Calloway Supply dashboard
   (**Won**).
-- **Tasks 6** (3 open, 3 done), **activities 38**. Clerk: member Jordan Ellis;
+- **Tasks 6** (3 open, 3 done), **activities 38**. *(Later Sep 27: Northwind is
+  now Won and a Won deal "Meridian Health — Compliance suite" was added — 9 deals,
+  3 won; "Won this month" reads $93.5K / 3 deals.)* Clerk: member Jordan Ellis;
   pending invitation to `nexo.invitee.18517@mailinator.com`.
 
 ### Server-side observations during this run
@@ -1226,10 +1295,13 @@ the browser, Sep 26 audit #5. Adding it requires a UI change in
 ### Bugs and gaps found by the Sep 27 audit (details in the audit section)
 - ~~Notes don't persist last-touched~~ — fixed Sep 27 2026 (see "Fixed: logging
   an activity now persists the parent's last-activity time").
-- **Dashboard hardcodes/definitions:** trend deltas, "$280K target", "this
-  quarter" caption, sidebar Q3 quota, saved-view counts `5` and `3`;
-  Won-this-month ignores deals dragged to Won (close date not updated); saved-view
-  link `/pipeline?close=30` is ignored.
+- **Dashboard hardcodes/definitions:** trend deltas, "$280K target", sidebar Q3
+  quota, saved-view counts `5` and `3`; saved-view link `/pipeline?close=30` is
+  ignored. (Fixed Sep 27: the "this quarter" caption and Won-this-month ignoring
+  deals dragged to Won.) Reports has the same hardcoded deltas (9.8 / 3.4 / −4.1)
+  and a dead "This quarter" button.
+- **No closed-at date for Lost deals**, so period metrics (a real "this quarter"
+  win rate) can't be computed yet.
 - **No field editing** for leads, contacts or deals; many controls are dead (Email,
   Call, Meeting, Log activity, Send email, Delete lead, Reassign, Export, Edit
   deal, Customize stages, header "New task", Settings profile/workspace "Save").
@@ -1291,8 +1363,9 @@ Champions) have hardcoded counts and are not real saved queries.
 - ~~Finish the audit: #9–12 and #14~~ — done Sep 27 2026 (see the re-run above).
   Fix what it found, roughly in this order: (1) ~~`addNoteAction` should update
   `lastTouchedAt` / `lastInteractionAt`~~ (done); (2) replace the hardcoded Dashboard
-  values (trend deltas, target, quota, saved-view counts) with real or hidden
-  ones, fix "this quarter", set the close date when a deal moves to Won; (3)
+  and Reports values (trend deltas, target, quota, saved-view counts) with real or
+  hidden ones (~~fix "this quarter", set the close date when a deal moves to
+  Won~~ — done Sep 27); (3)
   register the Clerk webhook (and/or create an `Owner` for new members) so
   invited members can be assigned records; (4) field editing for
   leads/contacts/deals; (5) a "New task" form with due date/priority/assignee.

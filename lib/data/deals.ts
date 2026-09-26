@@ -75,9 +75,12 @@ export async function moveDealToStage(
   return prisma.$transaction(async (tx) => {
     const existing = await tx.deal.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Deal ${id} not found in org ${orgId}`)
+    // Entering Won stamps the actual close date (it drives "Won this month"). Leaving Won keeps it:
+    // closeDate is non-nullable and the previous expected date isn't stored, so there's nothing better to restore.
+    const closedNow = stage === 'won' && existing.stage !== 'won'
     return tx.deal.update({
       where: { id },
-      data: { stage, probability },
+      data: { stage, probability, ...(closedNow && { closeDate: new Date() }) },
     })
   })
 }

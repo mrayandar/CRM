@@ -32,7 +32,7 @@ export function NewDealModal({
   const stageOptions = defaultStage && !OPEN_STAGES.includes(defaultStage) ? [...OPEN_STAGES, defaultStage] : OPEN_STAGES
   const [closeDate, setCloseDate] = useState(() => {
     const d = new Date()
-    d.setDate(d.getDate() + 30)
+    if (defaultStage !== 'won') d.setDate(d.getDate() + 30)
     return d.toISOString().slice(0, 10)
   })
   const [contactId, setContactId] = useState(initialContact?.id ?? '')

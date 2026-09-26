@@ -123,7 +123,7 @@ export function Dashboard() {
               label: 'Conversion rate',
               value: percent(conversionRate),
               delta: TREND.conversion,
-              footer: `${wonDeals.length} won / ${lostDeals.length} lost this quarter`,
+              footer: `${wonDeals.length} won / ${lostDeals.length} lost · all time`,
             },
           ]}
         />

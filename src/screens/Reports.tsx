@@ -95,7 +95,7 @@ export function Reports() {
               value: currencyCompact(sum(won.map((d) => d.value))),
               delta: 9.8,
               emphasis: true,
-              footer: `${won.length} deals closed this quarter`,
+              footer: `${won.length} deals closed-won · all time`,
             },
             {
               label: 'Win rate',

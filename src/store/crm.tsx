@@ -244,10 +244,12 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
       const probability =
         stage === 'won' ? 100 : stage === 'lost' ? 0 : STAGE_PROBABILITY[stage]
+      const now = new Date().toISOString()
+      const closedNow = stage === 'won'
       setDeals((prev) =>
         prev.map((d) =>
           d.id === dealId
-            ? { ...d, stage, probability, updatedAt: new Date().toISOString() }
+            ? { ...d, stage, probability, updatedAt: now, ...(closedNow && { closeDate: now }) }
             : d,
         ),
       )
@@ -267,7 +269,13 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           setDeals((prev) =>
             prev.map((d) =>
               d.id === dealId
-                ? { ...d, stage: deal.stage, probability: deal.probability, updatedAt: deal.updatedAt }
+                ? {
+                    ...d,
+                    stage: deal.stage,
+                    probability: deal.probability,
+                    updatedAt: deal.updatedAt,
+                    closeDate: deal.closeDate,
+                  }
                 : d,
             ),
           ),
