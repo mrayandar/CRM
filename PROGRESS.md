@@ -696,8 +696,9 @@ verdict must be confirmed against the DB.
 - **UI:** `src/components/common/NewDealModal.tsx` (one shared modal, built from
   the existing `Modal`/`Input`/`Select`/`Label`, same layout as `ConvertModal`),
   opened by all three "New deal" buttons: `Pipeline.tsx`, `Dashboard.tsx`,
-  `RecordDetail.tsx` (contact page — prefills that contact and its company). The
-  Pipeline column "+" buttons are still unwired. Fields: name, value, stage
+  `RecordDetail.tsx` (contact page — prefills that contact and its company), and
+  (Sep 27 2026) each Pipeline column's "+" button, which pre-fills that column's
+  stage. Fields: name, value, stage
   (default Discovery — the first pipeline stage; Discovery→Contract offered),
   expected close date (default +30 days), linked contact (optional), owner
   (default current user).
@@ -737,6 +738,24 @@ verdict must be confirmed against the DB.
    removed; 0 DB rows for each. Net DB change: exactly +3 deals.
 - Test deals/activities were deleted afterwards (org back to seed state).
 - Not done: a Company entity (still free text); editing a deal after creation.
+
+**Pipeline column "+" buttons (Sep 27 2026):** each of the six column headers'
+"+" ("Add deal to <stage>") now opens `NewDealModal` with `defaultStage` set to
+that column's stage. Pure reuse — no new server logic; `Pipeline.tsx` tracks
+`newDeal: { stage?: DealStage } | null` (header button → `{}`, column "+" →
+`{ stage }`). The modal normally offers only the four open stages, so if the
+pre-filled stage is Won or Lost it's added to the dropdown for that modal (a
+deal can therefore be created directly as Won/Lost from those columns; the
+header button still offers only the four open stages). The pre-selected stage can
+still be changed before saving.
+- **Verified (browser + Neon, 24/24):** for all six columns — modal opens with
+  the right stage pre-selected; on Create the card appears in that same column
+  immediately (no page reload); the DB row has that `stage` and the matching
+  probability (20/45/65/85/100/0), the right `orgId`, and its one `created`
+  activity. Header "New deal" still defaults to Discovery with only the four open
+  stages; changing the stage in a pre-filled modal is respected (Proposal "+" →
+  Contract Sent saved as `contract`). Net DB change +7 deals; test deals deleted
+  afterwards.
 
 ### New contact creation (complete, verified against the DB — Sep 27 2026)
 
@@ -996,11 +1015,11 @@ but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
 the browser, Sep 26 audit #5. Adding it requires a UI change in
 `src/screens/`, so it needs explicit sign-off.)
 
-### No Company entity; Pipeline column "+" buttons unwired
+### No Company entity
 
 **Lead, Deal and Contact creation are all done** (see "New lead / New deal /
-New contact creation" under Done). The Pipeline column "+" ("Add deal to
-<stage>") buttons are still unwired placeholders. There's no Company model at
+New contact creation" under Done), including the Pipeline column "+" buttons.
+There's no Company model at
 all — company is a free-text string on Lead/Contact/Deal, so nothing prevents
 "Acme" and "Acme Inc." from being treated as different companies. Contacts and
 deals can't be edited after creation (only lead status changes, deal stage moves
@@ -1051,8 +1070,7 @@ Champions) have hardcoded counts and are not real saved queries.
   done. Follow-up: the "couldn't save" toast is
   done (see "Added: failure toast").
 - ~~New lead / New deal / New contact creation~~ — done. Decide on (and sign
-  off on the UI changes for) wiring the Pipeline column "+" buttons, editing
-  existing leads/contacts/deals, and whether a Company entity is in scope.
+  off on the UI changes for) editing existing leads/contacts/deals, and whether a Company entity is in scope.
 - Delete the duplicate "Alice Audit" / "Bob Audit" seed rows in
   "Nexo Verified Org", or reset that org's test data.
 - Seed initial CRM data for a new org (optional).

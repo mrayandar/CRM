@@ -13,9 +13,12 @@ const OPEN_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contr
 export function NewDealModal({
   onClose,
   defaultContactId,
+  defaultStage,
 }: {
   onClose: () => void
   defaultContactId?: string
+  /** Pre-selects this stage (e.g. from a Pipeline column's "+"); defaults to the first pipeline stage. */
+  defaultStage?: DealStage
 }) {
   const { addDeal, owners, contacts, currentUser } = useCrm()
 
@@ -24,7 +27,9 @@ export function NewDealModal({
 
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
-  const [stage, setStage] = useState<DealStage>(PIPELINE_STAGES[0]!)
+  const [stage, setStage] = useState<DealStage>(defaultStage ?? PIPELINE_STAGES[0]!)
+  // Won/Lost aren't normally offered for a new deal, but a column's "+" can pre-select one.
+  const stageOptions = defaultStage && !OPEN_STAGES.includes(defaultStage) ? [...OPEN_STAGES, defaultStage] : OPEN_STAGES
   const [closeDate, setCloseDate] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() + 30)
@@ -120,7 +125,7 @@ export function NewDealModal({
               onChange={(e) => setStage(e.target.value as DealStage)}
               className="h-9"
             >
-              {OPEN_STAGES.map((s) => (
+              {stageOptions.map((s) => (
                 <option key={s} value={s}>
                   {DEAL_STAGE_LABEL[s]}
                 </option>

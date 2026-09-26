@@ -34,7 +34,8 @@ export function Pipeline() {
   const [query, setQuery] = useState('')
   const [owner, setOwner] = useState('all')
   const [scope, setScope] = useState<'all' | 'mine'>('all')
-  const [newDealOpen, setNewDealOpen] = useState(false)
+  // null = closed; `stage` pre-selects a column's stage (from that column's "+")
+  const [newDeal, setNewDeal] = useState<{ stage?: DealStage } | null>(null)
   const [dragging, setDragging] = useState<string | null>(null)
   const [overStage, setOverStage] = useState<DealStage | null>(null)
 
@@ -91,7 +92,7 @@ export function Pipeline() {
             variant="primary"
             size="sm"
             icon={<Plus size={14} />}
-            onClick={() => setNewDealOpen(true)}
+            onClick={() => setNewDeal({})}
           >
             New deal
           </Button>
@@ -164,7 +165,11 @@ export function Pipeline() {
                   <span className="tabular rounded-full bg-surface px-1.5 text-[10.5px] leading-[17px] font-semibold text-ink-500 ring-1 ring-line">
                     {columnDeals.length}
                   </span>
-                  <IconButton label={`Add deal to ${DEAL_STAGE_LABEL[stage]}`} className="ml-auto -mr-1.5 size-7">
+                  <IconButton
+                    label={`Add deal to ${DEAL_STAGE_LABEL[stage]}`}
+                    onClick={() => setNewDeal({ stage })}
+                    className="ml-auto -mr-1.5 size-7"
+                  >
                     <Plus size={13} />
                   </IconButton>
                 </div>
@@ -225,7 +230,7 @@ export function Pipeline() {
         })}
       </div>
 
-      {newDealOpen && <NewDealModal onClose={() => setNewDealOpen(false)} />}
+      {newDeal && <NewDealModal onClose={() => setNewDeal(null)} defaultStage={newDeal.stage} />}
     </PageShell>
   )
 }
