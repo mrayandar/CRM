@@ -2,8 +2,8 @@
  * Permanent regression guard for multi-tenant data isolation.
  *
  * Creates two real Organizations (with real Owners/Leads/Contacts/Deals/
- * Tasks) in the real database, then attempts cross-tenant access through
- * every lib/data/*.ts function and every server action in
+ * Tasks/PipelineStages) in the real database, then attempts cross-tenant
+ * access through every lib/data/*.ts function and every server action in
  * lib/actions/crm.ts: reading, editing, deleting/mutating, and reassigning
  * records across the org boundary. Every one of these must fail — if any
  * of them succeeds, a tenant can read or write another tenant's CRM data.
@@ -32,7 +32,9 @@ import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/d
 import { getOwnerById, listOwners } from '@lib/data/owners'
 import { getTaskById, listTasks, toggleTaskDone } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
+import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
 import * as actions from '@lib/actions/crm'
+import type { PipelineStage } from '@prisma/client'
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 
@@ -43,12 +45,22 @@ interface Fixture {
   contact: Awaited<ReturnType<typeof prisma.contact.create>>
   deal: Awaited<ReturnType<typeof prisma.deal.create>>
   task: Awaited<ReturnType<typeof prisma.task.create>>
+  stages: PipelineStage[]
+  /** This org's "discovery"-equivalent open stage — what the deal fixture sits in. */
+  stage: PipelineStage
+  /** A second open stage, for move/reorder tests. */
+  otherStage: PipelineStage
 }
 
 async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
   const org = await prisma.organization.create({
     data: { clerkOrgId: `test-clerk-org-${tag}-${RUN}`, name: `Cross-tenant test org ${tag}` },
   })
+  await ensureDefaultStages(org.id)
+  const stages = await listStages(org.id)
+  const stage = stages.find((s) => s.key === 'discovery')!
+  const otherStage = stages.find((s) => s.key === 'proposal')!
+
   const owner = await prisma.owner.create({
     data: {
       orgId: org.id,
@@ -90,7 +102,8 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
       company: `Co ${tag}`,
       value: 1000,
       source: 'Inbound',
-      probability: 20,
+      probability: stage.probability,
+      stageId: stage.id,
       closeDate: new Date(),
       ownerId: owner.id,
       contactId: contact.id,
@@ -99,7 +112,7 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
   const task = await prisma.task.create({
     data: { orgId: org.id, title: `Task ${tag}`, dueDate: new Date(), ownerId: owner.id },
   })
-  return { org, owner, lead, contact, deal, task }
+  return { org, owner, lead, contact, deal, task, stages, stage, otherStage }
 }
 
 async function destroyFixture(f: Fixture) {
@@ -110,6 +123,7 @@ async function destroyFixture(f: Fixture) {
   await prisma.contact.deleteMany({ where: { orgId } })
   await prisma.lead.deleteMany({ where: { orgId } })
   await prisma.owner.deleteMany({ where: { orgId } })
+  await prisma.pipelineStage.deleteMany({ where: { orgId } })
   await prisma.organization.delete({ where: { id: orgId } })
 }
 
@@ -147,6 +161,9 @@ describe('lib/data: reads are scoped by orgId', () => {
   it('getTaskById returns null for another org\'s task', async () => {
     expect(await getTaskById(B.org.id, A.task.id)).toBeNull()
   })
+  it('getStageById returns null for another org\'s stage', async () => {
+    expect(await getStageById(B.org.id, A.stage.id)).toBeNull()
+  })
   it('listLeads never includes another org\'s leads', async () => {
     expect((await listLeads(B.org.id)).map((l) => l.id)).not.toContain(A.lead.id)
   })
@@ -161,6 +178,10 @@ describe('lib/data: reads are scoped by orgId', () => {
   })
   it('listTasks never includes another org\'s tasks', async () => {
     expect((await listTasks(B.org.id)).map((t) => t.id)).not.toContain(A.task.id)
+  })
+  it('listStages never includes another org\'s stages', async () => {
+    const bStageIds = (await listStages(B.org.id)).map((s) => s.id)
+    for (const s of A.stages) expect(bStageIds).not.toContain(s.id)
   })
   it('listActivities never includes another org\'s activities', async () => {
     const activityA = await prisma.activity.create({
@@ -207,16 +228,38 @@ describe('lib/data: writes reject a record id from another org', () => {
       updateDeal(
         B.org.id,
         A.deal.id,
-        { name: 'x', value: 100, stage: 'discovery', probability: 20, closeDate: new Date(), contactId: null, ownerId: B.owner.id },
+        {
+          name: 'x',
+          value: 100,
+          stage: { id: B.stage.id, probability: B.stage.probability, isWon: B.stage.isWon },
+          closeDate: new Date(),
+          contactId: null,
+          ownerId: B.owner.id,
+        },
         B.owner.id,
       ),
     ).rejects.toThrow()
   })
   it('moveDealToStage throws', async () => {
-    await expect(moveDealToStage(B.org.id, A.deal.id, 'proposal', 45)).rejects.toThrow()
+    await expect(
+      moveDealToStage(B.org.id, A.deal.id, {
+        id: B.otherStage.id,
+        probability: B.otherStage.probability,
+        isWon: B.otherStage.isWon,
+      }),
+    ).rejects.toThrow()
   })
   it('toggleTaskDone throws', async () => {
     await expect(toggleTaskDone(B.org.id, A.task.id, true)).rejects.toThrow()
+  })
+  it('renameStage throws', async () => {
+    await expect(renameStage(B.org.id, A.stage.id, 'Hijacked')).rejects.toThrow()
+  })
+  it('reorderStage throws', async () => {
+    await expect(reorderStage(B.org.id, A.stage.id, 'down')).rejects.toThrow()
+  })
+  it('deleteStage throws', async () => {
+    await expect(deleteStage(B.org.id, A.stage.id)).rejects.toThrow()
   })
 
   it('none of the above mutated the org A rows', async () => {
@@ -224,14 +267,16 @@ describe('lib/data: writes reject a record id from another org', () => {
     const contact = await prisma.contact.findUnique({ where: { id: A.contact.id } })
     const deal = await prisma.deal.findUnique({ where: { id: A.deal.id } })
     const task = await prisma.task.findUnique({ where: { id: A.task.id } })
+    const stage = await prisma.pipelineStage.findUnique({ where: { id: A.stage.id } })
     expect(lead?.status).toBe('new')
     expect(contact?.name).toBe(A.contact.name)
-    expect(deal?.stage).toBe('discovery')
+    expect(deal?.stageId).toBe(A.stage.id)
     expect(task?.done).toBe(false)
+    expect(stage?.label).toBe(A.stage.label)
   })
 })
 
-describe('server actions: reject a client-supplied ownerId/contactId from another org', () => {
+describe('server actions: reject a client-supplied ownerId/contactId/stageId from another org', () => {
   beforeEach(() => loginAs(B))
 
   it('createLeadAction rejects an ownerId from another org', async () => {
@@ -270,13 +315,29 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
         name: 'x',
         company: 'x',
         value: 100,
-        stage: 'discovery',
+        stageId: B.stage.id,
         closeDate: new Date().toISOString(),
         ownerId: A.owner.id,
         source: 'Inbound',
         priority: 'low',
       }),
     ).rejects.toThrow(/Owner not found/)
+  })
+
+  it('createDealAction rejects a stageId from another org', async () => {
+    await expect(
+      actions.createDealAction({
+        id: crypto.randomUUID(),
+        name: 'x',
+        company: 'x',
+        value: 100,
+        stageId: A.stage.id,
+        closeDate: new Date().toISOString(),
+        ownerId: B.owner.id,
+        source: 'Inbound',
+        priority: 'low',
+      }),
+    ).rejects.toThrow(/Stage not found/)
   })
 
   it('createDealAction rejects a contactId from another org', async () => {
@@ -286,7 +347,7 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
         name: 'x',
         company: 'x',
         value: 100,
-        stage: 'discovery',
+        stageId: B.stage.id,
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
         contactId: A.contact.id,
@@ -351,7 +412,7 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
         id: A.deal.id,
         name: 'x',
         value: 100,
-        stage: 'discovery',
+        stageId: B.stage.id,
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
       }),
@@ -359,16 +420,32 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
     expect((await prisma.deal.findUnique({ where: { id: A.deal.id } }))?.name).toBe(A.deal.name)
   })
 
-  it('updateDealAction rejects a contactId from another org', async () => {
+  it('updateDealAction rejects a stageId from another org', async () => {
     const own = await prisma.deal.create({
-      data: { orgId: B.org.id, name: 'B-own-deal', company: 'x', value: 1, source: 'Inbound', probability: 20, closeDate: new Date(), ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-deal-stage', company: 'x', value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
     })
     await expect(
       actions.updateDealAction({
         id: own.id,
         name: 'x',
         value: 100,
-        stage: 'discovery',
+        stageId: A.stage.id,
+        closeDate: new Date().toISOString(),
+        ownerId: B.owner.id,
+      }),
+    ).rejects.toThrow(/Stage not found/)
+  })
+
+  it('updateDealAction rejects a contactId from another org', async () => {
+    const own = await prisma.deal.create({
+      data: { orgId: B.org.id, name: 'B-own-deal', company: 'x', value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
+    })
+    await expect(
+      actions.updateDealAction({
+        id: own.id,
+        name: 'x',
+        value: 100,
+        stageId: B.stage.id,
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
         contactId: A.contact.id,
@@ -377,8 +454,15 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
   })
 
   it('moveDealAction (kanban drag) rejects a deal id from another org', async () => {
-    await expect(actions.moveDealAction(A.deal.id, 'proposal')).rejects.toThrow()
-    expect((await prisma.deal.findUnique({ where: { id: A.deal.id } }))?.stage).toBe('discovery')
+    await expect(actions.moveDealAction(A.deal.id, B.otherStage.id)).rejects.toThrow()
+    expect((await prisma.deal.findUnique({ where: { id: A.deal.id } }))?.stageId).toBe(A.stage.id)
+  })
+
+  it('moveDealAction rejects a stageId from another org, even on the caller\'s own deal', async () => {
+    const own = await prisma.deal.create({
+      data: { orgId: B.org.id, name: 'B-own-deal-2', company: 'x', value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
+    })
+    await expect(actions.moveDealAction(own.id, A.otherStage.id)).rejects.toThrow(/Stage not found/)
   })
 
   it('setLeadStatusAction rejects a lead id from another org', async () => {
@@ -400,6 +484,20 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
     await expect(
       actions.convertLeadAction(own.id, { ownerId: A.owner.id, contactId: crypto.randomUUID() }),
     ).rejects.toThrow(/Owner not found/)
+  })
+
+  it('convertLeadAction rejects a stageId from another org when opening a deal', async () => {
+    const own = await prisma.lead.create({
+      data: { orgId: B.org.id, name: 'B-own-lead-3', title: '', company: 'x', email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
+    })
+    await expect(
+      actions.convertLeadAction(own.id, {
+        ownerId: B.owner.id,
+        contactId: crypto.randomUUID(),
+        dealId: crypto.randomUUID(),
+        deal: { name: 'x', value: 100, stageId: A.stage.id, closeDate: new Date().toISOString(), priority: 'low' },
+      }),
+    ).rejects.toThrow(/Stage not found/)
   })
 
   it('toggleTaskAction rejects a task id from another org', async () => {
@@ -465,6 +563,21 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
     await expect(actions.addNoteAction({ type: 'lead', id: A.lead.id, label: 'x' }, 'body')).rejects.toThrow()
   })
 
+  it('renameStageAction rejects a stage id from another org', async () => {
+    await expect(actions.renameStageAction(A.stage.id, 'Hijacked')).rejects.toThrow()
+    expect((await prisma.pipelineStage.findUnique({ where: { id: A.stage.id } }))?.label).toBe(A.stage.label)
+  })
+
+  it('reorderStageAction rejects a stage id from another org', async () => {
+    await expect(actions.reorderStageAction(A.stage.id, 'down')).rejects.toThrow()
+    expect((await prisma.pipelineStage.findUnique({ where: { id: A.stage.id } }))?.order).toBe(A.stage.order)
+  })
+
+  it('deleteStageAction rejects a stage id from another org', async () => {
+    await expect(actions.deleteStageAction(A.stage.id)).rejects.toThrow()
+    expect(await prisma.pipelineStage.findUnique({ where: { id: A.stage.id } })).not.toBeNull()
+  })
+
   it('no cross-tenant attempt above left an Activity authored by B on org A', async () => {
     const leaked = await prisma.activity.findMany({ where: { orgId: A.org.id, actorId: B.owner.id } })
     expect(leaked).toHaveLength(0)
@@ -474,16 +587,16 @@ describe('server actions: reject a client-supplied ownerId/contactId from anothe
 describe('server actions: every action requires a real, session-derived orgId', () => {
   it('rejects when there is no Clerk session at all', async () => {
     mockAuth.mockResolvedValue({ userId: null, orgId: null })
-    await expect(actions.moveDealAction(A.deal.id, 'proposal')).rejects.toThrow()
+    await expect(actions.moveDealAction(A.deal.id, A.otherStage.id)).rejects.toThrow()
   })
 
   it('rejects when the Clerk org has no matching Organization row', async () => {
     mockAuth.mockResolvedValue({ userId: 'ghost-user', orgId: `ghost-clerk-org-${RUN}` })
-    await expect(actions.moveDealAction(A.deal.id, 'proposal')).rejects.toThrow()
+    await expect(actions.moveDealAction(A.deal.id, A.otherStage.id)).rejects.toThrow()
   })
 
   it('rejects when the Clerk user has no matching Owner row in that org', async () => {
     mockAuth.mockResolvedValue({ userId: `ghost-user-${RUN}`, orgId: A.org.clerkOrgId })
-    await expect(actions.moveDealAction(A.deal.id, 'proposal')).rejects.toThrow()
+    await expect(actions.moveDealAction(A.deal.id, A.otherStage.id)).rejects.toThrow()
   })
 })

@@ -3,6 +3,7 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { Webhook } from 'svix'
 import { upsertOrg, updateOrg, deleteOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { upsertOwnerFromClerk } from '@lib/data/owners'
+import { ensureDefaultStages } from '@lib/data/stages'
 import { ownerRoleFromClerk } from '@lib/roles'
 
 interface WebhookEvent {
@@ -85,7 +86,8 @@ async function handleOrgCreated(data: Record<string, unknown>) {
   // a no-op (update: {} leaves the existing row unchanged). A plain
   // check-then-create would race and throw P2002 when both paths try to
   // INSERT concurrently.
-  await upsertOrg({ clerkOrgId, name })
+  const org = await upsertOrg({ clerkOrgId, name })
+  await ensureDefaultStages(org.id)
 }
 
 /**

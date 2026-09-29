@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import type { DealStage, LeadStatus, Priority } from '@/data/types'
+import type { LeadStatus, PipelineStage, Priority } from '@/data/types'
 
 export type Tone = 'neutral' | 'positive' | 'negative' | 'warning' | 'info' | 'accent' | 'brand'
 
@@ -72,13 +72,16 @@ export const LEAD_STATUS_TONE: Record<LeadStatus, Tone> = {
   lost: 'negative',
 }
 
-export const DEAL_STAGE_TONE: Record<DealStage, Tone> = {
-  discovery: 'neutral',
-  proposal: 'info',
-  negotiation: 'accent',
-  contract: 'warning',
-  won: 'positive',
-  lost: 'negative',
+/** Open stages cycle through this palette by position (matches the old fixed enum's tones:
+ *  Discovery=neutral, Proposal=info, Negotiation=accent, Contract Sent=warning); a custom stage
+ *  beyond the 4 defaults just continues the cycle. Won/Lost are driven by their flags, not
+ *  position, so a renamed "Won"-equivalent stage still reads as positive. */
+const OPEN_STAGE_TONES: Tone[] = ['neutral', 'info', 'accent', 'warning', 'brand']
+
+export function stageTone(stage: PipelineStage, openStages: PipelineStage[]): Tone {
+  if (stage.isClosed) return stage.isWon ? 'positive' : 'negative'
+  const index = openStages.findIndex((s) => s.id === stage.id)
+  return OPEN_STAGE_TONES[index % OPEN_STAGE_TONES.length] ?? 'neutral'
 }
 
 export const PRIORITY_TONE: Record<Priority, Tone> = {

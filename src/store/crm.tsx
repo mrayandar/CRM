@@ -14,15 +14,14 @@ import type {
   ActivityKind,
   Contact,
   Deal,
-  DealStage,
   Lead,
   LeadSource,
   LeadStatus,
   Owner,
+  PipelineStage,
   Priority,
   Task,
 } from '@/data/types'
-import { DEAL_STAGE_LABEL } from '@/data/types'
 import { initialsOf } from '@/lib/utils'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
@@ -40,6 +39,10 @@ import {
   addNoteAction,
   logActivityAction,
   updateProfileAction,
+  createStageAction,
+  renameStageAction,
+  reorderStageAction,
+  deleteStageAction,
 } from '@lib/actions/crm'
 import type { CrmInitialData } from '@lib/data-loader'
 
@@ -49,7 +52,7 @@ type SubjectRef = NonNullable<Activity['subject']>
 export interface ConvertLeadDealInput {
   name: string
   value: number
-  stage: DealStage
+  stageId: string
   closeDate: string
   priority: Priority
 }
@@ -105,7 +108,7 @@ export interface NewDealInput {
   name: string
   company: string
   value: number
-  stage: DealStage
+  stageId: string
   /** ISO timestamp */
   closeDate: string
   ownerId: string
@@ -115,7 +118,7 @@ export interface NewDealInput {
 export interface UpdateDealInput {
   name: string
   value: number
-  stage: DealStage
+  stageId: string
   /** ISO timestamp */
   closeDate: string
   ownerId: string
@@ -130,8 +133,10 @@ interface CrmState {
   deals: Deal[]
   tasks: Task[]
   activities: Activity[]
+  stages: PipelineStage[]
   ownerById: (id: string) => Owner
-  moveDeal: (dealId: string, stage: DealStage) => void
+  stageById: (id: string) => PipelineStage
+  moveDeal: (dealId: string, stageId: string) => void
   /** Adds the lead to local state immediately; resolves once persisted, rejects (after rolling back) if the save fails. */
   addLead: (input: NewLeadInput) => Promise<Lead>
   /**
@@ -152,6 +157,14 @@ interface CrmState {
    * (entering Won stamps today) — this mirrors the server, which is the actual source of truth.
    */
   updateDeal: (dealId: string, input: UpdateDealInput) => void
+  /** Adds a new open stage, inserted right before the first closed (Won/Lost) stage. */
+  addStage: (label: string) => void
+  renameStage: (stageId: string, label: string) => void
+  /** Moves an open stage up or down among the other open stages; Won/Lost stay pinned last. */
+  moveStage: (stageId: string, direction: 'up' | 'down') => void
+  /** Blocked (returns {ok:false, error}) if the stage is closed, the last open stage, or still
+   *  has deals in it — never silently orphans a deal. */
+  deleteStage: (stageId: string) => Promise<{ ok: true } | { ok: false; error: string }>
   setLeadStatus: (leadId: string, status: LeadStatus) => void
   convertLead: (
     leadId: string,
@@ -202,6 +215,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [activities, setActivities] = useState<Activity[]>(initialData.activities)
   const [owners, setOwners] = useState<Owner[]>(initialData.owners)
   const [currentUser, setCurrentUser] = useState<Owner>(initialData.currentUser)
+  const [stages, setStages] = useState<PipelineStage[]>(initialData.stages)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const dismissToast = useCallback(
@@ -222,6 +236,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const ownerById = useCallback(
     (id: string) => owners.find((o) => o.id === id) ?? currentUser,
     [owners, currentUser],
+  )
+
+  const stageById = useCallback(
+    (id: string) => stages.find((s) => s.id === id) ?? stages[0]!,
+    [stages],
   )
 
   const removeActivity = useCallback(
@@ -292,40 +311,41 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   )
 
   const moveDeal = useCallback(
-    (dealId: string, stage: DealStage) => {
+    (dealId: string, stageId: string) => {
       const deal = deals.find((d) => d.id === dealId)
-      if (!deal || deal.stage === stage) return
+      if (!deal || deal.stageId === stageId) return
 
-      const probability =
-        stage === 'won' ? 100 : stage === 'lost' ? 0 : STAGE_PROBABILITY[stage]
+      const previousStage = stageById(deal.stageId)
+      const nextStage = stageById(stageId)
+      // Same rule the server applies (see closeDateOnStageChange in lib/data/deals.ts): entering a
+      // Won-flagged stage from one that wasn't stamps the close date to now.
+      const closedNow = nextStage.isWon && !previousStage.isWon
       const now = new Date().toISOString()
-      const closedNow = stage === 'won'
       setDeals((prev) =>
         prev.map((d) =>
           d.id === dealId
-            ? { ...d, stage, probability, updatedAt: now, ...(closedNow && { closeDate: now }) }
+            ? { ...d, stageId, probability: nextStage.probability, updatedAt: now, ...(closedNow && { closeDate: now }) }
             : d,
         ),
       )
 
-      const kind: ActivityKind = stage === 'won' ? 'won' : stage === 'lost' ? 'lost' : 'stage'
-      const title =
-        stage === 'won'
-          ? `marked ${deal.name} as Won`
-          : stage === 'lost'
-            ? `marked ${deal.name} as Lost`
-            : `moved ${deal.name} to ${DEAL_STAGE_LABEL[stage]}`
+      const kind: ActivityKind = nextStage.isWon ? 'won' : nextStage.isClosed ? 'lost' : 'stage'
+      const title = nextStage.isWon
+        ? `marked ${deal.name} as Won`
+        : nextStage.isClosed
+          ? `marked ${deal.name} as Lost`
+          : `moved ${deal.name} to ${nextStage.label}`
       const activity = addLocalActivity(kind, title, { type: 'deal', id: deal.id, label: deal.name })
 
       persist(
-        () => moveDealAction(dealId, stage),
+        () => moveDealAction(dealId, stageId),
         () =>
           setDeals((prev) =>
             prev.map((d) =>
               d.id === dealId
                 ? {
                     ...d,
-                    stage: deal.stage,
+                    stageId: deal.stageId,
                     probability: deal.probability,
                     updatedAt: deal.updatedAt,
                     closeDate: deal.closeDate,
@@ -336,7 +356,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         activity,
       )
     },
-    [deals, addLocalActivity, persist],
+    [deals, stageById, addLocalActivity, persist],
   )
 
   const addLead = useCallback(
@@ -465,15 +485,16 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const source: LeadSource = originLead?.source ?? 'Inbound'
       const priority: Priority = 'medium'
 
+      const stage = stageById(input.stageId)
       const deal: Deal = {
         id,
         name,
         company,
         contactId: contact?.id,
         value: input.value,
-        stage: input.stage,
+        stageId: input.stageId,
         ownerId: input.ownerId,
-        probability: STAGE_PROBABILITY[input.stage],
+        probability: stage.probability,
         closeDate: input.closeDate,
         updatedAt: now,
         priority,
@@ -504,7 +525,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
             name,
             company,
             value: input.value,
-            stage: input.stage,
+            stageId: input.stageId,
             closeDate: input.closeDate,
             ownerId: input.ownerId,
             contactId: contact?.id,
@@ -525,7 +546,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       )
       return id
     },
-    [contacts, leads, currentUser.id, persist],
+    [contacts, leads, currentUser.id, stageById, persist],
   )
 
   const updateLead = useCallback(
@@ -654,24 +675,24 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const trimmed = {
         name: input.name.trim(),
         value: input.value,
-        stage: input.stage,
+        stageId: input.stageId,
         closeDate: input.closeDate,
         contactId: input.contactId,
         ownerId: input.ownerId,
       }
 
       // Same close-date rule the server applies in updateDeal/moveDealToStage (lib/data/deals.ts):
-      // entering Won stamps today, overriding whatever was submitted for the field; every other
-      // case — including leaving Won — uses the submitted value as-is.
+      // entering a Won-flagged stage stamps today, overriding whatever was submitted for the
+      // field; every other case — including leaving Won — uses the submitted value as-is.
       const now = new Date().toISOString()
-      const closedNow = trimmed.stage === 'won' && deal.stage !== 'won'
+      const nextStage = stageById(trimmed.stageId)
+      const closedNow = nextStage.isWon && !stageById(deal.stageId).isWon
       const closeDate = closedNow ? now : trimmed.closeDate
-      const probability = STAGE_PROBABILITY[trimmed.stage]
 
       const changed: string[] = []
       if (deal.name !== trimmed.name) changed.push('name')
       if (deal.value !== trimmed.value) changed.push('value')
-      if (deal.stage !== trimmed.stage) changed.push('stage')
+      if (deal.stageId !== trimmed.stageId) changed.push('stage')
       if (deal.closeDate !== closeDate) changed.push('close date')
       if ((deal.contactId ?? '') !== (trimmed.contactId ?? '')) changed.push('contact')
       if (deal.ownerId !== trimmed.ownerId) changed.push('owner')
@@ -684,8 +705,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         ...deal,
         name: trimmed.name,
         value: trimmed.value,
-        stage: trimmed.stage,
-        probability,
+        stageId: trimmed.stageId,
+        probability: nextStage.probability,
         closeDate,
         contactId: trimmed.contactId,
         ownerId: trimmed.ownerId,
@@ -718,7 +739,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         "Couldn't save the changes, please try again.",
       )
     },
-    [deals, currentUser.id, persist],
+    [deals, stageById, currentUser.id, persist],
   )
 
   const updateProfile = useCallback(
@@ -742,6 +763,88 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       )
     },
     [currentUser, persist],
+  )
+
+  const addStage = useCallback(
+    (label: string) => {
+      const trimmed = label.trim()
+      if (!trimmed) return
+      const id = newEntityId()
+      // Mirrors the server's placement rule (createStage in lib/data/stages.ts): inserted right
+      // before the first closed stage, so Won/Lost stay pinned last.
+      setStages((prev) => {
+        const firstClosedIndex = prev.findIndex((s) => s.isClosed)
+        const insertAt = firstClosedIndex === -1 ? prev.length : firstClosedIndex
+        const next = [...prev]
+        next.splice(insertAt, 0, { id, label: trimmed, order: insertAt, probability: 50, isClosed: false, isWon: false })
+        return next.map((s, i) => ({ ...s, order: i }))
+      })
+      persist(
+        () => createStageAction({ id, label: trimmed }),
+        () => setStages((prev) => prev.filter((s) => s.id !== id)),
+        undefined,
+        "Couldn't add the stage, please try again.",
+      )
+    },
+    [persist],
+  )
+
+  const renameStage = useCallback(
+    (stageId: string, label: string) => {
+      const trimmed = label.trim()
+      if (!trimmed) return
+      const prevStages = stages
+      setStages((prev) => prev.map((s) => (s.id === stageId ? { ...s, label: trimmed } : s)))
+      persist(
+        () => renameStageAction(stageId, trimmed),
+        () => setStages(prevStages),
+        undefined,
+        "Couldn't rename the stage, please try again.",
+      )
+    },
+    [stages, persist],
+  )
+
+  const moveStage = useCallback(
+    (stageId: string, direction: 'up' | 'down') => {
+      const prevStages = stages
+      setStages((prev) => {
+        const openStages = prev.filter((s) => !s.isClosed).sort((a, b) => a.order - b.order)
+        const index = openStages.findIndex((s) => s.id === stageId)
+        const swapWith = direction === 'up' ? index - 1 : index + 1
+        if (index === -1 || swapWith < 0 || swapWith >= openStages.length) return prev
+        const a = openStages[index]!
+        const b = openStages[swapWith]!
+        return prev.map((s) => {
+          if (s.id === a.id) return { ...s, order: b.order }
+          if (s.id === b.id) return { ...s, order: a.order }
+          return s
+        })
+      })
+      persist(
+        () => reorderStageAction(stageId, direction),
+        () => setStages(prevStages),
+        undefined,
+        "Couldn't reorder the stage, please try again.",
+      )
+    },
+    [stages, persist],
+  )
+
+  // Not routed through persist(): deletion can be legitimately blocked server-side (deals still
+  // in the stage, or it's the last open stage) and the caller needs that specific message, not a
+  // generic toast — same {ok, error} shape as addContact's duplicate-email case.
+  const deleteStage = useCallback(
+    async (stageId: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      try {
+        await deleteStageAction(stageId)
+        setStages((prev) => prev.filter((s) => s.id !== stageId))
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Couldn't delete the stage" }
+      }
+    },
+    [],
   )
 
   const setLeadStatus = useCallback(
@@ -806,9 +909,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
               contactId,
               leadId,
               value: input.deal.value,
-              stage: input.deal.stage,
+              stageId: input.deal.stageId,
               ownerId: input.ownerId,
-              probability: STAGE_PROBABILITY[input.deal.stage] ?? 25,
+              probability: stageById(input.deal.stageId).probability,
               closeDate: input.deal.closeDate,
               updatedAt: now,
               priority: input.deal.priority,
@@ -854,7 +957,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
               ? {
                   name: input.deal.name,
                   value: input.deal.value,
-                  stage: input.deal.stage,
+                  stageId: input.deal.stageId,
                   closeDate: input.deal.closeDate,
                   priority: input.deal.priority,
                 }
@@ -873,7 +976,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
       return { contactId, dealId }
     },
-    [leads, currentUser.id, persist],
+    [leads, currentUser.id, stageById, persist],
   )
 
   const toggleTask = useCallback(
@@ -981,7 +1084,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       deals,
       tasks,
       activities,
+      stages,
       ownerById,
+      stageById,
       moveDeal,
       addLead,
       updateLead,
@@ -989,6 +1094,10 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       updateContact,
       addDeal,
       updateDeal,
+      addStage,
+      renameStage,
+      moveStage,
+      deleteStage,
       setLeadStatus,
       convertLead,
       toggleTask,
@@ -1005,7 +1114,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       deals,
       tasks,
       activities,
+      stages,
       ownerById,
+      stageById,
       moveDeal,
       addLead,
       updateLead,
@@ -1013,6 +1124,10 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       updateContact,
       addDeal,
       updateDeal,
+      addStage,
+      renameStage,
+      moveStage,
+      deleteStage,
       setLeadStatus,
       convertLead,
       toggleTask,
@@ -1029,15 +1144,6 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
     </CrmContext.Provider>
   )
-}
-
-const STAGE_PROBABILITY: Record<DealStage, number> = {
-  discovery: 20,
-  proposal: 45,
-  negotiation: 65,
-  contract: 85,
-  won: 100,
-  lost: 0,
 }
 
 export function useCrm(): CrmState {

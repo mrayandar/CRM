@@ -5,34 +5,35 @@ import { Button } from '@/components/ui/Button'
 import { Input, Label, Select } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
 import { useCrm } from '@/store/crm'
-import { DEAL_STAGE_LABEL, PIPELINE_STAGES, type DealStage } from '@/data/types'
 import { sortBy } from '@/lib/utils'
-
-const OPEN_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contract']
 
 export function NewDealModal({
   onClose,
   defaultContactId,
-  defaultStage,
+  defaultStageId,
 }: {
   onClose: () => void
   defaultContactId?: string
-  /** Pre-selects this stage (e.g. from a Pipeline column's "+"); defaults to the first pipeline stage. */
-  defaultStage?: DealStage
+  /** Pre-selects this stage (e.g. from a Pipeline column's "+"); defaults to the first open stage. */
+  defaultStageId?: string
 }) {
-  const { addDeal, owners, contacts, currentUser } = useCrm()
+  const { addDeal, owners, contacts, currentUser, stages, stageById } = useCrm()
 
   const sortedContacts = useMemo(() => sortBy(contacts, (c) => c.name.toLowerCase()), [contacts])
   const initialContact = contacts.find((c) => c.id === defaultContactId)
+  const sortedStages = useMemo(() => sortBy(stages, (s) => s.order), [stages])
+  const openStages = sortedStages.filter((s) => !s.isClosed)
 
+  const [stageId, setStageId] = useState(defaultStageId ?? openStages[0]?.id ?? sortedStages[0]!.id)
+  // Won/Lost aren't normally offered for a new deal, but a column's "+" can pre-select one.
+  const stageOptions = defaultStageId && stageById(defaultStageId).isClosed
+    ? [...openStages, stageById(defaultStageId)]
+    : openStages
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
-  const [stage, setStage] = useState<DealStage>(defaultStage ?? PIPELINE_STAGES[0]!)
-  // Won/Lost aren't normally offered for a new deal, but a column's "+" can pre-select one.
-  const stageOptions = defaultStage && !OPEN_STAGES.includes(defaultStage) ? [...OPEN_STAGES, defaultStage] : OPEN_STAGES
   const [closeDate, setCloseDate] = useState(() => {
     const d = new Date()
-    if (defaultStage !== 'won') d.setDate(d.getDate() + 30)
+    if (!stageById(stageId).isWon) d.setDate(d.getDate() + 30)
     return d.toISOString().slice(0, 10)
   })
   const [contactId, setContactId] = useState(initialContact?.id ?? '')
@@ -56,7 +57,7 @@ export function NewDealModal({
       name,
       company,
       value: numericValue,
-      stage,
+      stageId,
       closeDate: new Date(`${closeDate}T12:00:00`).toISOString(),
       ownerId,
       contactId: contactId || undefined,
@@ -121,13 +122,13 @@ export function NewDealModal({
           </Field>
           <Field label="Stage">
             <Select
-              value={stage}
-              onChange={(e) => setStage(e.target.value as DealStage)}
+              value={stageId}
+              onChange={(e) => setStageId(e.target.value)}
               className="h-9"
             >
               {stageOptions.map((s) => (
-                <option key={s} value={s}>
-                  {DEAL_STAGE_LABEL[s]}
+                <option key={s.id} value={s.id}>
+                  {s.label}
                 </option>
               ))}
             </Select>

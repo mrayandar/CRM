@@ -20,7 +20,7 @@ import {
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
-import { Badge, DEAL_STAGE_TONE, LEAD_STATUS_TONE, Tag, type Tone } from '@/components/ui/Badge'
+import { Badge, LEAD_STATUS_TONE, Tag, stageTone, type Tone } from '@/components/ui/Badge'
 import { Avatar, CompanyMark } from '@/components/ui/Avatar'
 import { EmptyState, KeyValue, Meter } from '@/components/ui/Display'
 import { Input, Label, Segmented, Select, Textarea } from '@/components/ui/Field'
@@ -31,11 +31,9 @@ import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
 import {
-  DEAL_STAGE_LABEL,
   LEAD_STATUS_LABEL,
   LEAD_STATUS_ORDER,
   type Contact,
-  type Deal,
   type Lead,
   type Priority,
 } from '@/data/types'
@@ -82,6 +80,8 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     deals,
     contacts,
     ownerById,
+    stageById,
+    stages,
     addNote,
     addTask,
     setLeadStatus,
@@ -589,8 +589,8 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                               Closes {formatDate(deal.closeDate)} · {deal.probability}% probability
                             </span>
                           </span>
-                          <Badge tone={DEAL_STAGE_TONE[deal.stage]} dot>
-                            {DEAL_STAGE_LABEL[deal.stage]}
+                          <Badge tone={stageTone(stageById(deal.stageId), stages.filter((s) => !s.isClosed))} dot>
+                            {stageById(deal.stageId).label}
                           </Badge>
                           <span className="tabular w-[92px] shrink-0 text-right text-[13px] font-semibold text-ink-900">
                             {currency(deal.value)}
@@ -889,11 +889,12 @@ function ConvertModal({
   onClose: () => void
   onConverted: (result: { dealId: string | null; contactId: string }) => void
 }) {
-  const { convertLead, owners } = useCrm()
+  const { convertLead, owners, stages } = useCrm()
+  const openStages = useMemo(() => sortBy(stages.filter((s) => !s.isClosed), (s) => s.order), [stages])
   const [mode, setMode] = useState<'contact' | 'deal'>('deal')
   const [name, setName] = useState(`${lead.company} — New opportunity`)
   const [value, setValue] = useState(lead.estValue.toLocaleString('en-US'))
-  const [stage, setStage] = useState<Deal['stage']>('discovery')
+  const [stageId, setStageId] = useState(openStages[0]?.id ?? '')
   const [ownerId, setOwnerId] = useState(lead.ownerId)
   const [priority, setPriority] = useState<Priority>('medium')
   const [closeDate, setCloseDate] = useState(() => {
@@ -914,7 +915,7 @@ function ConvertModal({
           ? {
               name: name.trim() || `${lead.company} — New opportunity`,
               value: numericValue,
-              stage,
+              stageId,
               closeDate: new Date(`${closeDate}T12:00:00`).toISOString(),
               priority,
             }
@@ -1000,13 +1001,13 @@ function ConvertModal({
               </Field>
               <Field label="Starting stage">
                 <Select
-                  value={stage}
-                  onChange={(e) => setStage(e.target.value as Deal['stage'])}
+                  value={stageId}
+                  onChange={(e) => setStageId(e.target.value)}
                   className="h-9"
                 >
-                  {(['discovery', 'proposal', 'negotiation', 'contract'] as const).map((s) => (
-                    <option key={s} value={s}>
-                      {DEAL_STAGE_LABEL[s]}
+                  {openStages.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
                     </option>
                   ))}
                 </Select>

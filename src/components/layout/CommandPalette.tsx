@@ -24,7 +24,7 @@ import {
 } from 'lucide-react'
 import { cn, currencyCompact } from '@/lib/utils'
 import { useCrm } from '@/store/crm'
-import { DEAL_STAGE_LABEL, LEAD_STATUS_LABEL } from '@/data/types'
+import { LEAD_STATUS_LABEL } from '@/data/types'
 
 interface PaletteApi {
   open: () => void
@@ -47,7 +47,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const navigate = useNavigate()
-  const { leads, contacts, deals } = useCrm()
+  const { leads, contacts, deals, stageById } = useCrm()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -93,7 +93,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     const dealRows: Row[] = deals.map((d) => ({
       id: d.id,
       title: d.name,
-      meta: `${currencyCompact(d.value)} · ${DEAL_STAGE_LABEL[d.stage]}`,
+      meta: `${currencyCompact(d.value)} · ${stageById(d.stageId).label}`,
       group: 'Deals',
       to: '/pipeline',
     }))
@@ -104,7 +104,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     return all
       .filter((r) => `${r.title} ${r.meta}`.toLowerCase().includes(q))
       .slice(0, 24)
-  }, [query, leads, contacts, deals])
+  }, [query, leads, contacts, deals, stageById])
 
   const go = (row?: Row) => {
     if (!row) return

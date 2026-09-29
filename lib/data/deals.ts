@@ -4,21 +4,30 @@
 // Every function requires `orgId` as its first argument and includes it in
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
-import type { DealStage, Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '@lib/prisma'
 
+/** A stage already resolved (and tenant-checked via getStageById) by the caller — mirrors how
+ *  ownerId/contactId are handled: the action validates it belongs to this org, this module trusts
+ *  that and just uses the fields it needs. */
+export interface ResolvedStage {
+  id: string
+  probability: number
+  isWon: boolean
+}
+
 export interface ListDealsOptions {
-  stage?: DealStage
+  stageId?: string
   ownerId?: string
   search?: string
 }
 
 export function listDeals(orgId: string, options: ListDealsOptions = {}) {
-  const { stage, ownerId, search } = options
+  const { stageId, ownerId, search } = options
 
   const where: Prisma.DealWhereInput = {
     orgId,
-    ...(stage && { stage }),
+    ...(stageId && { stageId }),
     ...(ownerId && { ownerId }),
     ...(search && {
       OR: [
@@ -30,22 +39,24 @@ export function listDeals(orgId: string, options: ListDealsOptions = {}) {
 
   return prisma.deal.findMany({
     where,
-    include: { owner: true, contact: true },
+    include: { owner: true, contact: true, stage: true },
     orderBy: { value: 'desc' },
   })
 }
 
-/** Deal count + total value per stage — backs the pipeline board's column headers. */
+/** Deal count + total value per stage — backs the pipeline board's column headers. Currently
+ *  unused (the UI computes this client-side from the loaded deals), kept for parity with the
+ *  old enum-based version. */
 export async function getPipelineTotals(orgId: string) {
   const grouped = await prisma.deal.groupBy({
-    by: ['stage'],
+    by: ['stageId'],
     where: { orgId },
     _count: { _all: true },
     _sum: { value: true },
   })
 
   return grouped.map((row) => ({
-    stage: row.stage,
+    stageId: row.stageId,
     count: row._count._all,
     totalValue: row._sum.value ?? 0,
   }))
@@ -54,7 +65,7 @@ export async function getPipelineTotals(orgId: string) {
 export function getDealById(orgId: string, id: string) {
   return prisma.deal.findFirst({
     where: { id, orgId },
-    include: { owner: true, contact: true, lead: true },
+    include: { owner: true, contact: true, lead: true, stage: true },
   })
 }
 
@@ -66,30 +77,33 @@ export function createDeal(
 }
 
 /**
- * Whether entering `nextStage` from `previousStage` should stamp the close date to now (it becomes
- * the *actual* close date once a deal is won — see "Won this month" on the dashboard). Leaving Won
- * preserves whatever the date currently is: closeDate is non-nullable and the previous expected date
- * isn't stored, so there's nothing better to restore. Shared by moveDealToStage (drag) and updateDeal
- * (edit modal) so a stage change is stamped identically regardless of how it was made.
+ * Whether moving into a stage flagged `isWon` from one that wasn't should stamp the close date to
+ * now (it becomes the *actual* close date once a deal is won — see "Won this month" on the
+ * dashboard). Leaving a Won stage preserves whatever the date currently is: closeDate is
+ * non-nullable and the previous expected date isn't stored, so there's nothing better to restore.
+ * Checks the stage's `isWon` flag rather than comparing against a hardcoded stage id/key, so a
+ * renamed or custom "Won"-equivalent stage still triggers this correctly. Shared by
+ * moveDealToStage (drag) and updateDeal (edit modal) so a stage change is stamped identically
+ * regardless of how it was made.
  */
-function closeDateOnStageChange(previousStage: DealStage, nextStage: DealStage): Date | undefined {
-  return nextStage === 'won' && previousStage !== 'won' ? new Date() : undefined
+function closeDateOnStageChange(previousIsWon: boolean, nextIsWon: boolean): Date | undefined {
+  return nextIsWon && !previousIsWon ? new Date() : undefined
 }
 
-/** Moves a deal to a new stage — what a kanban drag-and-drop drop handler would call. */
-export async function moveDealToStage(
-  orgId: string,
-  id: string,
-  stage: DealStage,
-  probability: number,
-) {
+/** Moves a deal to a new stage — what a kanban drag-and-drop drop handler would call. `stage`
+ *  must already be tenant-checked by the caller (getStageById), same convention as owner/contact. */
+export async function moveDealToStage(orgId: string, id: string, stage: ResolvedStage) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.deal.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Deal ${id} not found in org ${orgId}`)
-    const closeDate = closeDateOnStageChange(existing.stage, stage)
+    // The deal's own current stageId already belongs to this org (it was written by a
+    // tenant-checked call when the deal was created/last moved), so this lookup needs no
+    // additional orgId check — it's not client input.
+    const previousStage = await tx.pipelineStage.findUnique({ where: { id: existing.stageId } })
+    const closeDate = closeDateOnStageChange(previousStage?.isWon ?? false, stage.isWon)
     return tx.deal.update({
       where: { id },
-      data: { stage, probability, ...(closeDate && { closeDate }) },
+      data: { stageId: stage.id, probability: stage.probability, ...(closeDate && { closeDate }) },
     })
   })
 }
@@ -97,8 +111,7 @@ export async function moveDealToStage(
 export interface UpdateDealInput {
   name: string
   value: number
-  stage: DealStage
-  probability: number
+  stage: ResolvedStage
   closeDate: Date
   contactId: string | null
   ownerId: string
@@ -117,15 +130,17 @@ export async function updateDeal(orgId: string, id: string, data: UpdateDealInpu
     const existing = await tx.deal.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Deal ${id} not found in org ${orgId}`)
 
+    const previousStage = await tx.pipelineStage.findUnique({ where: { id: existing.stageId } })
+
     // The submitted close date is honored unless the stage change forces "now" — same precedence
     // moveDealToStage applies, just computed here instead of by a second, potentially-diverging copy.
-    const stampedCloseDate = closeDateOnStageChange(existing.stage, data.stage)
+    const stampedCloseDate = closeDateOnStageChange(previousStage?.isWon ?? false, data.stage.isWon)
     const closeDate = stampedCloseDate ?? data.closeDate
 
     const changed: string[] = []
     if (existing.name !== data.name) changed.push('name')
     if (existing.value !== data.value) changed.push('value')
-    if (existing.stage !== data.stage) changed.push('stage')
+    if (existing.stageId !== data.stage.id) changed.push('stage')
     if (+existing.closeDate !== +closeDate) changed.push('close date')
     if (existing.contactId !== data.contactId) changed.push('contact')
     if (existing.ownerId !== data.ownerId) changed.push('owner')
@@ -137,8 +152,8 @@ export async function updateDeal(orgId: string, id: string, data: UpdateDealInpu
       data: {
         name: data.name,
         value: data.value,
-        stage: data.stage,
-        probability: data.probability,
+        stageId: data.stage.id,
+        probability: data.stage.probability,
         closeDate,
         contactId: data.contactId,
         ownerId: data.ownerId,

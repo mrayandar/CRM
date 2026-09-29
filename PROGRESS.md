@@ -2,6 +2,128 @@
 
 > Living context file. Updated at the end of every task.
 
+## Per-org PipelineStage system, replacing the hardcoded DealStage enum (Sep 30 2026)
+
+Follow-up to the "Customize stages" decision flagged in the section below: built the real thing
+rather than the placeholder button. `DealStage` was a fixed Prisma enum
+(`discovery|proposal|negotiation|contract|won|lost`); it's now a per-org `PipelineStage` table,
+and `Deal.stage` is a foreign key (`Deal.stageId`) instead of an enum value. Stages can be
+renamed, reordered, added, and deleted per organization from Settings → Pipeline or Pipeline's
+own "Customize stages" button (same underlying `StageManager` component, so the two entry points
+can't drift apart).
+
+### Schema and migration
+
+`prisma/migrations/20260930130000_pipeline_stages/migration.sql` — hand-written (not
+`prisma migrate dev`-generated), because it has to backfill existing data, not just alter the
+schema:
+1. Create `pipeline_stages` (id, orgId, key, label, order, probability, isClosed, isWon).
+2. Seed **every existing org** with the 6 stages the enum used to represent — same keys, labels,
+   order, probabilities, and Won/Lost flags the app already had (Discovery=20%, Proposal=45%,
+   Negotiation=65%, Contract Sent=85%, Won=100%/isWon, Lost=0%/isClosed) — not the slightly
+   different "Qualified" variant floated when this was first discussed; the goal was a lossless
+   migration of what's actually in the enum today.
+3. Add `deals.stageId` (nullable), backfill every deal by matching its old enum value to its own
+   org's newly-seeded row with the same `key`, then make it `NOT NULL` and add the FK.
+4. Drop the old `stage` column, its index, and the `DealStage` enum type.
+
+Runs as one transaction (Prisma's default for a plain migration.sql), so a failure at any step
+rolls back the whole thing. Verified against the real Neon database immediately after applying:
+3 orgs → 18 seeded stages exactly; all 12 existing deals' `stageId` correctly resolved to a stage
+belonging to their own org (0 cross-org mismatches); per-key deal counts unchanged from the
+pre-migration snapshot (won:5, discovery:4, negotiation:1, contract:1, lost:1).
+
+New orgs created after this migration get their 6 default stages from `ensureDefaultStages`
+(`lib/data/stages.ts`), called from both places an Organization row gets created:
+`resolveAuth()`'s on-demand path (`lib/auth.ts`) and the Clerk webhook's `organization.created`
+handler. It's idempotent (a no-op once the org already has stages), so calling it from both paths
+can never double-seed.
+
+### Full blast radius (24 files touched)
+
+Schema/migration: `prisma/schema.prisma`, the migration above.
+Data layer: `lib/data/deals.ts`, `lib/data/leads.ts` (convertLeadToDeal's deal-creation branch),
+`lib/data/stages.ts` (new), `lib/mappers.ts`, `lib/data-loader.ts`.
+Auth/webhook: `lib/auth.ts`, `app/api/webhooks/clerk/route.ts`.
+Server actions: `lib/actions/crm.ts` (`moveDealAction`, `createDealAction`, `updateDealAction`,
+`convertLeadAction`, plus new `createStageAction`/`renameStageAction`/`reorderStageAction`/
+`deleteStageAction`).
+Frontend types/state: `src/data/types.ts`, `src/components/ui/Badge.tsx`, `src/store/crm.tsx`.
+Screens/components: `src/screens/Pipeline.tsx`, `src/screens/Settings.tsx`,
+`src/screens/Dashboard.tsx`, `src/screens/Reports.tsx`, `src/screens/RecordDetail.tsx`,
+`src/components/common/EditDealModal.tsx`, `src/components/common/NewDealModal.tsx`,
+`src/components/common/StageManager.tsx` (new), `src/components/layout/CommandPalette.tsx`.
+Test data: `src/data/mock.ts` (unused dead fixtures, updated only to keep the type check green).
+Tests: `tests/integration/cross-tenant.test.ts`.
+
+### The Won-transition close-date logic, reworked
+
+`closeDateOnStageChange` in `lib/data/deals.ts` used to compare stage identity by enum value
+(`nextStage === 'won' && previousStage !== 'won'`). It now takes two `isWon` booleans instead —
+`(previousIsWon, nextIsWon) => nextIsWon && !previousIsWon ? new Date() : undefined` — so a
+renamed or custom "Won"-equivalent stage still triggers it correctly; nothing compares against a
+specific id, key, or label. `moveDealToStage` and `updateDeal` both fetch the deal's *current*
+stage's `isWon` flag from the database inside the same transaction (the deal's own `stageId`, not
+client input, so no tenant check needed there) before calling this. Verified against real Neon
+data on both paths that used to diverge: dragging a card to a renamed Won-equivalent stage in the
+Pipeline kanban, and picking that same stage from the deal card's "Move to stage" menu — both
+correctly stamp `closeDate` to today.
+
+### "Customize stages" UI
+
+`StageManager` (new component): rename (click the label, edit inline), reorder (up/down arrows —
+closed stages don't get arrows and stay pinned after every open stage), add (always inserted as
+open, right before the first closed stage), and delete. Rendered both inside a modal from
+Pipeline's "Customize stages" button and inline in Settings → Pipeline, replacing what used to be
+a static, non-interactive list there.
+
+Safe-delete (`deleteStage` in `lib/data/stages.ts`) blocks outright — chosen over the "confirm and
+reassign deals" alternative, to avoid quietly moving someone's deals as a side effect of a stage
+edit — in three cases: the stage is closed (Won/Lost are structural, not deletable), it's the last
+remaining open stage (there must always be somewhere for an open deal to sit), or any deal still
+occupies it. The blocking message names how many deals are in the way. Never silently orphans a
+deal onto a deleted stage.
+
+### Tenant-ownership check on every new stage operation
+
+Treated as exactly the surface area the earlier tenant-isolation audit exists to protect against
+future additions to:
+- `lib/data/stages.ts`: `getStageById`/`renameStage`/`deleteStage` all `findFirst({id, orgId})`
+  (or, for `reorderStage`, look the id up only within that org's own stage list — the same
+  org-scoping, shaped differently because reordering needs the whole list anyway).
+- `lib/actions/crm.ts`: every action that accepts a client-supplied `stageId` — `moveDealAction`,
+  `createDealAction`, `updateDealAction`, `convertLeadAction`'s deal-creation branch — resolves it
+  through `getStageById(orgId, stageId)` before ever using it, exactly the same shape as the
+  existing `ownerId`/`contactId` checks. `renameStageAction`/`reorderStageAction`/
+  `deleteStageAction` inherit their tenant check from the data-layer functions they call.
+
+### Cross-tenant regression suite: extended, not just re-run
+
+`tests/integration/cross-tenant.test.ts` — the permanent suite from the earlier audit — **passes
+in full, 46/46**, after being updated for the new schema (deal fixtures now sit in a real
+`PipelineStage` row instead of a literal enum string). Added 12 new tests specifically for this
+surface: `getStageById` returns null cross-org; `listStages` never leaks another org's stages;
+`renameStage`/`reorderStage`/`deleteStage` all throw for another org's stage id; and every action
+that accepts a `stageId` — `moveDealAction` (including on the caller's *own* deal, to prove it's
+the stage that's checked, not just the deal), `createDealAction`, `updateDealAction`,
+`convertLeadAction`, `renameStageAction`, `reorderStageAction`, `deleteStageAction` — rejects a
+`stageId` from another org. **58/58 total, all passing.**
+
+### Verified against real Neon data
+
+Playwright + a minted Clerk sign-in ticket, same method as every prior verification this session.
+Confirmed: existing deals kept their correct stage after the migration (checked immediately post-
+migration, see above); a new stage can be added, renamed, and reordered (each change landed in
+Neon); deleting the occupied "Discovery" stage is blocked with an error naming the deal count,
+while deleting the new unoccupied custom stage succeeds; renaming "Won" to "Closed Won" and then
+moving a deal into it (via the deal card's "Move to stage" menu) stamps `closeDate` to today.
+(Two of my own verification-script attempts hit selector bugs along the way — Playwright's
+`hasText` stops matching once a label switches to an `<input>`, and a "Won" badge and a "Won"
+button both matching `getByText` — both fixed in the throwaway script itself, not the app; the
+underlying data confirmed the app was already behaving correctly by the time each was fixed.) The
+verification org's stages were restored to their original labels/order afterward so no permanent
+cosmetic residue was left in the shared dev org.
+
 ## Wired up dead controls: activity logging, export, reassign, profile save (Sep 30 2026)
 
 Went through every control across the app that was rendered but did nothing on click, and wired
@@ -52,7 +174,11 @@ picker) in `Leads.tsx`, wired to the bulk-select toolbar's Reassign button. Cont
 multi-select UI at all (no dead Reassign control to wire there), so it was left alone.
 Verified: selecting two leads and reassigning moved both to the new owner in Neon.
 
-### 4. Customize stages (Pipeline) — investigated, not built; needs a decision
+### ~~4. Customize stages (Pipeline) — investigated, not built; needs a decision~~ — built Sep 30 2026
+
+See "Per-org PipelineStage system" above — the `DealStage` enum was replaced with a real per-org
+table and the UI was built. The investigation below is kept as the record of why it wasn't done
+in the same pass as the other four items.
 
 `DealStage` is a plain Prisma enum (`discovery | proposal | negotiation | contract | won | lost`),
 not a per-org table — referenced directly across 11 files (`lib/data/deals.ts`,

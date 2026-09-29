@@ -40,15 +40,6 @@ enum LeadSource {
   Website
 }
 
-enum DealStage {
-  discovery
-  proposal
-  negotiation
-  contract
-  won
-  lost
-}
-
 enum Priority {
   low
   medium
@@ -230,14 +221,16 @@ model Contact {
 }
 
 model Deal {
-  id       String    @id @default(cuid())
+  id       String   @id @default(cuid())
   orgId    String
   name     String
   company  String
   value    Int
-  stage    DealStage @default(discovery)
-  priority Priority  @default(medium)
+  priority Priority @default(medium)
   source   LeadSource
+
+  stage   PipelineStage @relation(fields: [stageId], references: [id])
+  stageId String
 
   probability Int
   closeDate   DateTime
@@ -260,9 +253,46 @@ model Deal {
   activities Activity[]
 
   @@index([orgId])
-  @@index([orgId, stage])
+  @@index([orgId, stageId])
   @@index([orgId, ownerId])
   @@map("deals")
+}
+
+/// A pipeline stage a deal can sit in. Per-org, renameable and reorderable via Settings →
+/// Pipeline ("Customize stages"). Every org gets 6 default rows (Discovery, Proposal,
+/// Negotiation, Contract Sent, Won, Lost) seeded on creation — see `ensureDefaultStages` in
+/// lib/data/stages.ts — replacing what used to be the fixed `DealStage` enum.
+model PipelineStage {
+  id    String @id @default(cuid())
+  orgId String
+
+  /// Stable slug, distinct from the user-facing `label`. Only meaningful for the seeded
+  /// defaults (lets migrations/seeding identify "the" Won/Lost row); not shown in the UI and
+  /// not re-derived when the stage is renamed.
+  key   String
+  label String
+
+  /// Position among this org's stages; drives kanban column order. Won/Lost stay pinned after
+  /// every open stage — see reorderStages in lib/data/stages.ts.
+  order Int
+
+  /// Weighted-forecast probability (0-100) associated with this stage.
+  probability Int
+
+  /// True for a stage a deal can no longer move on from (Won or Lost).
+  isClosed Boolean @default(false)
+  /// Only meaningful when isClosed is true — distinguishes Won from Lost.
+  isWon    Boolean @default(false)
+
+  deals Deal[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, key])
+  @@index([orgId])
+  @@index([orgId, order])
+  @@map("pipeline_stages")
 }
 
 model Task {

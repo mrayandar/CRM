@@ -11,17 +11,21 @@ import { MetricRow } from '@/components/common/MetricTile'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
 import { monthlyPerformance } from '@/data/mock'
-import { DEAL_STAGE_LABEL, PIPELINE_STAGES, type LeadSource } from '@/data/types'
+import type { LeadSource } from '@/data/types'
 import { currency, currencyCompact, percent, sortBy, sum } from '@/lib/utils'
 
 const SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 
 export function Reports() {
-  const { deals, leads, owners } = useCrm()
+  const { deals, leads, owners, stages, stageById } = useCrm()
+  const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
 
-  const won = deals.filter((d) => d.stage === 'won')
-  const lost = deals.filter((d) => d.stage === 'lost')
-  const openDeals = deals.filter((d) => !['won', 'lost'].includes(d.stage))
+  const won = deals.filter((d) => stageById(d.stageId).isWon)
+  const lost = deals.filter((d) => {
+    const s = stageById(d.stageId)
+    return s.isClosed && !s.isWon
+  })
+  const openDeals = deals.filter((d) => !stageById(d.stageId).isClosed)
   const winRate = (won.length / Math.max(won.length + lost.length, 1)) * 100
   const avgDealSize = won.length ? sum(won.map((d) => d.value)) / won.length : 0
 
@@ -31,13 +35,16 @@ export function Reports() {
         SOURCES.map((source) => {
           const sourceLeads = leads.filter((l) => l.source === source)
           const sourceDeals = deals.filter((d) => d.source === source)
-          const sourceWon = sourceDeals.filter((d) => d.stage === 'won')
-          const sourceLost = sourceDeals.filter((d) => d.stage === 'lost')
+          const sourceWon = sourceDeals.filter((d) => stageById(d.stageId).isWon)
+          const sourceLost = sourceDeals.filter((d) => {
+            const s = stageById(d.stageId)
+            return s.isClosed && !s.isWon
+          })
           return {
             source,
             leads: sourceLeads.length,
             qualified: sourceLeads.filter((l) => l.status === 'qualified').length,
-            pipeline: sum(sourceDeals.filter((d) => !['won', 'lost'].includes(d.stage)).map((d) => d.value)),
+            pipeline: sum(sourceDeals.filter((d) => !stageById(d.stageId).isClosed).map((d) => d.value)),
             wonValue: sum(sourceWon.map((d) => d.value)),
             winRate:
               sourceWon.length + sourceLost.length > 0
@@ -47,7 +54,7 @@ export function Reports() {
         }),
         (row) => -row.pipeline,
       ),
-    [leads, deals],
+    [leads, deals, stageById],
   )
 
   const leaderboard = useMemo(
@@ -140,15 +147,15 @@ export function Reports() {
           <Card>
             <CardHeader title="Stage conversion" subtitle="Open deals by stage" />
             <ul className="divide-y divide-line">
-              {PIPELINE_STAGES.filter((s) => s !== 'won').map((stage) => {
-                const inStage = deals.filter((d) => d.stage === stage)
+              {openStages.map((stage) => {
+                const inStage = deals.filter((d) => d.stageId === stage.id)
                 const value = sum(inStage.map((d) => d.value))
                 const share = (value / Math.max(sum(openDeals.map((d) => d.value)), 1)) * 100
                 return (
-                  <li key={stage} className="px-5 py-3">
+                  <li key={stage.id} className="px-5 py-3">
                     <div className="flex items-baseline justify-between">
                       <span className="text-[12.5px] font-medium text-ink-700">
-                        {DEAL_STAGE_LABEL[stage]}
+                        {stage.label}
                       </span>
                       <span className="tabular text-[12.5px] font-semibold text-ink-900">
                         {currencyCompact(value)}

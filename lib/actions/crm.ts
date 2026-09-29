@@ -24,10 +24,16 @@ import {
 } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
-import type { DealStage, LeadSource, LeadStatus, Priority, ActivityKind, TaskType } from '@prisma/client'
+import {
+  getStageById,
+  createStage as dbCreateStage,
+  renameStage as dbRenameStage,
+  reorderStage as dbReorderStage,
+  deleteStage as dbDeleteStage,
+} from '@lib/data/stages'
+import type { LeadSource, LeadStatus, Priority, ActivityKind, TaskType } from '@prisma/client'
 
 const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualified', 'lost']
-const DEAL_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contract', 'won', 'lost']
 const PRIORITIES: Priority[] = ['low', 'medium', 'high']
 const TASK_TYPES: TaskType[] = ['call', 'email', 'meeting', 'todo']
 const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
@@ -51,18 +57,12 @@ function assertClientId(id: unknown): asserts id is string {
   if (typeof id !== 'string' || !UUID_RE.test(id)) throw new Error('Invalid id')
 }
 
-const STAGE_PROBABILITY: Record<string, number> = {
-  discovery: 20,
-  proposal: 45,
-  negotiation: 65,
-  contract: 85,
-  won: 100,
-  lost: 0,
-}
-
-export async function moveDealAction(dealId: string, stage: DealStage) {
+export async function moveDealAction(dealId: string, stageId: string) {
   const { orgId } = await requireAuth()
-  await dbMoveDealToStage(orgId, dealId, stage, STAGE_PROBABILITY[stage] ?? 25)
+  // stageId comes from the client (the kanban column it was dropped on) — must belong to this org.
+  const stage = await getStageById(orgId, stageId)
+  if (!stage) throw new Error('Stage not found')
+  await dbMoveDealToStage(orgId, dealId, stage)
   revalidatePath('/', 'layout')
 }
 
@@ -241,7 +241,7 @@ export async function createDealAction(input: {
   name: string
   company: string
   value: number
-  stage: DealStage
+  stageId: string
   closeDate: string
   ownerId: string
   contactId?: string
@@ -259,14 +259,15 @@ export async function createDealAction(input: {
   if (!Number.isInteger(input.value) || input.value <= 0 || input.value > 1_000_000_000) {
     throw new Error('Invalid value')
   }
-  if (!DEAL_STAGES.includes(input.stage)) throw new Error('Invalid stage')
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
   if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
   if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
 
-  // ownerId and contactId come from the client — both must belong to this org.
+  // ownerId, contactId, and stageId all come from the client — every one must belong to this org.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
+  const stage = await getStageById(orgId, input.stageId)
+  if (!stage) throw new Error('Stage not found')
   let contact = null
   if (input.contactId) {
     contact = await getContactById(orgId, input.contactId)
@@ -281,10 +282,10 @@ export async function createDealAction(input: {
     name,
     company,
     value: input.value,
-    stage: input.stage,
+    stage: { connect: { id: stage.id } },
     priority: input.priority,
     source: input.source,
-    probability: STAGE_PROBABILITY[input.stage] ?? 25,
+    probability: stage.probability,
     closeDate,
     owner: { connect: { id: owner.id } },
     ...(contact && { contact: { connect: { id: contact.id } } }),
@@ -309,7 +310,7 @@ export async function updateDealAction(input: {
   id: string
   name: string
   value: number
-  stage: DealStage
+  stageId: string
   closeDate: string
   contactId?: string
   ownerId: string
@@ -322,12 +323,13 @@ export async function updateDealAction(input: {
   if (!Number.isInteger(input.value) || input.value <= 0 || input.value > 1_000_000_000) {
     throw new Error('Invalid value')
   }
-  if (!DEAL_STAGES.includes(input.stage)) throw new Error('Invalid stage')
   if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
 
-  // ownerId and contactId come from the client — both must belong to this org.
+  // ownerId, contactId, and stageId all come from the client — every one must belong to this org.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
+  const stage = await getStageById(orgId, input.stageId)
+  if (!stage) throw new Error('Stage not found')
   let contact = null
   if (input.contactId) {
     contact = await getContactById(orgId, input.contactId)
@@ -340,8 +342,7 @@ export async function updateDealAction(input: {
     {
       name,
       value: input.value,
-      stage: input.stage,
-      probability: STAGE_PROBABILITY[input.stage] ?? 25,
+      stage: { id: stage.id, probability: stage.probability, isWon: stage.isWon },
       closeDate,
       contactId: contact?.id ?? null,
       ownerId: owner.id,
@@ -403,7 +404,7 @@ export async function convertLeadAction(
     deal?: {
       name: string
       value: number
-      stage: DealStage
+      stageId: string
       closeDate: string
       priority: Priority
     }
@@ -416,17 +417,25 @@ export async function convertLeadAction(
   // ownerId comes from the client — make sure it belongs to this org before using it.
   if (!(await getOwnerById(orgId, input.ownerId))) throw new Error('Owner not found')
 
+  // Same for the new deal's stageId, when a deal is being opened as part of the conversion.
+  const stage = input.deal ? await getStageById(orgId, input.deal.stageId) : null
+  if (input.deal && !stage) throw new Error('Stage not found')
+
   const result = await dbConvertLeadToDeal(orgId, leadId, {
     ownerId: input.ownerId,
     actorId,
     contactId: input.contactId,
     dealId: input.deal ? input.dealId : undefined,
-    deal: input.deal
-      ? {
-          ...input.deal,
-          closeDate: new Date(input.deal.closeDate),
-        }
-      : undefined,
+    deal:
+      input.deal && stage
+        ? {
+            name: input.deal.name,
+            value: input.deal.value,
+            priority: input.deal.priority,
+            stage: { id: stage.id, probability: stage.probability },
+            closeDate: new Date(input.deal.closeDate),
+          }
+        : undefined,
   })
   revalidatePath('/', 'layout')
   return {
@@ -538,6 +547,37 @@ export async function updateProfileAction(input: { name: string; timezone: strin
   if (timezone && timezone.length > 100) throw new Error('Invalid time zone')
 
   await updateOwnerProfile(orgId, ownerId, { name, timezone })
+  revalidatePath('/', 'layout')
+}
+
+export async function createStageAction(input: { id: string; label: string }) {
+  const { orgId } = await requireAuth()
+  assertClientId(input.id)
+  const label = input.label.trim()
+  if (!label || label.length > 100) throw new Error('Stage name is required')
+  await dbCreateStage(orgId, { id: input.id, label })
+  revalidatePath('/', 'layout')
+}
+
+export async function renameStageAction(stageId: string, label: string) {
+  const { orgId } = await requireAuth()
+  const trimmed = label.trim()
+  if (!trimmed || trimmed.length > 100) throw new Error('Stage name is required')
+  // dbRenameStage does its own findFirst({id, orgId}) check — same tenant-check convention as
+  // every other update in lib/data/*.ts.
+  await dbRenameStage(orgId, stageId, trimmed)
+  revalidatePath('/', 'layout')
+}
+
+export async function reorderStageAction(stageId: string, direction: 'up' | 'down') {
+  const { orgId } = await requireAuth()
+  await dbReorderStage(orgId, stageId, direction)
+  revalidatePath('/', 'layout')
+}
+
+export async function deleteStageAction(stageId: string) {
+  const { orgId } = await requireAuth()
+  await dbDeleteStage(orgId, stageId)
   revalidatePath('/', 'layout')
 }
 

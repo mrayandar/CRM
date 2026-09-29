@@ -15,6 +15,7 @@ import type {
   Deal as PrismaDeal,
   Task as PrismaTask,
   Activity as PrismaActivity,
+  PipelineStage as PrismaPipelineStage,
 } from '@prisma/client'
 import type {
   Owner,
@@ -23,6 +24,7 @@ import type {
   Deal,
   Task,
   Activity,
+  PipelineStage,
 } from '@/data/types'
 
 function initialsOf(name: string): string {
@@ -101,13 +103,24 @@ export function mapDeal(d: PrismaDeal): Deal {
     contactId: d.contactId ?? undefined,
     leadId: d.leadId ?? undefined,
     value: d.value,
-    stage: d.stage,
+    stageId: d.stageId,
     ownerId: d.ownerId,
     probability: d.probability,
     closeDate: d.closeDate.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
     priority: d.priority,
     source: d.source,
+  }
+}
+
+export function mapStage(s: PrismaPipelineStage): PipelineStage {
+  return {
+    id: s.id,
+    label: s.label,
+    order: s.order,
+    probability: s.probability,
+    isClosed: s.isClosed,
+    isWon: s.isWon,
   }
 }
 

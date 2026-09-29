@@ -4,6 +4,7 @@ import { auth, clerkClient } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import { upsertOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { getOwnerByClerkUserId, upsertOwnerFromClerk } from '@lib/data/owners'
+import { ensureDefaultStages } from '@lib/data/stages'
 import { ownerRoleFromClerk } from '@lib/roles'
 
 /**
@@ -32,6 +33,7 @@ export async function resolveAuth() {
     organizationId: clerkOrgId,
   })
   const org = await upsertOrg({ clerkOrgId, name: clerkOrg.name })
+  await ensureDefaultStages(org.id)
 
   // ---- Owner sync (on-demand fallback for webhooks) ----
   let owner = await getOwnerByClerkUserId(org.id, userId)

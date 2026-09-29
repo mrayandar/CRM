@@ -6,7 +6,7 @@ import { ArrowUpRight, ChevronRight, Plus, TriangleAlert } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Badge, DEAL_STAGE_TONE, StatusDot } from '@/components/ui/Badge'
+import { Badge, StatusDot, stageTone } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { BarChart, EmptyState } from '@/components/ui/Display'
 import { MetricRow } from '@/components/common/MetricTile'
@@ -15,11 +15,6 @@ import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
 import { monthlyPerformance } from '@/data/mock'
-import {
-  DEAL_STAGE_LABEL,
-  PIPELINE_STAGES,
-  type DealStage,
-} from '@/data/types'
 import {
   currency,
   currencyCompact,
@@ -31,24 +26,26 @@ import {
   sum,
 } from '@/lib/utils'
 
-const OPEN_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contract']
-
 /** Period-over-period deltas — a real deployment would derive these from history. */
 const TREND = { pipeline: 12.4, active: 6.1, won: -8.3, conversion: 4.2 }
 
 export function Dashboard() {
-  const { deals, leads, tasks, activities, currentUser, ownerById } = useCrm()
+  const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById } = useCrm()
   const [newDealOpen, setNewDealOpen] = useState(false)
+  const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
 
-  const openDeals = deals.filter((d) => OPEN_STAGES.includes(d.stage))
+  const openDeals = deals.filter((d) => !stageById(d.stageId).isClosed)
   const openValue = sum(openDeals.map((d) => d.value))
   const weightedValue = sum(openDeals.map((d) => (d.value * d.probability) / 100))
 
-  const wonDeals = deals.filter((d) => d.stage === 'won')
+  const wonDeals = deals.filter((d) => stageById(d.stageId).isWon)
   const wonThisMonth = wonDeals.filter((d) => isThisMonth(d.closeDate))
   const wonThisMonthValue = sum(wonThisMonth.map((d) => d.value))
 
-  const lostDeals = deals.filter((d) => d.stage === 'lost')
+  const lostDeals = deals.filter((d) => {
+    const s = stageById(d.stageId)
+    return s.isClosed && !s.isWon
+  })
   const conversionRate = (wonDeals.length / Math.max(wonDeals.length + lostDeals.length, 1)) * 100
 
   const myTasks = sortBy(
@@ -64,8 +61,8 @@ export function Dashboard() {
     (d) => new Date(d.closeDate).getTime(),
   ).slice(0, 5)
 
-  const stageRows = PIPELINE_STAGES.filter((s) => s !== 'won').map((stage) => {
-    const inStage = deals.filter((d) => d.stage === stage)
+  const stageRows = openStages.map((stage) => {
+    const inStage = deals.filter((d) => d.stageId === stage.id)
     return { stage, count: inStage.length, value: sum(inStage.map((d) => d.value)) }
   })
   const maxStageValue = Math.max(...stageRows.map((r) => r.value), 1)
@@ -152,15 +149,15 @@ export function Dashboard() {
               />
               <ul className="divide-y divide-line">
                 {stageRows.map(({ stage, count, value }) => (
-                  <li key={stage}>
+                  <li key={stage.id}>
                     <Link
                       to="/pipeline"
                       className="flex items-center gap-4 px-5 py-3 transition-colors hover:bg-subtler"
                     >
                       <span className="flex w-[150px] shrink-0 items-center gap-2">
-                        <StatusDot tone={DEAL_STAGE_TONE[stage]} />
+                        <StatusDot tone={stageTone(stage, openStages)} />
                         <span className="text-[12.5px] font-medium text-ink-700">
-                          {DEAL_STAGE_LABEL[stage]}
+                          {stage.label}
                         </span>
                       </span>
                       <span className="tabular w-9 shrink-0 text-[12px] text-ink-400">{count}</span>
@@ -228,7 +225,7 @@ export function Dashboard() {
                                 {deal.company}
                               </span>
                               <span className="tabular block text-[11.5px] text-ink-400">
-                                {formatDate(deal.closeDate)} · {days <= 7 ? `${days}d left` : DEAL_STAGE_LABEL[deal.stage]}
+                                {formatDate(deal.closeDate)} · {days <= 7 ? `${days}d left` : stageById(deal.stageId).label}
                               </span>
                             </span>
                             <span className="tabular shrink-0 text-[12.5px] font-semibold text-ink-900">

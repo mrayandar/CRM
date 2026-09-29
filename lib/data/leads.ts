@@ -4,7 +4,7 @@
 // Every function requires `orgId` as its first argument and includes it in
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
-import type { DealStage, LeadSource, LeadStatus, Priority, Prisma } from '@prisma/client'
+import type { LeadSource, LeadStatus, Priority, Prisma } from '@prisma/client'
 import { prisma } from '@lib/prisma'
 
 export interface ListLeadsOptions {
@@ -124,11 +124,12 @@ export async function updateLead(orgId: string, id: string, data: UpdateLeadInpu
   })
 }
 
-/** Optional deal-creation piece of a lead conversion. */
+/** Optional deal-creation piece of a lead conversion. `stage` must already be tenant-checked by
+ *  the caller (getStageById), same convention as ownerId. */
 export interface ConvertLeadDealInput {
   name: string
   value: number
-  stage: DealStage
+  stage: { id: string; probability: number }
   closeDate: Date
   priority: Priority
 }
@@ -182,11 +183,11 @@ export async function convertLeadToDeal(
           name: input.deal.name,
           company: lead.company,
           value: input.deal.value,
-          stage: input.deal.stage,
+          stageId: input.deal.stage.id,
           ownerId: input.ownerId,
           priority: input.deal.priority,
           source: lead.source,
-          probability: STAGE_PROBABILITY[input.deal.stage] ?? 25,
+          probability: input.deal.stage.probability,
           closeDate: input.deal.closeDate,
           leadId: lead.id,
           contactId: contact.id,
@@ -215,13 +216,4 @@ export async function convertLeadToDeal(
 
     return { contact, deal }
   })
-}
-
-const STAGE_PROBABILITY: Record<string, number> = {
-  discovery: 20,
-  proposal: 45,
-  negotiation: 65,
-  contract: 85,
-  won: 100,
-  lost: 0,
 }

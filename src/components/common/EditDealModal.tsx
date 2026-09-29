@@ -5,17 +5,18 @@ import { Button } from '@/components/ui/Button'
 import { Input, Label, Select } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
 import { useCrm } from '@/store/crm'
-import { DEAL_STAGE_LABEL, DEAL_STAGE_ORDER, type Deal, type DealStage } from '@/data/types'
+import type { Deal } from '@/data/types'
 import { sortBy } from '@/lib/utils'
 
 export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
-  const { updateDeal, owners, contacts } = useCrm()
+  const { updateDeal, owners, contacts, stages, stageById } = useCrm()
 
   const sortedContacts = useMemo(() => sortBy(contacts, (c) => c.name.toLowerCase()), [contacts])
+  const sortedStages = useMemo(() => sortBy(stages, (s) => s.order), [stages])
 
   const [name, setName] = useState(deal.name)
   const [value, setValue] = useState(deal.value.toLocaleString('en-US'))
-  const [stage, setStage] = useState<DealStage>(deal.stage)
+  const [stageId, setStageId] = useState(deal.stageId)
   const [closeDate, setCloseDate] = useState(deal.closeDate.slice(0, 10))
   const [contactId, setContactId] = useState(deal.contactId ?? '')
   const [ownerId, setOwnerId] = useState(deal.ownerId)
@@ -25,7 +26,7 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
   useEffect(() => {
     setName(deal.name)
     setValue(deal.value.toLocaleString('en-US'))
-    setStage(deal.stage)
+    setStageId(deal.stageId)
     setCloseDate(deal.closeDate.slice(0, 10))
     setContactId(deal.contactId ?? '')
     setOwnerId(deal.ownerId)
@@ -34,6 +35,7 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
 
   const numericValue = Number(value.replace(/[^0-9]/g, '')) || 0
   const canSubmit = name.trim() !== '' && numericValue > 0 && closeDate !== ''
+  const enteringWon = stageById(stageId).isWon && !stageById(deal.stageId).isWon
 
   const submit = () => {
     if (!canSubmit) return
@@ -46,7 +48,7 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
     updateDeal(deal.id, {
       name,
       value: numericValue,
-      stage,
+      stageId,
       closeDate: dateTouched ? new Date(`${closeDate}T12:00:00`).toISOString() : deal.closeDate,
       ownerId,
       contactId: contactId || undefined,
@@ -105,13 +107,13 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
           </Field>
           <Field label="Stage">
             <Select
-              value={stage}
-              onChange={(e) => setStage(e.target.value as DealStage)}
+              value={stageId}
+              onChange={(e) => setStageId(e.target.value)}
               className="h-9"
             >
-              {DEAL_STAGE_ORDER.map((s) => (
-                <option key={s} value={s}>
-                  {DEAL_STAGE_LABEL[s]}
+              {sortedStages.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
                 </option>
               ))}
             </Select>
@@ -138,9 +140,9 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
           </Select>
         </Field>
 
-        {stage === 'won' && deal.stage !== 'won' && (
+        {enteringWon && (
           <p className="text-[11.5px] leading-4 text-ink-400">
-            Moving this deal to Won will set its close date to today.
+            Moving this deal to {stageById(stageId).label} will set its close date to today.
           </p>
         )}
       </form>

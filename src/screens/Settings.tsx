@@ -1,17 +1,17 @@
 'use client'
 
 import { useState } from 'react'
-import { GripVertical, Plus, Loader2, UserX } from 'lucide-react'
+import { Plus, Loader2, UserX } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
-import { Badge, StatusDot, DEAL_STAGE_TONE, Tag } from '@/components/ui/Badge'
+import { Badge, Tag } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { Input, Label, Segmented, Select } from '@/components/ui/Field'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { Modal } from '@/components/ui/Modal'
+import { StageManager } from '@/components/common/StageManager'
 import { useCrm } from '@/store/crm'
-import { DEAL_STAGE_LABEL, DEAL_STAGE_ORDER } from '@/data/types'
 import { cn } from '@/lib/utils'
 import { useOrganization, useUser } from '@clerk/nextjs'
 
@@ -165,39 +165,9 @@ export function Settings() {
             <Card>
               <CardHeader
                 title="Deal stages"
-                subtitle="Drag to reorder. Probability drives the weighted forecast."
-                action={
-                  <Button variant="secondary" size="xs" icon={<Plus size={12} />}>
-                    Add stage
-                  </Button>
-                }
+                subtitle="Rename, reorder with the arrows, add, or remove a stage. Probability drives the weighted forecast."
               />
-              <ul className="divide-y divide-line">
-                {DEAL_STAGE_ORDER.map((stage) => (
-                  <li
-                    key={stage}
-                    className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-subtler"
-                  >
-                    <GripVertical size={14} className="shrink-0 cursor-grab text-ink-400/60" />
-                    <StatusDot tone={DEAL_STAGE_TONE[stage]} />
-                    <span className="min-w-0 flex-1 text-[13px] font-medium text-ink-800">
-                      {DEAL_STAGE_LABEL[stage]}
-                    </span>
-                    {(stage === 'won' || stage === 'lost') && (
-                      <Badge tone={stage === 'won' ? 'positive' : 'negative'}>Closed stage</Badge>
-                    )}
-                    <span className="tabular w-16 text-right text-[12.5px] text-ink-500">
-                      {STAGE_PROBABILITY[stage]}%
-                    </span>
-                    <IconButton
-                      label={`Edit ${DEAL_STAGE_LABEL[stage]}`}
-                      className="opacity-0 group-hover:opacity-100"
-                    >
-                      <Plus size={13} className="rotate-45" />
-                    </IconButton>
-                  </li>
-                ))}
-              </ul>
+              <StageManager />
             </Card>
 
             <Card>
@@ -473,14 +443,6 @@ function TeamSection() {
   )
 }
 
-const STAGE_PROBABILITY: Record<string, number> = {
-  discovery: 20,
-  proposal: 45,
-  negotiation: 65,
-  contract: 85,
-  won: 100,
-  lost: 0,
-}
 
 function Toggle({
   label,

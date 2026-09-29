@@ -8,15 +8,19 @@ export type LeadSource =
   | 'Partner'
   | 'Website'
 
-export type DealStage =
-  | 'discovery'
-  | 'proposal'
-  | 'negotiation'
-  | 'contract'
-  | 'won'
-  | 'lost'
-
 export type Priority = 'low' | 'medium' | 'high'
+
+/** A per-org, renameable/reorderable pipeline stage — replaces the old fixed DealStage enum.
+ *  `id` is what Deal.stageId points at; there's no more fixed set of keys to switch on, check
+ *  `isWon`/`isClosed` instead of comparing against a specific stage. */
+export interface PipelineStage {
+  id: string
+  label: string
+  order: number
+  probability: number
+  isClosed: boolean
+  isWon: boolean
+}
 
 export interface Owner {
   id: string
@@ -73,7 +77,7 @@ export interface Deal {
   contactId?: string
   leadId?: string
   value: number
-  stage: DealStage
+  stageId: string
   ownerId: string
   probability: number
   closeDate: string
@@ -131,28 +135,3 @@ export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   lost: 'Lost',
 }
 
-export const DEAL_STAGE_ORDER: DealStage[] = [
-  'discovery',
-  'proposal',
-  'negotiation',
-  'contract',
-  'won',
-  'lost',
-]
-
-export const PIPELINE_STAGES: DealStage[] = [
-  'discovery',
-  'proposal',
-  'negotiation',
-  'contract',
-  'won',
-]
-
-export const DEAL_STAGE_LABEL: Record<DealStage, string> = {
-  discovery: 'Discovery',
-  proposal: 'Proposal',
-  negotiation: 'Negotiation',
-  contract: 'Contract Sent',
-  won: 'Won',
-  lost: 'Lost',
-}

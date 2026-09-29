@@ -7,6 +7,7 @@ import {
   listDeals,
   listTasks,
   listActivities,
+  listStages,
 } from '@lib/data'
 import {
   mapOwner,
@@ -15,6 +16,7 @@ import {
   mapDeal,
   mapTask,
   mapActivity,
+  mapStage,
 } from '@lib/mappers'
 import type {
   Owner,
@@ -23,6 +25,7 @@ import type {
   Deal,
   Task,
   Activity,
+  PipelineStage,
 } from '@/data/types'
 
 export interface CrmInitialData {
@@ -33,6 +36,7 @@ export interface CrmInitialData {
   deals: Deal[]
   tasks: Task[]
   activities: Activity[]
+  stages: PipelineStage[]
 }
 
 /**
@@ -44,7 +48,7 @@ export async function loadCrmData(
   orgId: string,
   currentOwnerId: string,
 ): Promise<CrmInitialData> {
-  const [rawOwners, rawLeads, rawContacts, rawDeals, rawTasks, rawActivities] =
+  const [rawOwners, rawLeads, rawContacts, rawDeals, rawTasks, rawActivities, rawStages] =
     await Promise.all([
       listOwners(orgId),
       listLeads(orgId),
@@ -52,6 +56,7 @@ export async function loadCrmData(
       listDeals(orgId),
       listTasks(orgId),
       listActivities(orgId),
+      listStages(orgId),
     ])
 
   const owners = rawOwners.map(mapOwner)
@@ -72,5 +77,6 @@ export async function loadCrmData(
     deals: rawDeals.map(mapDeal),
     tasks: rawTasks.map(mapTask),
     activities: rawActivities.map(mapActivity),
+    stages: rawStages.map(mapStage),
   }
 }
