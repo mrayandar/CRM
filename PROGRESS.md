@@ -23,6 +23,126 @@ are real bugs and hardcoded dashboard values listed there. The original
 `HeadersTimeoutError` from Sep 26 was **not reproduced** in ~40 minutes of heavy
 use. The dev org is now populated with realistic data (left in place).
 
+## Multi-tenant data-leak audit (Sep 30 2026)
+
+A full, function-by-function audit of every function in `lib/data/*.ts`
+(8 files) and `lib/actions/crm.ts` (the only file in the repo with
+`'use server'`) against four criteria: (1) every read scoped by orgId via
+`findFirst({id, orgId})`, never `findUnique({id})` alone; (2) every
+create/update/delete verifies orgId ownership of the record being written
+*and* of any related record it connects (owner/contact/deal/lead) before
+writing; (3) no function is reachable without a valid, session-derived
+orgId; (4) every server action calls `requireAuth()` and uses *its*
+`orgId`, never a client-supplied value, for tenant scoping.
+
+This was prompted by a confirmed pattern earlier in the build: at least
+four prior fixes (`convertLeadAction`'s unchecked `ownerId`,
+`logActivityAction`/`addTaskAction`'s unchecked subject ids — see
+"Added: contact-only lead conversion" and earlier sections) found a
+client-supplied related-entity id trusted without an org check. The brief
+was to treat that as systemic and re-verify everything, not assume it was
+fully fixed.
+
+**Result: no new findings.** Every function below was read in full (not
+grepped-and-skimmed) and verdicted clean. The four earlier issues had
+already been fixed in prior tasks this session, and this audit's job was
+to confirm no further instances existed — none did. Two `findUnique({id})`
+calls exist outside `lib/data/leads|contacts|deals|tasks|activities.ts`:
+`getOrgByClerkId`/`getOrgById` in `organizations.ts`, which is the org
+*identity* lookup itself (different trust model, not tenant-scoped data),
+and `getOwnerByEmail`/`getOwnerByClerkUserId` in `owners.ts`, which use
+the compound unique key `orgId_email` / `orgId_clerkUserId` — orgId is
+part of the key, so these are still org-scoped despite the `findUnique`
+call shape.
+
+### Audit table
+
+| File | Function | Reads orgId-scoped? | Writes verify related-id ownership? | Verdict |
+|---|---|---|---|---|
+| `lib/data/organizations.ts` | `getOrgByClerkId` | N/A (org identity lookup) | — | Clean — different trust model by design |
+| | `getOrgById` | N/A (org identity lookup) | — | Clean |
+| | `upsertOrg` / `createOrg` / `updateOrg` / `deleteOrg` | N/A | N/A (org-identity writes, not client-invokable) | Clean |
+| `lib/data/owners.ts` | `listOwners` | Yes (`where: {orgId}`) | — | Clean |
+| | `getOwnerById` | Yes (`findFirst {id, orgId}`) | — | Clean |
+| | `getOwnerByEmail` | Yes (compound key incl. orgId) | — | Clean |
+| | `getOwnerByClerkUserId` | Yes (compound key incl. orgId) | — | Clean |
+| | `createOwner` | — | orgId injected server-side | Clean |
+| | `upsertOwnerFromClerk` | Yes (compound key incl. orgId) | orgId injected server-side | Clean |
+| `lib/data/leads.ts` | `listLeads` | Yes | — | Clean |
+| | `getLeadById` | Yes (`findFirst {id, orgId}`) | — | Clean |
+| | `createLead` | — | orgId injected; owner ownership checked by caller (`createLeadAction`) | Clean |
+| | `updateLeadStatus` | Yes (`findFirst` check inside tx) | N/A (no related id) | Clean |
+| | `updateLead` | Yes (`findFirst` check inside tx) | `ownerId` re-checked by caller (`updateLeadAction`) before this is called | Clean |
+| | `convertLeadToDeal` | Yes (`findFirst` on lead inside tx) | `ownerId` re-checked by caller (`convertLeadAction`); `contactId`/`dealId` are client-generated ids for the *new* rows being created, not connections to existing records, so no ownership check applies to them | Clean |
+| `lib/data/contacts.ts` | `listContacts` | Yes | — | Clean |
+| | `getContactById` | Yes (`findFirst {id, orgId}`) | — | Clean |
+| | `getContactByEmail` | Yes | — | Clean |
+| | `createContact` | — | orgId injected; owner ownership checked by caller | Clean |
+| | `updateContact` | Yes (`findFirst` check inside tx) | `ownerId` re-checked by caller (`updateContactAction`) | Clean |
+| | `addContactTag` | Yes (`findFirst` check inside tx) | N/A | Clean |
+| `lib/data/deals.ts` | `listDeals` | Yes | — | Clean |
+| | `getPipelineTotals` | Yes (`groupBy {where: {orgId}}`) | — | Clean |
+| | `getDealById` | Yes (`findFirst {id, orgId}`) | — | Clean |
+| | `createDeal` | — | orgId injected; owner/contact ownership checked by caller | Clean |
+| | `closeDateOnStageChange` | Pure function, no DB access | N/A | Clean |
+| | `moveDealToStage` | Yes (`findFirst` check inside tx) | N/A (no related id) | Clean |
+| | `updateDeal` | Yes (`findFirst` check inside tx) | `ownerId`/`contactId` re-checked by caller (`updateDealAction`) | Clean |
+| `lib/data/tasks.ts` | `listTasks` | Yes | — | Clean |
+| | `getTaskById` | Yes (`findFirst {id, orgId}`) | — | Clean |
+| | `createTask` | — | orgId injected; owner/subject ownership checked by caller (`addTaskAction`) | Clean |
+| | `toggleTaskDone` | Yes (`findFirst` check inside tx) | N/A | Clean |
+| `lib/data/activities.ts` | `listActivities` | Yes | — | Clean |
+| | `logActivity` | orgId injected server-side; related updates (`lead.updateMany`/`contact.updateMany`) filtered by `{id, orgId}` | subject (lead/contact/deal) ownership checked by caller (`logActivityAction` via `assertSubjectInOrg`) | Clean |
+| `lib/actions/crm.ts` | `assertSubjectInOrg` (helper) | Yes — looks up the subject via the corresponding org-scoped `getXById` | — | Clean |
+| | `assertClientId` (helper) | N/A (UUID format validation only) | — | Clean |
+| | `moveDealAction` | `requireAuth()` → `orgId` passed through | Deal ownership checked inside `dbMoveDealToStage` | Clean |
+| | `createLeadAction` | `requireAuth()` | `ownerId` checked via `getOwnerById(orgId, ...)` before connect | Clean |
+| | `createContactAction` | `requireAuth()` | `ownerId` checked via `getOwnerById` before connect | Clean |
+| | `updateContactAction` | `requireAuth()` | `ownerId` checked via `getOwnerById`; duplicate-email check also org-scoped | Clean |
+| | `createDealAction` | `requireAuth()` | `ownerId` and optional `contactId` both checked via `getOwnerById`/`getContactById` before connect | Clean |
+| | `updateDealAction` | `requireAuth()` | `ownerId` and optional `contactId` both checked before use | Clean |
+| | `updateLeadAction` | `requireAuth()` | `ownerId` checked via `getOwnerById` before use | Clean |
+| | `setLeadStatusAction` | `requireAuth()` | Lead ownership checked inside `dbUpdateLeadStatus` | Clean |
+| | `convertLeadAction` | `requireAuth()` | `ownerId` checked via `getOwnerById`; lead ownership checked inside `dbConvertLeadToDeal`; `contactId`/`dealId` are client-generated new-row ids (format-checked via `assertClientId`), not connections to existing records | Clean |
+| | `toggleTaskAction` | `requireAuth()` | Task ownership checked inside `dbToggleTaskDone` | Clean |
+| | `addTaskAction` | `requireAuth()` | Assignee `ownerId` checked via `getOwnerById` when it differs from the caller; `subject` checked via `assertSubjectInOrg` | Clean |
+| | `logActivityAction` | `requireAuth()` | `subject` checked via `assertSubjectInOrg`; actor is always the caller's own `ownerId` from `requireAuth()` | Clean |
+| | `addNoteAction` | Delegates to `logActivityAction` | Same as above | Clean |
+
+Also reviewed, outside the named scope but touching tenant data:
+`app/api/webhooks/clerk/route.ts` writes `Organization`/`Owner` rows
+using a different, correct trust model (Clerk-signed webhook payload,
+keyed by `clerkOrgId`, not a client-supplied `orgId`) — already fixed
+for unrelated bugs earlier this session (see "Clerk webhook: registered,
+fixed and verified end to end"); no data-leak issue found there either.
+`lib/data-loader.ts` (`loadCrmData`) and `app/(app)/layout.tsx` were also
+checked — `orgId` there comes from `resolveAuth()`, never the client.
+
+### Permanent regression suite added
+
+`tests/integration/cross-tenant.test.ts` (new, Vitest — `npm test`)
+creates two real `Organization`s with real `Owner`/`Lead`/`Contact`/
+`Deal`/`Task` rows in the real database, then attempts cross-tenant
+access through every `lib/data/*.ts` function and every server action in
+`lib/actions/crm.ts`: reading (`getXById`/`listX` must never return the
+other org's rows), editing (`updateX`/`moveDealToStage`/
+`toggleTaskDone`/`addContactTag` must throw), reassigning (creating or
+updating a record with an `ownerId`/`contactId` from the other org must
+throw with "Owner/Contact not found"), and the session-boundary itself
+(no Clerk session, a Clerk org with no matching `Organization` row, a
+Clerk user with no matching `Owner` row — all must throw). 46 assertions,
+all passing. Clerk's `auth()` is mocked so the suite can run outside an
+HTTP request, but `requireAuth()` itself runs unmodified against the real
+database — only the Clerk session boundary is stubbed; every tenant
+boundary under test is real application code. Fixture orgs are deleted in
+`afterAll`; a post-run DB check confirmed zero leftover rows.
+
+**This suite is a permanent part of the repo, not a one-off check** — it
+stays as the standing regression guard for this exact vulnerability
+class. `server-only` is aliased to a no-op stub for the test environment
+only (`tests/stubs/server-only.ts`, wired in `vitest.config.mts`) so the
+real `lib/data/*.ts` modules can be imported directly in Node.
+
 ## Fixed: Clerk org-selection redirect loop (Sep 26 2026)
 
 The bug: after sign-up or sign-in, Clerk showed "Choose an organization";
@@ -2023,9 +2143,14 @@ ready for the billing stage.
 All data flows through server actions (`lib/actions/crm.ts`) called from
 CrmProvider. There are no REST API endpoints for external integrations.
 
-### No tests
+### ~~No tests~~ — permanent cross-tenant regression suite added Sep 30 2026
 
-No test framework configured. No unit, integration, or E2E tests.
+No unit/component test framework is configured yet (still true for UI
+code). But `tests/integration/cross-tenant.test.ts` (Vitest) is now a
+**permanent** part of the repo — see "Multi-tenant data-leak audit" below.
+It exercises real Postgres data across two real Organizations and asserts
+every `lib/data/*.ts` function and every `lib/actions/crm.ts` server
+action rejects cross-tenant access. Run with `npm test`.
 
 ### ~~`convertLead` UI only creates a deal~~ — fixed Sep 29 2026
 
