@@ -413,15 +413,60 @@ edited Aisha N. Bello-Okafor"; not an app bug):**
   body naming the three changed fields.
 - Survived a full reload: the entry (and the Activity tab's count) still there,
   now from Neon rather than optimistic state.
-- A no-op save (clicked Save with nothing changed) still logs one "edited"
-  activity, with `body: null` — documented as expected, not suppressed (see the
-  earlier task's note: "when a lead is edited" is read at the call level, not
-  gated on an actual diff).
+- A no-op save (clicked Save with nothing changed) used to still log one
+  "edited" activity with `body: null` — **changed Sep 29 2026, see "Fixed:
+  no-op lead edits no longer log an activity" below.**
 - **Real server rejection** (owner id rewritten to one in another org, forcing
   the genuine 500): the optimistic title change **and** the optimistic "Edited"
   activity both appeared first, then the toast, then both reverted; Neon's lead
   was unchanged and **no orphan `edited` activity was written** (activity count
   identical before/after).
+
+## Fixed: no-op lead edits no longer log an activity (Sep 29 2026)
+
+A save that changed nothing still bumped `lastTouchedAt` and logged an "edited"
+activity with an empty body — noise in the timeline and a misleading "touch"
+on a record nothing actually happened to.
+
+**Fix: short-circuit before the write, not just the log.** `updateLead`
+(`lib/data/leads.ts`) diffs the existing row against the incoming data first,
+same as before; if `changed.length === 0` it now returns the existing row
+immediately, **before** the `lead.update` and the `activity.create` — so a
+no-op save skips both the database write and the activity, not only the
+activity. (The alternative — still writing the row but skipping just the
+activity — was explicitly left as my call; skipping the write too was cleaner:
+it also stops `lastTouchedAt` from advancing for a save that changed nothing,
+which the "still logs an activity" behavior would have left inconsistent with
+anyway.) `updateLeadAction` and the transaction are otherwise unchanged.
+
+**Client-side, `updateLead` (`src/store/crm.tsx`) mirrors the same diff before
+touching any state**, not just before deciding whether to log: if nothing
+changed, it returns immediately — no optimistic lead update, no optimistic
+activity, no call to `persist()`/`updateLeadAction` at all. The modal still
+closes normally (its `onClose()` runs right after `updateLead(...)`
+regardless), so a no-op save behaves like "nothing to save" rather than
+silently failing or doing an unnecessary round trip.
+
+**Verified in a real browser against Neon (13/13, after correcting one false
+fail in my own test — it asserted zero "Edited" text on the page, missing that
+earlier legitimate "Edited" entries from prior verification were already in the
+timeline; the fix was to compare the count before/after instead, which the
+authoritative Neon activity-count check already did correctly):**
+- Opened Edit, changed nothing, clicked Save: modal closes normally; Neon's
+  activity count for the lead is **unchanged**; `lastTouchedAt` is **byte-for-
+  byte unchanged** (same timestamp, not just the same second); every field is
+  unchanged.
+- Typing into a field and then typing it back to its original value before
+  Save is **also** correctly treated as a no-op (the diff is computed at
+  submit time against the lead's actual current values, not against "was any
+  input touched").
+- A **real** edit immediately afterward still works exactly as before: modal
+  closes, the new value and an optimistic "Edited" row both appear at once,
+  Neon saves the change and advances `lastTouchedAt`, and **exactly one** new
+  Activity row exists — confirming the two preceding no-op saves logged
+  nothing (activity count went from the same baseline directly to `+1`, not
+  `+3`). The logged row correctly names only the field that actually changed.
+  Survived a reload.
 
 ## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
 

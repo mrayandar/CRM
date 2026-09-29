@@ -499,9 +499,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     (leadId: string, input: UpdateLeadInput) => {
       const lead = leads.find((l) => l.id === leadId)
       if (!lead) return
-      const now = new Date().toISOString()
-      const next: Lead = {
-        ...lead,
+
+      const trimmed = {
         name: input.name.trim(),
         title: input.title.trim(),
         email: input.email.trim(),
@@ -509,17 +508,23 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         company: input.company.trim(),
         source: input.source,
         ownerId: input.ownerId,
-        lastTouchedAt: now,
       }
 
       const changed: string[] = []
-      if (lead.name !== next.name) changed.push('name')
-      if (lead.title !== next.title) changed.push('title')
-      if (lead.email !== next.email) changed.push('email')
-      if (lead.phone !== next.phone) changed.push('phone')
-      if (lead.company !== next.company) changed.push('company')
-      if (lead.source !== next.source) changed.push('source')
-      if (lead.ownerId !== next.ownerId) changed.push('owner')
+      if (lead.name !== trimmed.name) changed.push('name')
+      if (lead.title !== trimmed.title) changed.push('title')
+      if (lead.email !== trimmed.email) changed.push('email')
+      if (lead.phone !== trimmed.phone) changed.push('phone')
+      if (lead.company !== trimmed.company) changed.push('company')
+      if (lead.source !== trimmed.source) changed.push('source')
+      if (lead.ownerId !== trimmed.ownerId) changed.push('owner')
+
+      // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
+      // and the activity rather than bump lastTouchedAt / log an empty "edited" entry for it.
+      if (changed.length === 0) return
+
+      const now = new Date().toISOString()
+      const next: Lead = { ...lead, ...trimmed, lastTouchedAt: now }
 
       // Written to Postgres inside the same transaction as the field update (see updateLead in
       // lib/data/leads.ts) — not routed through persist()'s post-success activity log, which would
@@ -528,7 +533,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         id: nextId('a'),
         kind: 'edited',
         title: `edited ${next.name}`,
-        body: changed.length > 0 ? `Changed: ${changed.join(', ')}` : undefined,
+        body: `Changed: ${changed.join(', ')}`,
         at: now,
         actorId: currentUser.id,
         subject: { type: 'lead', id: leadId, label: next.name },

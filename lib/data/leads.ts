@@ -78,7 +78,9 @@ export interface UpdateLeadInput {
 /**
  * Updates the lead's own editable fields (not its status/conversion), bumps lastTouchedAt, and logs
  * an "edited" activity with a short summary of which fields actually changed — all in one
- * transaction, so a failed write can never leave an orphan activity.
+ * transaction, so a failed write can never leave an orphan activity. A no-op save (nothing actually
+ * differs) skips the write and the activity entirely, rather than bumping lastTouchedAt and logging
+ * an empty "edited" entry for a save that changed nothing.
  */
 export async function updateLead(orgId: string, id: string, data: UpdateLeadInput, actorId: string) {
   return prisma.$transaction(async (tx) => {
@@ -94,6 +96,8 @@ export async function updateLead(orgId: string, id: string, data: UpdateLeadInpu
     if (existing.source !== data.source) changed.push('source')
     if (existing.ownerId !== data.ownerId) changed.push('owner')
 
+    if (changed.length === 0) return existing
+
     const updated = await tx.lead.update({
       where: { id },
       data: { ...data, lastTouchedAt: new Date() },
@@ -104,7 +108,7 @@ export async function updateLead(orgId: string, id: string, data: UpdateLeadInpu
         orgId,
         kind: 'edited',
         title: `edited ${updated.name}`,
-        body: changed.length > 0 ? `Changed: ${changed.join(', ')}` : undefined,
+        body: `Changed: ${changed.join(', ')}`,
         actorId,
         subjectType: 'lead',
         subjectLabel: updated.name,
