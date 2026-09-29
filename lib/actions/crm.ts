@@ -14,6 +14,7 @@ import {
   createContact as dbCreateContact,
   getContactByEmail,
   getContactById,
+  updateContact as dbUpdateContact,
 } from '@lib/data/contacts'
 import {
   createDeal as dbCreateDeal,
@@ -194,6 +195,36 @@ export async function createContactAction(input: {
   })
   revalidatePath('/', 'layout')
   return { ok: true as const, id: contact.id }
+}
+
+export async function updateContactAction(input: {
+  id: string
+  name: string
+  title: string
+  email: string
+  phone: string
+  company: string
+  ownerId: string
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+
+  const name = input.name.trim()
+  const title = input.title.trim()
+  const company = input.company.trim()
+  const email = input.email.trim()
+  const phone = input.phone.trim()
+  if (!name || name.length > 200) throw new Error('Name is required')
+  if (title.length > 200) throw new Error('Title is too long')
+  if (!company || company.length > 200) throw new Error('Company is required')
+  if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
+  if (phone.length > 60) throw new Error('Invalid phone')
+
+  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+
+  await dbUpdateContact(orgId, input.id, { name, title, email, phone, company, ownerId: owner.id }, actorId)
+  revalidatePath('/', 'layout')
 }
 
 export async function createDealAction(input: {

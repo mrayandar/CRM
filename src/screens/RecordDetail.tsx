@@ -86,6 +86,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     addTask,
     setLeadStatus,
     updateLead,
+    updateContact,
   } = useCrm()
 
   const record = (lead ?? contact)!
@@ -229,6 +230,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                 {lead && (
                   <IconButton
                     label="Edit lead"
+                    variant="secondary"
+                    onClick={() => setEditOpen(true)}
+                  >
+                    <Pencil size={14} />
+                  </IconButton>
+                )}
+                {contact && (
+                  <IconButton
+                    label="Edit contact"
                     variant="secondary"
                     onClick={() => setEditOpen(true)}
                   >
@@ -568,6 +578,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
         <EditLeadModal lead={lead} open={editOpen} onClose={() => setEditOpen(false)} updateLead={updateLead} />
       )}
 
+      {contact && (
+        <EditContactModal
+          contact={contact}
+          open={editOpen}
+          onClose={() => setEditOpen(false)}
+          updateContact={updateContact}
+        />
+      )}
+
       {newDealOpen && (
         <NewDealModal onClose={() => setNewDealOpen(false)} defaultContactId={contact?.id} />
       )}
@@ -697,6 +716,118 @@ function EditLeadModal({
             ))}
           </Select>
         </Field>
+
+        {emailInvalid && (
+          <p className="text-[11.5px] leading-4 text-negative">Enter a valid email address.</p>
+        )}
+      </form>
+    </Modal>
+  )
+}
+
+function EditContactModal({
+  contact,
+  open,
+  onClose,
+  updateContact,
+}: {
+  contact: Contact
+  open: boolean
+  onClose: () => void
+  updateContact: (contactId: string, input: {
+    name: string
+    title: string
+    email: string
+    phone: string
+    company: string
+    ownerId: string
+  }) => void
+}) {
+  const { owners } = useCrm()
+  const [name, setName] = useState(contact.name)
+  const [title, setTitle] = useState(contact.title)
+  const [email, setEmail] = useState(contact.email)
+  const [phone, setPhone] = useState(contact.phone)
+  const [company, setCompany] = useState(contact.company)
+  const [ownerId, setOwnerId] = useState(contact.ownerId)
+
+  // Re-seed from the contact whenever the modal (re)opens, not on every render, so it doesn't
+  // clobber an in-progress edit while it's open (e.g. if the contact is revalidated in the background).
+  useEffect(() => {
+    if (!open) return
+    setName(contact.name)
+    setTitle(contact.title)
+    setEmail(contact.email)
+    setPhone(contact.phone)
+    setCompany(contact.company)
+    setOwnerId(contact.ownerId)
+  }, [open, contact])
+
+  const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid
+
+  const submit = () => {
+    if (!canSubmit) return
+    updateContact(contact.id, { name, title, email, phone, company, ownerId })
+    onClose()
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      width={520}
+      title="Edit contact"
+      description="Update this contact's details."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            Save changes
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit()
+        }}
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Full name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </Field>
+          <Field label="Title">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+          </Field>
+          <Field label="Email">
+            <Input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={emailInvalid}
+            />
+          </Field>
+          <Field label="Phone">
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+          </Field>
+          <Field label="Company">
+            <Input value={company} onChange={(e) => setCompany(e.target.value)} />
+          </Field>
+          <Field label="Owner">
+            <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name} · {o.role}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
 
         {emailInvalid && (
           <p className="text-[11.5px] leading-4 text-negative">Enter a valid email address.</p>

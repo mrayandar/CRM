@@ -468,6 +468,86 @@ authoritative Neon activity-count check already did correctly):**
   `+3`). The logged row correctly names only the field that actually changed.
   Survived a reload.
 
+## Added: contact field editing (Sep 29 2026)
+
+Same gap as leads had: only a contact's tags could change (via "+ Add" on the
+Tags row); name, email, phone, title, company and owner had no UI to edit.
+
+**Exact same pattern as the lead-editing work, built directly with the
+lessons already learned there** (no-op suppression from the start, no
+retrofit; reused `ActivityKind.edited`, no new migration):
+- `EditContactModal` (`RecordDetail.tsx`) — same `Modal`/`Input`/`Select`
+  components, same layout conventions as `EditLeadModal` (Full name/Title
+  paired in the first row), reachable from the same pencil `IconButton` slot
+  next to Email/Call in the profile panel (contacts have no "Change status"
+  control, so it's the only icon button there). Fields: name, email
+  (optional, format-checked), phone, title, company, owner — no `source`
+  field, since `Contact` doesn't have one. `editOpen` state is shared with the
+  lead modal rather than duplicated, since a given `RecordDetail` render only
+  ever has a `lead` or a `contact`, never both.
+- `updateContact` (`lib/data/contacts.ts`) mirrors `updateLead` exactly: one
+  transaction scoped by `{ id, orgId }`, diffs the existing row against the
+  incoming data, **skips the write and the activity entirely when nothing
+  changed** (built in from the start this time, not added after the fact),
+  bumps `lastInteractionAt` (the contact equivalent of `lastTouchedAt`), and
+  writes one `Activity` row with `kind: 'edited'` — **the exact same kind
+  added for leads, not a new enum value** — and a changed-fields summary.
+- `updateContactAction` (`lib/actions/crm.ts`) validates the same way
+  `createContactAction`/`updateLeadAction` do (required name/company,
+  lengths, email format, title length) and re-verifies the owner belongs to
+  the caller's org via `getOwnerById` before connecting it.
+- `updateContact` (`src/store/crm.tsx`) follows the same `persist()`
+  optimistic + rollback + toast pattern as `updateLead`, with the no-op guard
+  before any state is touched — no optimistic update, no optimistic activity,
+  no server call for a save that changes nothing.
+
+**Deliberately NOT carried over from contact creation: the duplicate-email
+check.** `createContactAction` rejects a duplicate email by returning
+`{ ok: false, error }`, which only works because `NewContactModal` awaits the
+result and shows the error inline instead of closing. This task explicitly
+asked for the lead-edit's `persist()`-based pattern (fire-and-forget, modal
+closes immediately), which has no slot for an inline, field-specific error —
+a duplicate would just show the generic "Couldn't save the changes" toast if
+I threw one. Since it wasn't asked for, I didn't add a duplicate check to the
+edit path at all: editing a contact's email to match another contact's is
+currently possible. Flagging this rather than silently reproducing weaker
+protection than creation has, or silently changing the requested pattern to
+add one.
+
+**Verified in a real browser against Neon (22/22, no corrections needed this
+time — the no-op suppression and prior lead-editing false-fail lessons
+carried over cleanly):**
+- Edit contact button opens the modal prefilled with the contact's actual
+  values.
+- **No-op save** (clicked Save with nothing changed): modal closes normally;
+  Neon's activity count and `lastInteractionAt` are **byte-for-byte
+  unchanged**; every field unchanged. Cancel separately confirmed to write
+  nothing.
+- **Real edit of every field at once**, including reassigning the owner to a
+  different org member ("Sofia Lindqvist" → "Sofia K. Lindqvist", CFO →
+  Chief Financial Officer, new email/phone/company, owner → Riley Hart): the
+  new name and an "Edited" activity both appeared **immediately**, before the
+  server responded. ~7s later Neon held every changed field exactly,
+  `lastInteractionAt` had advanced, `lifecycle`/`tags`/`location`/
+  `accountValue`/`id` were untouched, and **exactly one** new Activity row
+  existed (`kind edited`, correct `orgId`/`contactId`/`subjectType`/
+  `subjectLabel`/`actorId`, body "Changed: name, title, email, phone,
+  company, owner").
+- Survived a full reload: fields and the "Edited" timeline entry persisted;
+  re-opening the modal showed the **saved** values.
+- **Real server rejection** (owner id rewritten to one in another org,
+  forcing a genuine 500): optimistic change and its "Edited" activity both
+  appeared, then the toast, then both reverted; Neon completely unchanged,
+  no orphan activity.
+- No schema changes were needed — confirmed `git diff` touched nothing under
+  `prisma/`.
+- Test edit left in place: contact "Sofia Lindqvist" is now "Sofia K.
+  Lindqvist" (CFO title updated, new email/phone, company "Fjord Marine
+  Group", owner Riley Hart).
+- Not built: deals still have no field editing (same gap, out of scope here);
+  no duplicate-email guard on contact edits (see above); no undo/history
+  beyond the "edited" timeline entries.
+
 ## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
 
 **Bug (Sep 27 audit, #13):** moving a deal to Won left its close date alone, so
@@ -607,8 +687,9 @@ last saved name, the "Couldn't save the changes" toast appeared, and Neon was
 completely unchanged both times.
 - Test edit was left in place: lead "Aisha Bello" is now "Aisha N.
   Bello-Okafor" at "Meridian Health Systems", assigned to Riley Hart.
-- Not built: contacts and deals still have no field editing (same gap, out of
-  scope for this task); no undo/history for an edit beyond the new "edited"
+- ~~Not built: contacts and deals still have no field editing~~ — contact
+  editing added Sep 29 2026 (see "Added: contact field editing"); deals still
+  don't. No undo/history for an edit beyond the new "edited"
   timeline entries.
 
 ## Fixed: Tasks header "New task" button (Sep 27 2026)
@@ -894,7 +975,7 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
 | # | Flow | Verdict |
 |---|------|---------|
 | 3 | Create a lead | ✅ PASS (skipped per brief, but exercised anyway: 6 realistic leads through the modal) |
-| 4 | Edit a lead | ✅ PASS — status **and now every other field except title** are editable (fixed Sep 29, see "Added: lead field editing"). Contacts/deals still have no field editing. |
+| 4 | Edit a lead | ✅ PASS — status **and now every other field** are editable (fixed Sep 29, see "Added: lead field editing"). **Contact editing also added Sep 29** (see "Added: contact field editing"). Deals still have no field editing. |
 | 5 | Convert a lead | ✅ PASS end to end (with a deal). Contact-only conversion is 🚧 NOT YET BUILT in the UI |
 | 6 | Create a contact | ✅ PASS (skipped per brief, but exercised: 3 contacts) |
 | 7 | Create a company | 🚧 NOT YET BUILT (confirmed) |

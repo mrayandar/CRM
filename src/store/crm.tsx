@@ -29,6 +29,7 @@ import {
   updateLeadAction,
   createDealAction,
   createContactAction,
+  updateContactAction,
   moveDealAction,
   setLeadStatusAction,
   convertLeadAction,
@@ -86,6 +87,15 @@ export interface NewContactInput {
   ownerId: string
 }
 
+export interface UpdateContactInput {
+  name: string
+  title: string
+  email: string
+  phone: string
+  company: string
+  ownerId: string
+}
+
 export type NewContactResult = { ok: true; id: string } | { ok: false; error: string }
 
 export interface NewDealInput {
@@ -121,6 +131,8 @@ interface CrmState {
   addDeal: (input: NewDealInput) => string
   /** Updates a lead's own fields (not status/conversion); rolls back and shows a toast if the save fails. */
   updateLead: (leadId: string, input: UpdateLeadInput) => void
+  /** Updates a contact's own fields; rolls back and shows a toast if the save fails. A no-op (nothing changed) does nothing. */
+  updateContact: (contactId: string, input: UpdateContactInput) => void
   setLeadStatus: (leadId: string, status: LeadStatus) => void
   convertLead: (
     leadId: string,
@@ -555,6 +567,64 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [leads, currentUser.id, persist],
   )
 
+  const updateContact = useCallback(
+    (contactId: string, input: UpdateContactInput) => {
+      const contact = contacts.find((c) => c.id === contactId)
+      if (!contact) return
+
+      const trimmed = {
+        name: input.name.trim(),
+        title: input.title.trim(),
+        email: input.email.trim(),
+        phone: input.phone.trim(),
+        company: input.company.trim(),
+        ownerId: input.ownerId,
+      }
+
+      const changed: string[] = []
+      if (contact.name !== trimmed.name) changed.push('name')
+      if (contact.title !== trimmed.title) changed.push('title')
+      if (contact.email !== trimmed.email) changed.push('email')
+      if (contact.phone !== trimmed.phone) changed.push('phone')
+      if (contact.company !== trimmed.company) changed.push('company')
+      if (contact.ownerId !== trimmed.ownerId) changed.push('owner')
+
+      // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
+      // and the activity rather than bump lastInteractionAt / log an empty "edited" entry for it.
+      if (changed.length === 0) return
+
+      const now = new Date().toISOString()
+      const next: Contact = { ...contact, ...trimmed, lastInteractionAt: now }
+
+      // Written to Postgres inside the same transaction as the field update (see updateContact in
+      // lib/data/contacts.ts) — not routed through persist()'s post-success activity log, which
+      // would write it a second time (the same duplicate-write bug addNote had before it was fixed).
+      const activity: Activity = {
+        id: nextId('a'),
+        kind: 'edited',
+        title: `edited ${next.name}`,
+        body: `Changed: ${changed.join(', ')}`,
+        at: now,
+        actorId: currentUser.id,
+        subject: { type: 'contact', id: contactId, label: next.name },
+      }
+
+      setContacts((prev) => prev.map((c) => (c.id === contactId ? next : c)))
+      setActivities((prev) => [activity, ...prev])
+
+      persist(
+        () => updateContactAction({ id: contactId, ...input }),
+        () => {
+          setContacts((prev) => prev.map((c) => (c.id === contactId ? contact : c)))
+          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+        },
+        undefined,
+        "Couldn't save the changes, please try again.",
+      )
+    },
+    [contacts, currentUser.id, persist],
+  )
+
   const setLeadStatus = useCallback(
     (leadId: string, status: LeadStatus) => {
       const lead = leads.find((l) => l.id === leadId)
@@ -791,6 +861,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addLead,
       updateLead,
       addContact,
+      updateContact,
       addDeal,
       setLeadStatus,
       convertLead,
@@ -812,6 +883,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addLead,
       updateLead,
       addContact,
+      updateContact,
       addDeal,
       setLeadStatus,
       convertLead,

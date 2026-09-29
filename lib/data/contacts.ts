@@ -58,6 +58,64 @@ export function createContact(
   return prisma.contact.create({ data: { ...data, orgId } })
 }
 
+export interface UpdateContactInput {
+  name: string
+  title: string
+  email: string
+  phone: string
+  company: string
+  ownerId: string
+}
+
+/**
+ * Updates the contact's own editable fields, bumps lastInteractionAt, and logs an "edited" activity
+ * with a short summary of which fields actually changed — all in one transaction, so a failed write
+ * can never leave an orphan activity. A no-op save (nothing actually differs) skips the write and
+ * the activity entirely, rather than bumping lastInteractionAt and logging an empty "edited" entry
+ * for a save that changed nothing. Mirrors updateLead in lib/data/leads.ts.
+ */
+export async function updateContact(
+  orgId: string,
+  id: string,
+  data: UpdateContactInput,
+  actorId: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.contact.findFirst({ where: { id, orgId } })
+    if (!existing) throw new Error(`Contact ${id} not found in org ${orgId}`)
+
+    const changed: string[] = []
+    if (existing.name !== data.name) changed.push('name')
+    if (existing.title !== data.title) changed.push('title')
+    if (existing.email !== data.email) changed.push('email')
+    if (existing.phone !== data.phone) changed.push('phone')
+    if (existing.company !== data.company) changed.push('company')
+    if (existing.ownerId !== data.ownerId) changed.push('owner')
+
+    if (changed.length === 0) return existing
+
+    const updated = await tx.contact.update({
+      where: { id },
+      data: { ...data, lastInteractionAt: new Date() },
+    })
+
+    await tx.activity.create({
+      data: {
+        orgId,
+        kind: 'edited',
+        title: `edited ${updated.name}`,
+        body: `Changed: ${changed.join(', ')}`,
+        actorId,
+        subjectType: 'contact',
+        subjectLabel: updated.name,
+        contactId: id,
+      },
+    })
+
+    return updated
+  })
+}
+
 export function addContactTag(orgId: string, id: string, tag: string) {
   return prisma.$transaction(async (tx) => {
     const contact = await tx.contact.findFirst({ where: { id, orgId } })
