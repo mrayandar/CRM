@@ -223,6 +223,14 @@ export async function updateContactAction(input: {
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
 
+  // Same duplicate-email guard as creation, minus the inline-error UX: the edit modal doesn't await
+  // this (persist()'s toast + revert instead), so a thrown error is enough — no {ok, error} shape
+  // needed here. A contact matching itself (unchanged email) is not a duplicate.
+  if (email) {
+    const existing = await getContactByEmail(orgId, email)
+    if (existing && existing.id !== input.id) throw new Error('A contact with this email already exists')
+  }
+
   await dbUpdateContact(orgId, input.id, { name, title, email, phone, company, ownerId: owner.id }, actorId)
   revalidatePath('/', 'layout')
 }

@@ -501,18 +501,9 @@ retrofit; reused `ActivityKind.edited`, no new migration):
   before any state is touched — no optimistic update, no optimistic activity,
   no server call for a save that changes nothing.
 
-**Deliberately NOT carried over from contact creation: the duplicate-email
-check.** `createContactAction` rejects a duplicate email by returning
-`{ ok: false, error }`, which only works because `NewContactModal` awaits the
-result and shows the error inline instead of closing. This task explicitly
-asked for the lead-edit's `persist()`-based pattern (fire-and-forget, modal
-closes immediately), which has no slot for an inline, field-specific error —
-a duplicate would just show the generic "Couldn't save the changes" toast if
-I threw one. Since it wasn't asked for, I didn't add a duplicate check to the
-edit path at all: editing a contact's email to match another contact's is
-currently possible. Flagging this rather than silently reproducing weaker
-protection than creation has, or silently changing the requested pattern to
-add one.
+**Initially NOT carried over from contact creation: the duplicate-email
+check** — added Sep 29 2026, see "Added: duplicate-email check on contact
+editing" below.
 
 **Verified in a real browser against Neon (22/22, no corrections needed this
 time — the no-op suppression and prior lead-editing false-fail lessons
@@ -545,8 +536,42 @@ carried over cleanly):**
   Lindqvist" (CFO title updated, new email/phone, company "Fjord Marine
   Group", owner Riley Hart).
 - Not built: deals still have no field editing (same gap, out of scope here);
-  no duplicate-email guard on contact edits (see above); no undo/history
-  beyond the "edited" timeline entries.
+  no undo/history beyond the "edited" timeline entries.
+
+## Added: duplicate-email check on contact editing (Sep 29 2026)
+
+Contact creation already rejects a duplicate email (case-insensitive, within
+the org); editing didn't check at all, so an edit could silently create two
+contacts with the same email — a gap the contact-editing task above shipped
+with and flagged rather than guessing whether to close it.
+
+**Fix, deliberately downgraded from creation's inline error, per the
+request.** `updateContactAction` (`lib/actions/crm.ts`) now runs the same
+`getContactByEmail(orgId, email)` lookup creation uses, right after the
+owner check: if a match exists **and it isn't the contact being edited
+itself** (`existing.id !== input.id` — so saving a contact with its own
+unchanged email is never flagged), it throws. Creation returns
+`{ ok: false, error }` because `NewContactModal` awaits the result and shows
+the error inline; the edit modal doesn't await — it's wired to `persist()`,
+same as the rest of the edit flow — so a thrown error is all that's needed:
+`persist()`'s existing catch reverts the optimistic state and shows the
+generic "Couldn't save the changes, please try again." toast, same as any
+other rejected edit. No client-side change was needed at all — `persist()`
+already handled this generically. Skipped when the email is blank, matching
+creation.
+
+**Verified in a real browser against Neon (16/16):** editing "Ravi Menon"'s
+email to another real contact's email — both uppercased and in its original
+case, proving the check is case-insensitive both ways — was rejected: the
+optimistic change appeared first, then the toast, then it reverted; Neon's
+email was completely unchanged both times, with no orphan "edited" activity,
+and the *other* contact (whose email was "collided into") was untouched
+either. Editing a **different** field while leaving the email exactly as it
+was saved correctly (not flagged as colliding with itself) and logged
+exactly one activity. Changing the email to something genuinely new still
+saved. Clearing the email to blank still saved (exempt from the check, like
+creation). Test contact left in a working state: "Ravi K. Menon" now has
+email `ravi.menon.updated@kestrelsoftware.com`.
 
 ## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
 
