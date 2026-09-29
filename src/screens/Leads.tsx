@@ -289,7 +289,7 @@ export function Leads() {
                           <div className="min-w-0">
                             <p className="truncate text-[13px] leading-[17px] font-medium text-ink-900">
                               {lead.name}
-                              {lead.convertedDealId && (
+                              {(lead.convertedDealId ?? lead.convertedContactId) && (
                                 <Badge tone="brand" className="ml-2">
                                   Converted
                                 </Badge>

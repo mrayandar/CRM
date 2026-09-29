@@ -45,7 +45,10 @@ export function mapOwner(o: PrismaOwner): Owner {
 }
 
 export function mapLead(
-  l: PrismaLead & { convertedDeal?: { id: string } | null },
+  l: PrismaLead & {
+    convertedDeal?: { id: string } | null
+    convertedContact?: { id: string } | null
+  },
 ): Lead {
   return {
     id: l.id,
@@ -63,6 +66,7 @@ export function mapLead(
     createdAt: l.createdAt.toISOString(),
     lastTouchedAt: l.lastTouchedAt.toISOString(),
     convertedDealId: l.convertedDeal?.id,
+    convertedContactId: l.convertedContact?.id,
   }
 }
 

@@ -42,6 +42,8 @@ export interface Lead {
   createdAt: string
   lastTouchedAt: string
   convertedDealId?: string
+  /** Set once this lead has been converted (with or without a deal) — the persisted "already converted" flag. */
+  convertedContactId?: string
 }
 
 export interface Contact {

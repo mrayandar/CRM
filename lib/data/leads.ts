@@ -31,7 +31,11 @@ export function listLeads(orgId: string, options: ListLeadsOptions = {}) {
 
   return prisma.lead.findMany({
     where,
-    include: { owner: true, convertedDeal: { select: { id: true } } },
+    include: {
+      owner: true,
+      convertedDeal: { select: { id: true } },
+      convertedContact: { select: { id: true } },
+    },
     orderBy: { lastTouchedAt: 'desc' },
   })
 }

@@ -805,7 +805,13 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       setLeads((prev) =>
         prev.map((l) =>
           l.id === leadId
-            ? { ...l, status: 'qualified', convertedDealId: dealId ?? undefined, lastTouchedAt: now }
+            ? {
+                ...l,
+                status: 'qualified',
+                convertedDealId: dealId ?? undefined,
+                convertedContactId: contactId,
+                lastTouchedAt: now,
+              }
             : l,
         ),
       )

@@ -671,6 +671,75 @@ confirming they were test bugs, not app bugs):**
   the requested field list); no undo/history beyond the "edited" timeline
   entries; the card menu's "Log activity" is still a dead control.
 
+## Added: contact-only lead conversion (Sep 29 2026)
+
+The data layer, action and store already supported converting a lead to a
+Contact without a Deal (`convertLeadToDeal`'s `deal` input was always
+optional) — the `ConvertModal` in `RecordDetail.tsx` just never let the user
+choose that; it unconditionally built and sent a `deal` block. Purely a UI
+change, as scoped: no changes to `convertLeadToDeal`, `convertLeadAction` or
+`convertLead` (store) were needed or made.
+
+- Added a `Segmented` "What happens next" choice — "Contact only" vs.
+  "Convert and create a deal" — defaulting to the deal path, so nothing
+  changes for a user who doesn't touch it. Choosing "Contact only" hides
+  every deal-specific field (name, value, close date, starting stage,
+  priority); "Owner" stays visible either way, since it's shared — the
+  contact needs one regardless of whether a deal is also created.
+- Title, description, the submit button's label, and the post-conversion
+  success banner (and its "View deal" action) all now reflect which path was
+  actually taken, instead of always saying "deal".
+- Tenant-ownership validation on the owner was already unconditional in
+  `convertLeadAction` (checked before the `deal` branch), so it applies to
+  both paths without any change.
+
+**A real, previously-unreachable bug turned up during verification, not by
+inspection:** the frontend only ever tracked `convertedDealId` as "this lead
+has already been converted." A contact-only conversion leaves that field
+unset, so after a reload the lead's "Convert to deal" button silently
+**re-enabled** and the "Converted" badge disappeared — both in
+`RecordDetail.tsx` and in the Leads list — even though the lead had already
+been converted and had a real Contact. This was always latently possible
+(the API supported contact-only before today), but the UI never exposed a
+way to trigger it, so it was unreachable until this task. Fixed by adding a
+persisted `convertedContactId` (mirroring the existing `convertedDealId`,
+using the `Lead.convertedContact` relation that was already in the Prisma
+schema — no migration needed) through `listLeads`'s `include`, `mapLead`,
+the frontend `Lead` type, and the optimistic conversion update; the three
+"is this lead already converted" checks in `RecordDetail.tsx` and the one in
+`Leads.tsx` now treat either field as authoritative.
+
+**Verified in a real browser against Neon (26/26 — one false fail in the
+first run, caused directly by the bug above, cleared once it was fixed and
+re-verified):**
+- Modal defaults to the deal path unchanged; switching to "Contact only"
+  hides all five deal fields and updates the title/description/button;
+  "Owner" stays visible; the button needs nothing else to be enabled.
+- **Contact-only submit**: success banner says "A contact record was
+  created" with only a "View contact" action (no "View deal"); Neon has the
+  lead `qualified`, **exactly one** Contact (carrying the lead's
+  name/email/phone/company and `originLeadId`), **no Deal**, and exactly one
+  `converted … to a contact` activity.
+- **With-deal submit** (regression check): banner, both view actions, and
+  Neon (Contact **and** Deal, correct linkage, one activity) all unchanged
+  from before this task.
+- **The fix, verified directly**: after a full reload, a contact-only-
+  converted lead now correctly shows "Converted" and a disabled button (was
+  silently reversible before the fix); the Leads list now shows its
+  "Converted" badge too (was missing before the fix); the with-deal path's
+  equivalent checks were unaffected (regression-clean).
+- **Real tenant-ownership rejection on the contact-only path**: owner id
+  rewritten to one in another org, forcing a genuine 500 — toast shown, lead
+  NOT marked qualified, no Contact created, no orphan activity, and the
+  "Convert to deal" trigger remained usable — then a genuine retry on the
+  same lead succeeded normally.
+- No schema changes needed — confirmed `git diff` touched nothing under
+  `prisma/`.
+- Test fixtures left in place: "Convert Test Contact-Only" (contact-only),
+  "Convert Test With Deal" (with a $45,000 "Dealworks — Platform rollout"
+  deal), "Convert Test Rejected Owner" (converted contact-only on a second,
+  successful attempt after the rejection test).
+
 ## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
 
 **Bug (Sep 27 audit, #13):** moving a deal to Won left its close date alone, so
@@ -1099,7 +1168,7 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
 |---|------|---------|
 | 3 | Create a lead | ✅ PASS (skipped per brief, but exercised anyway: 6 realistic leads through the modal) |
 | 4 | Edit a lead | ✅ PASS — status **and now every other field** are editable (fixed Sep 29, see "Added: lead field editing"). **Contact and deal editing also added Sep 29** (see "Added: contact field editing" / "Added: deal field editing"). |
-| 5 | Convert a lead | ✅ PASS end to end (with a deal). Contact-only conversion is 🚧 NOT YET BUILT in the UI |
+| 5 | Convert a lead | ✅ PASS end to end (with a deal). ~~Contact-only conversion is NOT YET BUILT in the UI~~ — **added Sep 29** (see "Added: contact-only lead conversion") |
 | 6 | Create a contact | ✅ PASS (skipped per brief, but exercised: 3 contacts) |
 | 7 | Create a company | 🚧 NOT YET BUILT (confirmed) |
 | 8 | Create a deal | ✅ PASS (skipped per brief, but exercised from all four entry points) |
@@ -1134,8 +1203,9 @@ the modal. For both: header shows *Converted* at once; Neon has the Deal, the
 Contact (email/phone/company copied, `originLeadId` set), lead `qualified`,
 exactly **one** `converted…` activity; deal has the right value/stage/probability,
 `contactId`, `leadId`, company, `orgId`; still *Converted* after a full reload
-and the deal is on the Pipeline in the right column (no phantom ids). The modal
-always creates a deal — no contact-only path (known gap).
+and the deal is on the Pipeline in the right column (no phantom ids). ~~The
+modal always creates a deal — no contact-only path (known gap).~~ Fixed Sep 29
+2026, see "Added: contact-only lead conversion".
 
 ### #9 Drag (never tested before; menu path was)
 With real `mouse.down / move / up` (HTML5 drag & drop): Halden Discovery→Proposal,
@@ -1957,13 +2027,11 @@ CrmProvider. There are no REST API endpoints for external integrations.
 
 No test framework configured. No unit, integration, or E2E tests.
 
-### `convertLead` UI only creates a deal
+### ~~`convertLead` UI only creates a deal~~ — fixed Sep 29 2026
 
-The API and store now support contact-only conversion (omit `input.deal`),
-but the UI's "Convert to deal" modal in `RecordDetail.tsx` always passes a
-`deal` block. No "Convert to contact only" UI path exists. (Confirmed in
-the browser, Sep 26 audit #5. Adding it requires a UI change in
-`src/screens/`, so it needs explicit sign-off.)
+The API and store already supported contact-only conversion (omit
+`input.deal`); the UI didn't expose it. See "Added: contact-only lead
+conversion" for the fix.
 
 ### Bugs and gaps found by the Sep 27 audit (details in the audit section)
 - ~~Notes don't persist last-touched~~ — fixed Sep 27 2026 (see "Fixed: logging
