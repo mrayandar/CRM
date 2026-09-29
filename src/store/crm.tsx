@@ -28,6 +28,7 @@ import {
   createLeadAction,
   updateLeadAction,
   createDealAction,
+  updateDealAction,
   createContactAction,
   updateContactAction,
   moveDealAction,
@@ -109,6 +110,16 @@ export interface NewDealInput {
   contactId?: string
 }
 
+export interface UpdateDealInput {
+  name: string
+  value: number
+  stage: DealStage
+  /** ISO timestamp */
+  closeDate: string
+  ownerId: string
+  contactId?: string
+}
+
 interface CrmState {
   owners: Owner[]
   currentUser: Owner
@@ -133,6 +144,12 @@ interface CrmState {
   updateLead: (leadId: string, input: UpdateLeadInput) => void
   /** Updates a contact's own fields; rolls back and shows a toast if the save fails. A no-op (nothing changed) does nothing. */
   updateContact: (contactId: string, input: UpdateContactInput) => void
+  /**
+   * Updates a deal's own fields; rolls back and shows a toast if the save fails. A no-op (nothing
+   * changed) does nothing. If `stage` changes, the close date follows the same rule moveDeal uses
+   * (entering Won stamps today) — this mirrors the server, which is the actual source of truth.
+   */
+  updateDeal: (dealId: string, input: UpdateDealInput) => void
   setLeadStatus: (leadId: string, status: LeadStatus) => void
   convertLead: (
     leadId: string,
@@ -625,6 +642,81 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [contacts, currentUser.id, persist],
   )
 
+  const updateDeal = useCallback(
+    (dealId: string, input: UpdateDealInput) => {
+      const deal = deals.find((d) => d.id === dealId)
+      if (!deal) return
+
+      const trimmed = {
+        name: input.name.trim(),
+        value: input.value,
+        stage: input.stage,
+        closeDate: input.closeDate,
+        contactId: input.contactId,
+        ownerId: input.ownerId,
+      }
+
+      // Same close-date rule the server applies in updateDeal/moveDealToStage (lib/data/deals.ts):
+      // entering Won stamps today, overriding whatever was submitted for the field; every other
+      // case — including leaving Won — uses the submitted value as-is.
+      const now = new Date().toISOString()
+      const closedNow = trimmed.stage === 'won' && deal.stage !== 'won'
+      const closeDate = closedNow ? now : trimmed.closeDate
+      const probability = STAGE_PROBABILITY[trimmed.stage]
+
+      const changed: string[] = []
+      if (deal.name !== trimmed.name) changed.push('name')
+      if (deal.value !== trimmed.value) changed.push('value')
+      if (deal.stage !== trimmed.stage) changed.push('stage')
+      if (deal.closeDate !== closeDate) changed.push('close date')
+      if ((deal.contactId ?? '') !== (trimmed.contactId ?? '')) changed.push('contact')
+      if (deal.ownerId !== trimmed.ownerId) changed.push('owner')
+
+      // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
+      // and the activity rather than log an empty "edited" entry for it.
+      if (changed.length === 0) return
+
+      const next: Deal = {
+        ...deal,
+        name: trimmed.name,
+        value: trimmed.value,
+        stage: trimmed.stage,
+        probability,
+        closeDate,
+        contactId: trimmed.contactId,
+        ownerId: trimmed.ownerId,
+        updatedAt: now,
+      }
+
+      // Written to Postgres inside the same transaction as the field update (see updateDeal in
+      // lib/data/deals.ts) — not routed through persist()'s post-success activity log, which would
+      // write it a second time (the same duplicate-write bug addNote had before it was fixed).
+      const activity: Activity = {
+        id: nextId('a'),
+        kind: 'edited',
+        title: `edited ${next.name}`,
+        body: `Changed: ${changed.join(', ')}`,
+        at: now,
+        actorId: currentUser.id,
+        subject: { type: 'deal', id: dealId, label: next.name },
+      }
+
+      setDeals((prev) => prev.map((d) => (d.id === dealId ? next : d)))
+      setActivities((prev) => [activity, ...prev])
+
+      persist(
+        () => updateDealAction({ id: dealId, ...input }),
+        () => {
+          setDeals((prev) => prev.map((d) => (d.id === dealId ? deal : d)))
+          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+        },
+        undefined,
+        "Couldn't save the changes, please try again.",
+      )
+    },
+    [deals, currentUser.id, persist],
+  )
+
   const setLeadStatus = useCallback(
     (leadId: string, status: LeadStatus) => {
       const lead = leads.find((l) => l.id === leadId)
@@ -863,6 +955,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addContact,
       updateContact,
       addDeal,
+      updateDeal,
       setLeadStatus,
       convertLead,
       toggleTask,
@@ -885,6 +978,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addContact,
       updateContact,
       addDeal,
+      updateDeal,
       setLeadStatus,
       convertLead,
       toggleTask,

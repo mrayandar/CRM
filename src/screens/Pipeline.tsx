@@ -17,6 +17,7 @@ import { Avatar, CompanyMark } from '@/components/ui/Avatar'
 import { SearchInput, Segmented, Select } from '@/components/ui/Field'
 import { MenuDivider, MenuItem, MenuLabel, Popover } from '@/components/ui/Menu'
 import { NewDealModal } from '@/components/common/NewDealModal'
+import { EditDealModal } from '@/components/common/EditDealModal'
 import { useCrm } from '@/store/crm'
 import {
   DEAL_STAGE_LABEL,
@@ -36,6 +37,7 @@ export function Pipeline() {
   const [scope, setScope] = useState<'all' | 'mine'>('all')
   // null = closed; `stage` pre-selects a column's stage (from that column's "+")
   const [newDeal, setNewDeal] = useState<{ stage?: DealStage } | null>(null)
+  const [editDealId, setEditDealId] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null)
   const [overStage, setOverStage] = useState<DealStage | null>(null)
 
@@ -68,6 +70,8 @@ export function Pipeline() {
     ...COLUMNS.map((stage) => sum(byStage[stage].map((d) => d.value))),
     1,
   )
+
+  const editingDeal = editDealId ? deals.find((d) => d.id === editDealId) : undefined
 
   const handleDrop = (stage: DealStage) => (event: DragEvent) => {
     event.preventDefault()
@@ -209,6 +213,7 @@ export function Pipeline() {
                       setOverStage(null)
                     }}
                     onMove={(next) => moveDeal(deal.id, next)}
+                    onEdit={() => setEditDealId(deal.id)}
                   />
                 ))}
 
@@ -231,6 +236,8 @@ export function Pipeline() {
       </div>
 
       {newDeal && <NewDealModal onClose={() => setNewDeal(null)} defaultStage={newDeal.stage} />}
+
+      {editingDeal && <EditDealModal deal={editingDeal} onClose={() => setEditDealId(null)} />}
     </PageShell>
   )
 }
@@ -243,6 +250,7 @@ function DealCard({
   onDragStart,
   onDragEnd,
   onMove,
+  onEdit,
 }: {
   deal: Deal
   ownerName: string
@@ -251,6 +259,7 @@ function DealCard({
   onDragStart: (e: DragEvent) => void
   onDragEnd: () => void
   onMove: (stage: DealStage) => void
+  onEdit: () => void
 }) {
   const days = dayDelta(deal.closeDate)
   const closed = deal.stage === 'won' || deal.stage === 'lost'
@@ -315,7 +324,14 @@ function DealCard({
                 ))}
                 <MenuDivider />
                 <MenuItem onClick={close}>Log activity</MenuItem>
-                <MenuItem onClick={close}>Edit deal</MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    onEdit()
+                    close()
+                  }}
+                >
+                  Edit deal
+                </MenuItem>
               </>
             )}
           </Popover>

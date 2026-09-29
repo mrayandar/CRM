@@ -20,6 +20,7 @@ import {
   createDeal as dbCreateDeal,
   getDealById,
   moveDealToStage as dbMoveDealToStage,
+  updateDeal as dbUpdateDeal,
 } from '@lib/data/deals'
 import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
@@ -302,6 +303,52 @@ export async function createDealAction(input: {
   })
   revalidatePath('/', 'layout')
   return { id: deal.id }
+}
+
+export async function updateDealAction(input: {
+  id: string
+  name: string
+  value: number
+  stage: DealStage
+  closeDate: string
+  contactId?: string
+  ownerId: string
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+
+  const name = input.name.trim()
+  const closeDate = new Date(input.closeDate)
+  if (!name || name.length > 200) throw new Error('Name is required')
+  if (!Number.isInteger(input.value) || input.value <= 0 || input.value > 1_000_000_000) {
+    throw new Error('Invalid value')
+  }
+  if (!DEAL_STAGES.includes(input.stage)) throw new Error('Invalid stage')
+  if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
+
+  // ownerId and contactId come from the client — both must belong to this org.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+  let contact = null
+  if (input.contactId) {
+    contact = await getContactById(orgId, input.contactId)
+    if (!contact) throw new Error('Contact not found')
+  }
+
+  await dbUpdateDeal(
+    orgId,
+    input.id,
+    {
+      name,
+      value: input.value,
+      stage: input.stage,
+      probability: STAGE_PROBABILITY[input.stage] ?? 25,
+      closeDate,
+      contactId: contact?.id ?? null,
+      ownerId: owner.id,
+    },
+    actorId,
+  )
+  revalidatePath('/', 'layout')
 }
 
 export async function updateLeadAction(input: {

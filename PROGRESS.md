@@ -535,8 +535,9 @@ carried over cleanly):**
 - Test edit left in place: contact "Sofia Lindqvist" is now "Sofia K.
   Lindqvist" (CFO title updated, new email/phone, company "Fjord Marine
   Group", owner Riley Hart).
-- Not built: deals still have no field editing (same gap, out of scope here);
-  no undo/history beyond the "edited" timeline entries.
+- ~~Not built: deals still have no field editing~~ — added Sep 29 2026 (see
+  "Added: deal field editing"). No undo/history beyond the "edited" timeline
+  entries.
 
 ## Added: duplicate-email check on contact editing (Sep 29 2026)
 
@@ -572,6 +573,103 @@ exactly one activity. Changing the email to something genuinely new still
 saved. Clearing the email to blank still saved (exempt from the check, like
 creation). Test contact left in a working state: "Ravi K. Menon" now has
 email `ravi.menon.updated@kestrelsoftware.com`.
+
+## Added: deal field editing (Sep 29 2026)
+
+Same gap deals had as leads/contacts before those were fixed: the Pipeline
+card menu's "Edit deal" item existed but did nothing (a dead control per the
+Sep 27 audit; "Log activity" on the same menu is still dead — out of scope).
+Fields: name, value, stage, expected close date, linked contact, owner —
+deliberately not `company`, `priority` or `source`; only the six fields the
+task named.
+
+**Trigger reuses the existing control, not a new one.** `Pipeline.tsx`'s card
+menu "Edit deal" `MenuItem` now opens `EditDealModal`
+(`src/components/common/EditDealModal.tsx`, a new file matching
+`NewDealModal.tsx`'s own location/style — deals have no detail page, so
+unlike leads/contacts there's no shared screen to co-locate it in). Layout
+mirrors `NewDealModal`: name; value + close date; stage + owner; linked
+contact. Stage offers all six stages here (unlike the *create* modal, which
+normally limits new deals to the four open ones) — editing an existing deal
+should be able to move it into or out of Won/Lost directly, not only by drag.
+
+**Stage changes reuse the exact same close-date rule as a drag, via one
+shared function — not a second copy of the logic.** Literally calling
+`moveDealToStage` from inside `updateDeal`'s own transaction wasn't feasible
+(it opens its own `prisma.$transaction`, and Prisma doesn't compose nested
+`$transaction` calls) or actually what was needed — what had to be identical
+was the *decision*, not the SQL. `lib/data/deals.ts` now has
+`closeDateOnStageChange(previousStage, nextStage)`, a small pure function
+that returns "stamp to now" only when entering Won from a non-Won stage.
+Both `moveDealToStage` (drag) and the new `updateDeal` (this modal) call it;
+neither re-derives the rule independently, so they cannot silently diverge.
+- `updateDeal` (`lib/data/deals.ts`): one transaction scoped by
+  `{ id, orgId }`, diffs the existing row against the incoming data
+  (including a `+existing.closeDate !== +closeDate` check against the
+  *final*, post-stamp-decision date), skips the write and the activity
+  entirely when nothing changed (no-op suppression built in from the start),
+  and logs one `Activity` row with `kind: 'edited'` — the same kind added
+  for leads, reused again, no new migration.
+- `updateDealAction` (`lib/actions/crm.ts`) validates like `createDealAction`
+  does (name, value bounds, stage enum, close date parse) and re-verifies
+  **both** a reassigned owner and a reassigned/cleared contact belong to the
+  caller's org via `getOwnerById`/`getContactById` before connecting them.
+- `updateDeal` (`src/store/crm.tsx`) mirrors the server's close-date rule
+  client-side for the optimistic update, and follows the same `persist()`
+  pattern as the lead/contact edits.
+
+**Bug found and fixed during verification, not by inspection:** leaving Won
+through this modal was silently overwriting the precisely-stamped close date
+with a coarser "noon today" value **even when the date field was never
+touched**. Cause: `<input type=date>` only has day precision, and the modal
+unconditionally reconstructed `${day}T12:00:00` on every submit. A drag can
+never trigger this (it has no date field to resubmit), so the bug was
+specific to reaching a Won→non-Won transition through the *edit modal* —
+exactly the path this task added. Fix: the modal now compares the date
+input's value against `deal.closeDate.slice(0, 10)` at submit time; if
+unchanged, it resubmits the **original** ISO value byte-for-byte instead of
+reconstructing one, so an untouched field can never look like an edit. An
+explicitly *typed* new date is unaffected — that still reconstructs and
+still wins over "leaving Won preserves it," same as before.
+
+**Verified in a real browser against Neon (35/35 across two runs — the first
+caught the close-date bug above and three false fails in my own test that
+searched for a `"Company — Name"` string the Pipeline card never renders
+contiguously (`deal.company` and `deal.name` sit in separate `<p>` tags); the
+underlying Neon assertions for those same scenarios had already passed,
+confirming they were test bugs, not app bugs):**
+- "Edit deal" now opens the modal (previously did nothing), prefilled from
+  the deal's real values.
+- No-op save: modal closes normally; activity count and every field
+  (including `closeDate`/`probability`) byte-for-byte unchanged.
+- Real edit of name/value/close date/owner/linked contact at once, **not**
+  touching stage: all five saved, `stage`/`probability` untouched, exactly
+  one activity logged with "Changed: name, value, close date, contact,
+  owner" — no "stage" mentioned, since it wasn't part of the diff.
+- **Moving to Won via the modal**: `stage=won`, `probability=100` (same
+  table `moveDeal` uses), close date stamped to ~now — confirmed **not**
+  noon-today, i.e. a real precise stamp, not a coarse one.
+- **Leaving Won via the modal** (the bug above, re-verified after the fix):
+  close date preserved **byte-for-byte** against the precise stamp from the
+  step before; probability correctly reset; the activity's summary says only
+  "Changed: stage" (close date correctly excluded, since it didn't actually
+  change).
+- Explicitly typing a new date alongside a non-Won stage change is still
+  respected (direct edits always win).
+- **Real server rejections**: an owner id and a contact id each rewritten to
+  a row in another org were both refused — optimistic change and its
+  "Edited" activity shown first, then the toast, then a full revert; Neon
+  unchanged both times, no orphan activity.
+- Unlinking a contact (selecting "No linked contact") correctly saves
+  `contactId: null`.
+- No schema changes needed — confirmed `git diff` touched nothing under
+  `prisma/`.
+- Test deal left as the verification run ended it: "Halden Robotics —
+  Extended pilot program", $31,000, Discovery, closing 2026-12-20, no linked
+  contact.
+- Not built: `company`/`priority`/`source` aren't editable on deals (not in
+  the requested field list); no undo/history beyond the "edited" timeline
+  entries; the card menu's "Log activity" is still a dead control.
 
 ## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
 
@@ -713,9 +811,9 @@ completely unchanged both times.
 - Test edit was left in place: lead "Aisha Bello" is now "Aisha N.
   Bello-Okafor" at "Meridian Health Systems", assigned to Riley Hart.
 - ~~Not built: contacts and deals still have no field editing~~ — contact
-  editing added Sep 29 2026 (see "Added: contact field editing"); deals still
-  don't. No undo/history for an edit beyond the new "edited"
-  timeline entries.
+  editing added Sep 29 2026 (see "Added: contact field editing"); deal
+  editing also added Sep 29 (see "Added: deal field editing"). No
+  undo/history for an edit beyond the new "edited" timeline entries.
 
 ## Fixed: Tasks header "New task" button (Sep 27 2026)
 
@@ -1000,7 +1098,7 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
 | # | Flow | Verdict |
 |---|------|---------|
 | 3 | Create a lead | ✅ PASS (skipped per brief, but exercised anyway: 6 realistic leads through the modal) |
-| 4 | Edit a lead | ✅ PASS — status **and now every other field** are editable (fixed Sep 29, see "Added: lead field editing"). **Contact editing also added Sep 29** (see "Added: contact field editing"). Deals still have no field editing. |
+| 4 | Edit a lead | ✅ PASS — status **and now every other field** are editable (fixed Sep 29, see "Added: lead field editing"). **Contact and deal editing also added Sep 29** (see "Added: contact field editing" / "Added: deal field editing"). |
 | 5 | Convert a lead | ✅ PASS end to end (with a deal). Contact-only conversion is 🚧 NOT YET BUILT in the UI |
 | 6 | Create a contact | ✅ PASS (skipped per brief, but exercised: 3 contacts) |
 | 7 | Create a company | 🚧 NOT YET BUILT (confirmed) |
@@ -1017,12 +1115,15 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
   lost / new) update the UI, Neon `status`, `lastTouchedAt`, and log exactly one
   `set X to Y` activity each; survives a reload.
 - ~~Not built: there is no editable field on the lead page~~ — **fixed Sep 29
-  2026**, see "Added: lead field editing". Contacts and deals still have no
-  field editing.
-- **Dead controls** (click → no dialog, no navigation, no server action): lead
-  page "Email", "Call"; Leads row menu "Log activity", "Send email", "Delete
-  lead" (verified nothing is deleted); Leads bulk "Email", "Reassign"; Leads and
-  Contacts "Export"; Pipeline card menu "Log activity", "Edit deal"; Pipeline
+  2026**, see "Added: lead field editing". ~~Contacts and deals still have no
+  field editing.~~ Both **also added Sep 29** — see "Added: contact field
+  editing" and "Added: deal field editing".
+- **Dead controls** (click → no dialog, no navigation, no server action) *as
+  of this Sep 27 audit* — lead page "Email", "Call"; Leads row menu "Log
+  activity", "Send email", "Delete lead" (verified nothing is deleted); Leads
+  bulk "Email", "Reassign"; Leads and Contacts "Export"; Pipeline card menu
+  "Log activity", ~~"Edit deal"~~ (**fixed Sep 29**, see "Added: deal field
+  editing" — "Log activity" on the same menu is still dead); Pipeline
   "Customize stages"; Settings Profile/Workspace "Save"; account-menu
   "Profile & preferences" / "Notification settings" / "Keyboard shortcuts".
 
