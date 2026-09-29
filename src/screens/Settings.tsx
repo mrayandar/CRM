@@ -17,9 +17,32 @@ import { useOrganization, useUser } from '@clerk/nextjs'
 
 type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
 
+const TIMEZONES = [
+  { value: 'Pacific Time (US & Canada)', label: 'Pacific Time (US & Canada)' },
+  { value: 'Eastern Time (US & Canada)', label: 'Eastern Time (US & Canada)' },
+  { value: 'London (GMT)', label: 'London (GMT)' },
+  { value: 'Central European Time', label: 'Central European Time' },
+]
+
 export function Settings() {
-  const { currentUser } = useCrm()
+  const { currentUser, updateProfile } = useCrm()
   const [section, setSection] = useState<Section>('profile')
+  const [profileName, setProfileName] = useState(currentUser.name)
+  const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? TIMEZONES[0]!.value)
+
+  const profileDirty =
+    profileName.trim() !== currentUser.name || profileTimezone !== (currentUser.timezone ?? TIMEZONES[0]!.value)
+
+  const saveProfile = () => {
+    const name = profileName.trim()
+    if (!name) return
+    updateProfile({ name, timezone: profileTimezone })
+  }
+
+  const cancelProfile = () => {
+    setProfileName(currentUser.name)
+    setProfileTimezone(currentUser.timezone ?? TIMEZONES[0]!.value)
+  }
   const [notifications, setNotifications] = useState({
     dealStage: true,
     mentions: true,
@@ -63,30 +86,45 @@ export function Settings() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
                     <Label>Full name</Label>
-                    <Input defaultValue={currentUser.name} />
+                    <Input value={profileName} onChange={(e) => setProfileName(e.target.value)} />
                   </div>
                   <div>
                     <Label>Role</Label>
-                    <Input defaultValue={currentUser.role} />
+                    <Input value={currentUser.role} disabled />
+                    <p className="mt-1 text-[11px] text-ink-400">Set in Team, under Settings.</p>
                   </div>
                   <div>
                     <Label>Email</Label>
-                    <Input defaultValue={currentUser.email} />
+                    <Input value={currentUser.email} disabled />
+                    <p className="mt-1 text-[11px] text-ink-400">Managed by your account provider.</p>
                   </div>
                   <div>
                     <Label>Time zone</Label>
-                    <Select defaultValue="pt" className="h-9">
-                      <option value="pt">Pacific Time (US & Canada)</option>
-                      <option value="et">Eastern Time (US & Canada)</option>
-                      <option value="gmt">London (GMT)</option>
-                      <option value="cet">Central European Time</option>
+                    <Select
+                      value={profileTimezone}
+                      onChange={(e) => setProfileTimezone(e.target.value)}
+                      className="h-9"
+                    >
+                      {TIMEZONES.map((tz) => (
+                        <option key={tz.value} value={tz.value}>
+                          {tz.label}
+                        </option>
+                      ))}
                     </Select>
                   </div>
                 </div>
               </div>
               <footer className="flex items-center justify-end gap-2 border-t border-line bg-subtler px-5 py-3">
-                <Button variant="ghost">Cancel</Button>
-                <Button variant="primary">Save changes</Button>
+                <Button variant="ghost" onClick={cancelProfile} disabled={!profileDirty}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={saveProfile}
+                  disabled={!profileDirty || profileName.trim() === ''}
+                >
+                  Save changes
+                </Button>
               </footer>
             </Card>
 

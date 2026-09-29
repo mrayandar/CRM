@@ -31,7 +31,7 @@ import {
   type LeadSource,
   type LeadStatus,
 } from '@/data/types'
-import { cn, currency, currencyCompact, relativeTime, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, exportCsv, relativeTime, sortBy, sum } from '@/lib/utils'
 
 type SortKey = 'name' | 'company' | 'score' | 'estValue' | 'lastTouchedAt'
 
@@ -39,9 +39,10 @@ const SOURCES = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website
 
 export function Leads() {
   const navigate = useNavigate()
-  const { leads, owners, ownerById, setLeadStatus } = useCrm()
+  const { leads, owners, ownerById, setLeadStatus, updateLead } = useCrm()
   const [params, setParams] = useSearchParams()
   const [newLeadOpen, setNewLeadOpen] = useState(false)
+  const [reassignOpen, setReassignOpen] = useState(false)
 
   const status = (params.get('status') as LeadStatus | null) ?? 'all'
   const [query, setQuery] = useState('')
@@ -91,6 +92,25 @@ export function Leads() {
   const allSelected = filtered.length > 0 && filtered.every((l) => selected.has(l.id))
   const activeFilters = [owner !== 'all', source !== 'all', status !== 'all'].filter(Boolean).length
 
+  const exportLeads = () => {
+    exportCsv(
+      'leads.csv',
+      filtered.map((lead) => ({
+        name: lead.name,
+        title: lead.title,
+        company: lead.company,
+        email: lead.email,
+        phone: lead.phone,
+        status: LEAD_STATUS_LABEL[lead.status],
+        source: lead.source,
+        owner: ownerById(lead.ownerId).name,
+        score: lead.score,
+        estValue: lead.estValue,
+        lastTouchedAt: lead.lastTouchedAt,
+      })),
+    )
+  }
+
   const setStatus = (next: LeadStatus | 'all') => {
     const nextParams = new URLSearchParams(params)
     if (next === 'all') nextParams.delete('status')
@@ -107,7 +127,7 @@ export function Leads() {
       )} estimated value`}
       actions={
         <>
-          <Button variant="secondary" size="sm" icon={<Download size={14} />}>
+          <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportLeads}>
             Export
           </Button>
           <Button
@@ -164,7 +184,12 @@ export function Leads() {
                 <Button variant="secondary" size="sm" icon={<Mail size={13} />}>
                   Email
                 </Button>
-                <Button variant="secondary" size="sm" icon={<ArrowRightLeft size={13} />}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<ArrowRightLeft size={13} />}
+                  onClick={() => setReassignOpen(true)}
+                >
                   Reassign
                 </Button>
                 <IconButton label="Delete selected" variant="danger">
@@ -366,7 +391,93 @@ export function Leads() {
       </div>
 
       {newLeadOpen && <NewLeadModal onClose={() => setNewLeadOpen(false)} />}
+
+      {reassignOpen && (
+        <ReassignModal
+          leads={leads.filter((l) => selected.has(l.id))}
+          owners={owners}
+          updateLead={updateLead}
+          onClose={() => setReassignOpen(false)}
+          onDone={() => {
+            setReassignOpen(false)
+            setSelected(new Set())
+          }}
+        />
+      )}
     </PageShell>
+  )
+}
+
+/** Bulk owner reassignment — reuses updateLead (the same call EditLeadModal makes) per selected
+ *  lead, so the tenant-ownership check on the new owner (getOwnerById in updateLeadAction) applies
+ *  identically here. */
+function ReassignModal({
+  leads,
+  owners,
+  updateLead,
+  onClose,
+  onDone,
+}: {
+  leads: Lead[]
+  owners: { id: string; name: string; role: string }[]
+  updateLead: (leadId: string, input: {
+    name: string
+    title: string
+    email: string
+    phone: string
+    company: string
+    source: Lead['source']
+    ownerId: string
+  }) => void
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [ownerId, setOwnerId] = useState(owners[0]?.id ?? '')
+
+  const submit = () => {
+    if (!ownerId) return
+    for (const lead of leads) {
+      updateLead(lead.id, {
+        name: lead.name,
+        title: lead.title,
+        email: lead.email,
+        phone: lead.phone,
+        company: lead.company,
+        source: lead.source,
+        ownerId,
+      })
+    }
+    onDone()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      width={440}
+      title="Reassign leads"
+      description={`Move ${leads.length} ${leads.length === 1 ? 'lead' : 'leads'} to a new owner.`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!ownerId}>
+            Reassign
+          </Button>
+        </>
+      }
+    >
+      <Field label="New owner">
+        <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
+          {owners.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name} · {o.role}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    </Modal>
   )
 }
 

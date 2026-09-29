@@ -146,6 +146,32 @@ export function seededRandom(seed: string): () => number {
   }
 }
 
+function csvCell(value: unknown): string {
+  const s = value == null ? '' : String(value)
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/**
+ * Builds a CSV from row objects and triggers a browser download. Client-side only — the rows
+ * passed in are whatever's currently filtered/visible on screen, so the export always matches
+ * what the user is looking at.
+ */
+export function exportCsv(filename: string, rows: Array<Record<string, unknown>>): void {
+  if (rows.length === 0) return
+  const headers = Object.keys(rows[0]!)
+  const lines = [
+    headers.join(','),
+    ...rows.map((row) => headers.map((h) => csvCell(row[h])).join(',')),
+  ]
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export function isThisMonth(iso: string): boolean {
   const d = new Date(iso)
   const now = new Date()

@@ -23,6 +23,7 @@ import type {
   Task,
 } from '@/data/types'
 import { DEAL_STAGE_LABEL } from '@/data/types'
+import { initialsOf } from '@/lib/utils'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
@@ -38,6 +39,7 @@ import {
   addTaskAction,
   addNoteAction,
   logActivityAction,
+  updateProfileAction,
 } from '@lib/actions/crm'
 import type { CrmInitialData } from '@lib/data-loader'
 
@@ -167,6 +169,8 @@ interface CrmState {
   }) => void
   addNote: (subject: SubjectRef, body: string) => void
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
+  /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
+  updateProfile: (input: { name: string; timezone: string | null }) => void
 }
 
 const CrmContext = createContext<CrmState | null>(null)
@@ -196,8 +200,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [deals, setDeals] = useState<Deal[]>(initialData.deals)
   const [tasks, setTasks] = useState<Task[]>(initialData.tasks)
   const [activities, setActivities] = useState<Activity[]>(initialData.activities)
-  const [owners] = useState<Owner[]>(initialData.owners)
-  const [currentUser] = useState<Owner>(initialData.currentUser)
+  const [owners, setOwners] = useState<Owner[]>(initialData.owners)
+  const [currentUser, setCurrentUser] = useState<Owner>(initialData.currentUser)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const dismissToast = useCallback(
@@ -717,6 +721,29 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [deals, currentUser.id, persist],
   )
 
+  const updateProfile = useCallback(
+    (input: { name: string; timezone: string | null }) => {
+      const name = input.name.trim()
+      if (!name) return
+      const prev = currentUser
+      const next: Owner = { ...prev, name, initials: initialsOf(name), timezone: input.timezone ?? undefined }
+
+      setCurrentUser(next)
+      setOwners((list) => list.map((o) => (o.id === prev.id ? next : o)))
+
+      persist(
+        () => updateProfileAction({ name, timezone: input.timezone }),
+        () => {
+          setCurrentUser(prev)
+          setOwners((list) => list.map((o) => (o.id === prev.id ? prev : o)))
+        },
+        undefined,
+        "Couldn't save your profile, please try again.",
+      )
+    },
+    [currentUser, persist],
+  )
+
   const setLeadStatus = useCallback(
     (leadId: string, status: LeadStatus) => {
       const lead = leads.find((l) => l.id === leadId)
@@ -968,6 +995,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addTask,
       addNote,
       logActivity: pushActivity,
+      updateProfile,
     }),
     [
       owners,
@@ -991,6 +1019,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addTask,
       addNote,
       pushActivity,
+      updateProfile,
     ],
   )
 

@@ -2,6 +2,100 @@
 
 > Living context file. Updated at the end of every task.
 
+## Wired up dead controls: activity logging, export, reassign, profile save (Sep 30 2026)
+
+Went through every control across the app that was rendered but did nothing on click, and wired
+the real ones. Left "Customize stages" alone — see the decision note below.
+
+### 1. Call / Email / Meeting → logs an activity
+
+Reused the existing activity-logging path end to end: the store's `logActivity` (already wrapping
+`persist()` + the tenant check in `logActivityAction`/`assertSubjectInOrg`) — nothing new on the
+server. Wired:
+- **Lead/contact detail** (`RecordDetail.tsx`): the header's Email/Schedule buttons, the profile
+  panel's Email/Call buttons, and the note composer's Call/Email/Meeting ghost buttons (the
+  composer already existed — these three were the only dead buttons in it; clicking one now logs
+  that kind of activity, using the composer's text as the body if any was typed).
+- **Deal** (no full detail page exists — deals live only in the Pipeline kanban): the deal card's
+  "Log activity" menu item did nothing; replaced with three real items, "Log call" / "Log email" /
+  "Log meeting", each calling the same `logActivity`.
+- Left untouched (out of scope, still dead): the Leads/Contacts row-menu "Log activity", "Send
+  email", "Add to sequence", "View company", and both "Delete lead"/"Delete contact" items — none
+  of these were asked for, and delete has no server-side implementation at all yet.
+- Verified against real Neon data (headless browser + Clerk sign-in ticket, same method as prior
+  audits): all four surfaces (lead composer Call, header Schedule, header Email, deal card Log
+  call) produced a real `Activity` row with the correct `kind` and subject.
+
+### 2. Export → CSV, client-side
+
+New `exportCsv(filename, rows)` in `src/lib/utils.ts` (Blob + object URL + a synthetic `<a
+download>` click — no library, no server round trip). Wired to the currently filtered/visible rows
+on:
+- Leads (`Leads.tsx`) — name, title, company, email, phone, status, source, owner, score,
+  estValue, lastTouchedAt.
+- Contacts (`Contacts.tsx`) — name, title, company, email, phone, tags, lifecycle, owner,
+  openDeals, accountValue, lastInteractionAt.
+- Pipeline (`Pipeline.tsx`) — there is no separate deals list screen, so this is new UI: an Export
+  button was added next to "Customize stages", exporting the currently-filtered deals (name,
+  company, value, stage, probability, closeDate, owner, priority). Genuinely new, not just wiring.
+- Left untouched: Reports' own Export button — different kind of export (aggregate report, not a
+  filtered record list), not what this task asked for.
+- Verified: clicking Export on Leads triggers a real browser download; the saved file has a header
+  row plus one row per lead.
+
+### 3. Reassign → bulk owner reassignment
+
+Reused `updateLead` (the exact call `EditLeadModal` already makes, which round-trips through
+`updateLeadAction` → `getOwnerById(orgId, ownerId)` for the tenant check) — called once per
+selected lead with its existing fields and the new `ownerId`. New: a small `ReassignModal` (owner
+picker) in `Leads.tsx`, wired to the bulk-select toolbar's Reassign button. Contacts has no
+multi-select UI at all (no dead Reassign control to wire there), so it was left alone.
+Verified: selecting two leads and reassigning moved both to the new owner in Neon.
+
+### 4. Customize stages (Pipeline) — investigated, not built; needs a decision
+
+`DealStage` is a plain Prisma enum (`discovery | proposal | negotiation | contract | won | lost`),
+not a per-org table — referenced directly across 11 files (`lib/data/deals.ts`,
+`lib/actions/crm.ts`, `src/data/types.ts`, `src/store/crm.tsx`, `Pipeline.tsx`, `Settings.tsx`,
+`EditDealModal.tsx`, `NewDealModal.tsx`, `Dashboard.tsx`, `Badge.tsx`). Making stages renameable
+and reorderable per organization means introducing a real `PipelineStage` model (orgId, key,
+label, order, probability, isClosed) and touching every one of those call sites — a schema/
+architecture change, not a UI wiring fix. Per the task's own instruction to stop and report back
+rather than guess at anything architectural, this was **not built**. Left "Customize stages" as a
+dead button; recommended minimal approach (a per-org `PipelineStage` table, `Deal.stage` becoming
+a foreign key instead of an enum) reported back for a decision before starting.
+
+### 5. Settings profile Save
+
+Genuinely new, small schema change: added `Owner.timezone` (nullable `String`, additive migration
+`20260930120000_add_owner_timezone`, applied to the real Neon database) plus
+`updateOwnerProfile(orgId, id, data)` in `lib/data/owners.ts` and `updateProfileAction` in
+`lib/actions/crm.ts`. `id` is always `requireAuth()`'s own `ownerId` — never client-supplied — so
+this can only ever write the caller's own row; no cross-tenant surface exists here by
+construction. Wired the store (`updateProfile`, following the same optimistic-update/rollback/
+toast `persist()` pattern as every other mutation) and the Settings screen.
+
+Scoping decision made without stopping to ask (small enough not to warrant it, but flagged here):
+Name and Time zone are now genuinely saved. Role and Email were left **read-only** with a caption
+("Set in Team, under Settings" / "Managed by your account provider") instead of wired, because
+both are Clerk-identity-owned — `Owner.role`/`email`/`name` are written by the Clerk webhook
+(`organizationMembership.updated` → `handleMemberUpdated`) whenever an admin changes a member's
+role, which would silently overwrite a locally-edited Role or Email on the next such event. Making
+those two fields actually editable here would mean writing through to Clerk, which is a separate
+piece of work; presenting a free-text Role input that doesn't call Clerk would have been exactly
+the kind of placeholder this task was trying to eliminate. The Workspace card on the same page
+(name, currency, fiscal year, quota) still has no Save button at all — left alone; it isn't a
+control that does nothing on click, it's a control that doesn't exist yet.
+
+Verified: editing Full name and Time zone and clicking Save changed both fields on the correct
+signed-in Owner row in Neon.
+
+### Test suite
+
+`npm test` (the permanent cross-tenant suite from the previous audit) still passes, 46/46 — none
+of the above touches cross-tenant surfaces except item 5, which is self-only by construction as
+noted above.
+
 ## Status
 
 **Phase: Auth + real data — auth flow now working end to end.** Clerk

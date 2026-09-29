@@ -9,7 +9,7 @@ import {
   updateLeadStatus as dbUpdateLeadStatus,
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
-import { getOwnerById } from '@lib/data/owners'
+import { getOwnerById, updateOwnerProfile } from '@lib/data/owners'
 import {
   createContact as dbCreateContact,
   getContactByEmail,
@@ -526,6 +526,18 @@ export async function logActivityAction(
       deal: { connect: { id: subject.id } },
     }),
   })
+  revalidatePath('/', 'layout')
+}
+
+export async function updateProfileAction(input: { name: string; timezone: string | null }) {
+  const { orgId, ownerId } = await requireAuth()
+
+  const name = input.name.trim()
+  if (!name || name.length > 200) throw new Error('Name is required')
+  const timezone = input.timezone?.trim() || null
+  if (timezone && timezone.length > 100) throw new Error('Invalid time zone')
+
+  await updateOwnerProfile(orgId, ownerId, { name, timezone })
   revalidatePath('/', 'layout')
 }
 

@@ -24,6 +24,7 @@ export interface Owner {
   initials: string
   role: string
   email: string
+  timezone?: string
 }
 
 export interface Lead {

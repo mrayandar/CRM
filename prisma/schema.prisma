@@ -130,6 +130,9 @@ model Owner {
   email       String
   avatarUrl   String?
   role        String
+  /// IANA-ish label the profile form uses (e.g. "Pacific Time (US & Canada)"). Free text, not
+  /// validated against a zone database — display preference only, nothing schedules against it.
+  timezone    String?
 
   leads      Lead[]
   contacts   Contact[]

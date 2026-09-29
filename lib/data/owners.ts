@@ -38,6 +38,24 @@ export function createOwner(
   return prisma.owner.create({ data: { ...data, orgId } })
 }
 
+/**
+ * Updates the caller's own profile fields (name, timezone). `id` always comes from
+ * `requireAuth()`'s own `ownerId` — never a client-supplied id — so this can only ever
+ * write the caller's own row; the `orgId` check is kept anyway for the same defense-in-depth
+ * every other write in this file uses.
+ */
+export function updateOwnerProfile(
+  orgId: string,
+  id: string,
+  data: { name: string; timezone: string | null },
+) {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.owner.findFirst({ where: { id, orgId } })
+    if (!existing) throw new Error(`Owner ${id} not found in org ${orgId}`)
+    return tx.owner.update({ where: { id }, data })
+  })
+}
+
 /** Upsert an Owner from Clerk user data — used during auth resolution and
  *  webhook-driven member sync. */
 export function upsertOwnerFromClerk(

@@ -23,7 +23,7 @@ import { EmptyState } from '@/components/ui/Display'
 import { GroupRow, Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
 import type { Contact } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, relativeTime, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, dayDelta, exportCsv, relativeTime, sortBy, sum } from '@/lib/utils'
 
 const LIFECYCLE_TONE: Record<Contact['lifecycle'], Tone> = {
   Customer: 'positive',
@@ -85,6 +85,25 @@ export function Contacts() {
     [filtered],
   )
 
+  const exportContacts = () => {
+    exportCsv(
+      'contacts.csv',
+      filtered.map((c) => ({
+        name: c.name,
+        title: c.title,
+        company: c.company,
+        email: c.email,
+        phone: c.phone,
+        tags: c.tags.join('; '),
+        lifecycle: c.lifecycle,
+        owner: ownerById(c.ownerId).name,
+        openDeals: c.openDeals,
+        accountValue: c.accountValue,
+        lastInteractionAt: c.lastInteractionAt,
+      })),
+    )
+  }
+
   const columnCount = view === 'company' ? 7 : 8
   const stale = filtered.filter((c) => dayDelta(c.lastInteractionAt) <= -30).length
 
@@ -94,7 +113,7 @@ export function Contacts() {
       subtitle={`${filtered.length} contacts across ${companies.length} companies · ${stale} not touched in 30 days`}
       actions={
         <>
-          <Button variant="secondary" size="sm" icon={<Download size={14} />}>
+          <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportContacts}>
             Export
           </Button>
           <Button

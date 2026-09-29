@@ -87,6 +87,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     setLeadStatus,
     updateLead,
     updateContact,
+    logActivity,
   } = useCrm()
 
   const record = (lead ?? contact)!
@@ -142,6 +143,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     setTab('activity')
   }
 
+  const ACTIVITY_VERB = { call: 'called', email: 'emailed', meeting: 'met with' } as const
+
+  const submitActivity = (kind: keyof typeof ACTIVITY_VERB) => {
+    const body = note.trim()
+    logActivity(kind, `${ACTIVITY_VERB[kind]} ${record.name}`, subject, body || undefined)
+    setNote('')
+    setTab('activity')
+  }
+
   const submitTask = () => {
     const title = newTask.trim()
     if (!title) return
@@ -169,10 +179,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
       subtitle={`${record.title} · ${record.company}`}
       actions={
         <>
-          <Button variant="secondary" size="sm" icon={<Mail size={14} />}>
+          <Button variant="secondary" size="sm" icon={<Mail size={14} />} onClick={() => submitActivity('email')}>
             Email
           </Button>
-          <Button variant="secondary" size="sm" icon={<CalendarPlus size={14} />}>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<CalendarPlus size={14} />}
+            onClick={() => submitActivity('meeting')}
+          >
             Schedule
           </Button>
           {lead ? (
@@ -226,10 +241,22 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
               </div>
 
               <div className="mt-1 flex w-full items-center gap-1.5">
-                <Button variant="secondary" size="sm" icon={<Mail size={13} />} className="flex-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Mail size={13} />}
+                  className="flex-1"
+                  onClick={() => submitActivity('email')}
+                >
                   Email
                 </Button>
-                <Button variant="secondary" size="sm" icon={<Phone size={13} />} className="flex-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Phone size={13} />}
+                  className="flex-1"
+                  onClick={() => submitActivity('call')}
+                >
                   Call
                 </Button>
                 {lead && (
@@ -434,13 +461,18 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
               />
               <div className="mt-2.5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
-                  <Button variant="ghost" size="xs" icon={<Phone size={12} />}>
+                  <Button variant="ghost" size="xs" icon={<Phone size={12} />} onClick={() => submitActivity('call')}>
                     Call
                   </Button>
-                  <Button variant="ghost" size="xs" icon={<Mail size={12} />}>
+                  <Button variant="ghost" size="xs" icon={<Mail size={12} />} onClick={() => submitActivity('email')}>
                     Email
                   </Button>
-                  <Button variant="ghost" size="xs" icon={<CalendarPlus size={12} />}>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon={<CalendarPlus size={12} />}
+                    onClick={() => submitActivity('meeting')}
+                  >
                     Meeting
                   </Button>
                 </div>

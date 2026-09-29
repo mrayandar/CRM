@@ -4,6 +4,7 @@ import { useMemo, useState, type DragEvent } from 'react'
 import { Link } from '@/lib/router-compat'
 import {
   CalendarDays,
+  Download,
   Flame,
   GripVertical,
   MoreHorizontal,
@@ -25,7 +26,7 @@ import {
   type Deal,
   type DealStage,
 } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, formatDate, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, sortBy, sum } from '@/lib/utils'
 
 const COLUMNS: DealStage[] = DEAL_STAGE_ORDER
 const OPEN_STAGES: DealStage[] = ['discovery', 'proposal', 'negotiation', 'contract']
@@ -73,6 +74,22 @@ export function Pipeline() {
 
   const editingDeal = editDealId ? deals.find((d) => d.id === editDealId) : undefined
 
+  const exportDeals = () => {
+    exportCsv(
+      'deals.csv',
+      visible.map((deal) => ({
+        name: deal.name,
+        company: deal.company,
+        value: deal.value,
+        stage: DEAL_STAGE_LABEL[deal.stage],
+        probability: deal.probability,
+        closeDate: deal.closeDate,
+        owner: ownerById(deal.ownerId).name,
+        priority: deal.priority,
+      })),
+    )
+  }
+
   const handleDrop = (stage: DealStage) => (event: DragEvent) => {
     event.preventDefault()
     const id = event.dataTransfer.getData('text/deal-id') || dragging
@@ -91,6 +108,9 @@ export function Pipeline() {
         <>
           <Button variant="secondary" size="sm" icon={<Settings2 size={14} />}>
             Customize stages
+          </Button>
+          <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportDeals}>
+            Export
           </Button>
           <Button
             variant="primary"
@@ -261,10 +281,19 @@ function DealCard({
   onMove: (stage: DealStage) => void
   onEdit: () => void
 }) {
+  const { logActivity } = useCrm()
   const days = dayDelta(deal.closeDate)
   const closed = deal.stage === 'won' || deal.stage === 'lost'
   const overdue = !closed && days < 0
   const urgent = !closed && days >= 0 && days <= 7
+
+  const ACTIVITY_VERB = { call: 'called', email: 'emailed', meeting: 'met with' } as const
+  const logDealActivity = (kind: keyof typeof ACTIVITY_VERB) =>
+    logActivity(kind, `${ACTIVITY_VERB[kind]} ${deal.company} about ${deal.name}`, {
+      type: 'deal',
+      id: deal.id,
+      label: deal.name,
+    })
 
   return (
     <article
@@ -323,7 +352,32 @@ function DealCard({
                   </MenuItem>
                 ))}
                 <MenuDivider />
-                <MenuItem onClick={close}>Log activity</MenuItem>
+                <MenuLabel>Log activity</MenuLabel>
+                <MenuItem
+                  onClick={() => {
+                    logDealActivity('call')
+                    close()
+                  }}
+                >
+                  Log call
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    logDealActivity('email')
+                    close()
+                  }}
+                >
+                  Log email
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    logDealActivity('meeting')
+                    close()
+                  }}
+                >
+                  Log meeting
+                </MenuItem>
+                <MenuDivider />
                 <MenuItem
                   onClick={() => {
                     onEdit()
