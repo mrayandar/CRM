@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from '@/lib/router-compat'
 import {
   ArrowRight,
@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Mail,
   MapPin,
+  Pencil,
   Phone,
   Plus,
   Sparkles,
@@ -84,6 +85,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     addNote,
     addTask,
     setLeadStatus,
+    updateLead,
   } = useCrm()
 
   const record = (lead ?? contact)!
@@ -94,6 +96,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
   const [note, setNote] = useState('')
   const [newTask, setNewTask] = useState('')
   const [convertOpen, setConvertOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
   const [newDealOpen, setNewDealOpen] = useState(false)
   const [converted, setConverted] = useState<{ dealId: string | null; contactId: string } | null>(null)
 
@@ -223,6 +226,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                 <Button variant="secondary" size="sm" icon={<Phone size={13} />} className="flex-1">
                   Call
                 </Button>
+                {lead && (
+                  <IconButton
+                    label="Edit lead"
+                    variant="secondary"
+                    onClick={() => setEditOpen(true)}
+                  >
+                    <Pencil size={14} />
+                  </IconButton>
+                )}
                 {lead && (
                   <Popover
                     align="end"
@@ -552,10 +564,145 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
         />
       )}
 
+      {lead && (
+        <EditLeadModal lead={lead} open={editOpen} onClose={() => setEditOpen(false)} updateLead={updateLead} />
+      )}
+
       {newDealOpen && (
         <NewDealModal onClose={() => setNewDealOpen(false)} defaultContactId={contact?.id} />
       )}
     </PageShell>
+  )
+}
+
+const LEAD_SOURCES: Lead['source'][] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
+
+function EditLeadModal({
+  lead,
+  open,
+  onClose,
+  updateLead,
+}: {
+  lead: Lead
+  open: boolean
+  onClose: () => void
+  updateLead: (leadId: string, input: {
+    name: string
+    title: string
+    email: string
+    phone: string
+    company: string
+    source: Lead['source']
+    ownerId: string
+  }) => void
+}) {
+  const { owners } = useCrm()
+  const [name, setName] = useState(lead.name)
+  const [title, setTitle] = useState(lead.title)
+  const [email, setEmail] = useState(lead.email)
+  const [phone, setPhone] = useState(lead.phone)
+  const [company, setCompany] = useState(lead.company)
+  const [source, setSource] = useState<Lead['source']>(lead.source)
+  const [ownerId, setOwnerId] = useState(lead.ownerId)
+
+  // Re-seed from the lead whenever the modal (re)opens, not on every render, so it doesn't
+  // clobber an in-progress edit while it's open (e.g. if the lead is revalidated in the background).
+  useEffect(() => {
+    if (!open) return
+    setName(lead.name)
+    setTitle(lead.title)
+    setEmail(lead.email)
+    setPhone(lead.phone)
+    setCompany(lead.company)
+    setSource(lead.source)
+    setOwnerId(lead.ownerId)
+  }, [open, lead])
+
+  const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid
+
+  const submit = () => {
+    if (!canSubmit) return
+    updateLead(lead.id, { name, title, email, phone, company, source, ownerId })
+    onClose()
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      width={520}
+      title="Edit lead"
+      description="Update this lead's details."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            Save changes
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit()
+        }}
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Full name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </Field>
+          <Field label="Title">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+          </Field>
+          <Field label="Email">
+            <Input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={emailInvalid}
+            />
+          </Field>
+          <Field label="Phone">
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+          </Field>
+          <Field label="Company">
+            <Input value={company} onChange={(e) => setCompany(e.target.value)} />
+          </Field>
+          <Field label="Source">
+            <Select
+              value={source}
+              onChange={(e) => setSource(e.target.value as Lead['source'])}
+              className="h-9"
+            >
+              {LEAD_SOURCES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <Field label="Owner">
+          <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
+            {owners.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name} · {o.role}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        {emailInvalid && (
+          <p className="text-[11.5px] leading-4 text-negative">Enter a valid email address.</p>
+        )}
+      </form>
+    </Modal>
   )
 }
 

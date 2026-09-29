@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   CircleSlash,
   Mail,
+  Pencil,
   Phone,
   Plus,
   StickyNote,
@@ -31,6 +32,7 @@ const KIND_META: Record<
     label: 'Stage change',
   },
   created: { icon: Plus, ring: 'border-line bg-subtle', text: 'text-ink-500', label: 'Created' },
+  edited: { icon: Pencil, ring: 'border-line bg-subtle', text: 'text-ink-500', label: 'Edited' },
   task: {
     icon: CheckCircle2,
     ring: 'border-line bg-subtle',

@@ -5,6 +5,7 @@ import { requireAuth } from '@lib/auth'
 import {
   createLead as dbCreateLead,
   getLeadById,
+  updateLead as dbUpdateLead,
   updateLeadStatus as dbUpdateLeadStatus,
   convertLeadToDeal as dbConvertLeadToDeal,
 } from '@lib/data/leads'
@@ -262,6 +263,43 @@ export async function createDealAction(input: {
   })
   revalidatePath('/', 'layout')
   return { id: deal.id }
+}
+
+export async function updateLeadAction(input: {
+  id: string
+  name: string
+  title: string
+  email: string
+  phone: string
+  company: string
+  source: LeadSource
+  ownerId: string
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+
+  const name = input.name.trim()
+  const title = input.title.trim()
+  const company = input.company.trim()
+  const email = input.email.trim()
+  const phone = input.phone.trim()
+  if (!name || name.length > 200) throw new Error('Name is required')
+  if (title.length > 200) throw new Error('Title is too long')
+  if (!company || company.length > 200) throw new Error('Company is required')
+  if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
+  if (phone.length > 60) throw new Error('Invalid phone')
+  if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
+
+  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+
+  await dbUpdateLead(
+    orgId,
+    input.id,
+    { name, title, email, phone, company, source: input.source, ownerId: owner.id },
+    actorId,
+  )
+  revalidatePath('/', 'layout')
 }
 
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {

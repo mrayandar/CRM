@@ -4,7 +4,7 @@
 // Every function requires `orgId` as its first argument and includes it in
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
-import type { DealStage, LeadStatus, Priority, Prisma } from '@prisma/client'
+import type { DealStage, LeadSource, LeadStatus, Priority, Prisma } from '@prisma/client'
 import { prisma } from '@lib/prisma'
 
 export interface ListLeadsOptions {
@@ -62,6 +62,57 @@ export async function updateLeadStatus(
       where: { id },
       data: { status, lastTouchedAt: new Date() },
     })
+  })
+}
+
+export interface UpdateLeadInput {
+  name: string
+  title: string
+  email: string
+  phone: string
+  company: string
+  source: LeadSource
+  ownerId: string
+}
+
+/**
+ * Updates the lead's own editable fields (not its status/conversion), bumps lastTouchedAt, and logs
+ * an "edited" activity with a short summary of which fields actually changed — all in one
+ * transaction, so a failed write can never leave an orphan activity.
+ */
+export async function updateLead(orgId: string, id: string, data: UpdateLeadInput, actorId: string) {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.lead.findFirst({ where: { id, orgId } })
+    if (!existing) throw new Error(`Lead ${id} not found in org ${orgId}`)
+
+    const changed: string[] = []
+    if (existing.name !== data.name) changed.push('name')
+    if (existing.title !== data.title) changed.push('title')
+    if (existing.email !== data.email) changed.push('email')
+    if (existing.phone !== data.phone) changed.push('phone')
+    if (existing.company !== data.company) changed.push('company')
+    if (existing.source !== data.source) changed.push('source')
+    if (existing.ownerId !== data.ownerId) changed.push('owner')
+
+    const updated = await tx.lead.update({
+      where: { id },
+      data: { ...data, lastTouchedAt: new Date() },
+    })
+
+    await tx.activity.create({
+      data: {
+        orgId,
+        kind: 'edited',
+        title: `edited ${updated.name}`,
+        body: changed.length > 0 ? `Changed: ${changed.join(', ')}` : undefined,
+        actorId,
+        subjectType: 'lead',
+        subjectLabel: updated.name,
+        leadId: id,
+      },
+    })
+
+    return updated
   })
 }
 

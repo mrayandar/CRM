@@ -97,6 +97,7 @@ export type ActivityKind =
   | 'note'
   | 'stage'
   | 'created'
+  | 'edited'
   | 'task'
   | 'won'
   | 'lost'

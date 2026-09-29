@@ -26,6 +26,7 @@ import { DEAL_STAGE_LABEL } from '@/data/types'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
+  updateLeadAction,
   createDealAction,
   createContactAction,
   moveDealAction,
@@ -53,6 +54,16 @@ export interface ConvertLeadInput {
   ownerId: string
   /** Omit to convert to a Contact only. Provide to also open a Deal. */
   deal?: ConvertLeadDealInput
+}
+
+export interface UpdateLeadInput {
+  name: string
+  title: string
+  email: string
+  phone: string
+  company: string
+  source: LeadSource
+  ownerId: string
 }
 
 export interface NewLeadInput {
@@ -108,6 +119,8 @@ interface CrmState {
   addContact: (input: NewContactInput) => Promise<NewContactResult>
   /** Adds the deal to local state immediately; rolls back and shows a toast if the save fails. Returns the new deal's id. */
   addDeal: (input: NewDealInput) => string
+  /** Updates a lead's own fields (not status/conversion); rolls back and shows a toast if the save fails. */
+  updateLead: (leadId: string, input: UpdateLeadInput) => void
   setLeadStatus: (leadId: string, status: LeadStatus) => void
   convertLead: (
     leadId: string,
@@ -482,6 +495,61 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [contacts, leads, currentUser.id, persist],
   )
 
+  const updateLead = useCallback(
+    (leadId: string, input: UpdateLeadInput) => {
+      const lead = leads.find((l) => l.id === leadId)
+      if (!lead) return
+      const now = new Date().toISOString()
+      const next: Lead = {
+        ...lead,
+        name: input.name.trim(),
+        title: input.title.trim(),
+        email: input.email.trim(),
+        phone: input.phone.trim(),
+        company: input.company.trim(),
+        source: input.source,
+        ownerId: input.ownerId,
+        lastTouchedAt: now,
+      }
+
+      const changed: string[] = []
+      if (lead.name !== next.name) changed.push('name')
+      if (lead.title !== next.title) changed.push('title')
+      if (lead.email !== next.email) changed.push('email')
+      if (lead.phone !== next.phone) changed.push('phone')
+      if (lead.company !== next.company) changed.push('company')
+      if (lead.source !== next.source) changed.push('source')
+      if (lead.ownerId !== next.ownerId) changed.push('owner')
+
+      // Written to Postgres inside the same transaction as the field update (see updateLead in
+      // lib/data/leads.ts) — not routed through persist()'s post-success activity log, which would
+      // write it a second time (the same duplicate-write bug addNote had before it was fixed).
+      const activity: Activity = {
+        id: nextId('a'),
+        kind: 'edited',
+        title: `edited ${next.name}`,
+        body: changed.length > 0 ? `Changed: ${changed.join(', ')}` : undefined,
+        at: now,
+        actorId: currentUser.id,
+        subject: { type: 'lead', id: leadId, label: next.name },
+      }
+
+      setLeads((prev) => prev.map((l) => (l.id === leadId ? next : l)))
+      setActivities((prev) => [activity, ...prev])
+
+      persist(
+        () => updateLeadAction({ id: leadId, ...input }),
+        () => {
+          setLeads((prev) => prev.map((l) => (l.id === leadId ? lead : l)))
+          setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+        },
+        undefined,
+        "Couldn't save the changes, please try again.",
+      )
+    },
+    [leads, currentUser.id, persist],
+  )
+
   const setLeadStatus = useCallback(
     (leadId: string, status: LeadStatus) => {
       const lead = leads.find((l) => l.id === leadId)
@@ -716,6 +784,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ownerById,
       moveDeal,
       addLead,
+      updateLead,
       addContact,
       addDeal,
       setLeadStatus,
@@ -736,6 +805,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       ownerById,
       moveDeal,
       addLead,
+      updateLead,
       addContact,
       addDeal,
       setLeadStatus,

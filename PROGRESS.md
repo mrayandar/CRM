@@ -350,6 +350,79 @@ inspection; not reproduced on the old code). Both now call `assertSubjectInOrg`
   maintained by stage moves only); activities logged before this fix keep their
   old parent timestamps (no backfill).
 
+## Added: title field + a visible "edited" activity on lead edits (Sep 29 2026)
+
+Two follow-ups to the lead-editing feature above.
+
+### 1. `title` (job title) added to the edit modal
+It's a real column (`Lead.title`), shown right in the page header and subtitle,
+that the first pass left out because the task's field list didn't name it. Added
+as its own field, paired with "Full name" in the modal's first row, mirroring
+`NewContactModal`'s "Full name" / "Title" layout so the two edit-style modals
+match. Threaded through the same places as every other field: `EditLeadModal`
+then `updateLead` (store) then `updateLeadAction` (validated, <= 200 chars, like
+the other text fields) then `updateLead` (data layer).
+
+### 2. Visible "edited" activity, with a changed-fields summary
+**Needed a schema migration** — no existing `ActivityKind` fit "a lead's fields
+were edited" (`stage` is specifically for status/pipeline transitions). Added
+`edited` to the enum:
+- `prisma/schema.prisma`: `edited` added to `ActivityKind`.
+- `prisma/migrations/20260929114427_add_edited_activity_kind/migration.sql`:
+  `ALTER TYPE "ActivityKind" ADD VALUE 'edited'` — additive only, applied to Neon.
+- `src/data/types.ts` (frontend `ActivityKind` union) and
+  `ActivityStream.tsx`'s `KIND_META` (icon: `Pencil`, same icon as the edit
+  button, label "Edited") — `KIND_META` is typed as `Record<ActivityKind, ...>`,
+  so the compiler enforced this entry.
+
+**Logged atomically, with a summary, not "list every field":**
+`updateLead` (`lib/data/leads.ts`) now takes an `actorId`, diffs the existing row
+against the incoming data field-by-field (name/title/email/phone/company/
+source/owner) inside the same transaction as the update, and writes one
+`Activity` row (`kind: 'edited'`, title `` `edited ${name}` ``, body
+`` `Changed: title, phone, source` `` when something changed, no body when
+nothing did) — so a failed write can never leave an orphan activity, matching
+`convertLeadToDeal`'s pattern. `updateLeadAction` passes the caller's own id
+(from `requireAuth()`) as the actor, like `convertLeadAction` already does.
+
+**Client-side, this is intentionally NOT routed through `persist()`'s
+post-success activity log** (the same slot `moveDeal`/`setLeadStatus` use). The
+activity is created server-side inside the same transaction as the field
+update, so also logging it via `persist()`'s `logActivityAction` would write it
+a **second time** — the exact duplicate-write shape the `addNote` bug had before
+it was fixed on Sep 27. Instead, `updateLead` (store) computes the same diff
+client-side for instant feedback, pushes a local optimistic `Activity` row
+directly into state (matching how `addDeal`/`addContact`/`addLead` show their
+"created" activity before the server confirms it), and removes that same row in
+`persist()`'s rollback callback if the save fails — `persist()` is still used,
+just for its run/rollback/toast mechanics, not its activity-logging path.
+
+**Verified in a real browser against Neon (17/17 after fixing 2 false fails in
+my own test — an over-anchored regex expected the timeline text to *start* with
+"edited", missing that it's prefixed with the actor's name, e.g. "nexoverify1
+edited Aisha N. Bello-Okafor"; not an app bug):**
+- The Title field exists, is prefilled from the lead, and is included in
+  `EditLeadModal`'s first row next to Full name.
+- Edited title, phone and source at once: the new title appeared on the page
+  **and** an "Edited" row appeared in the Activity timeline **immediately**
+  (optimistic, before the server responded); its body read "Changed: title,
+  phone, source".
+- ~7s later Neon held the new title/phone/source, untouched fields (name,
+  email, company, owner) were unchanged, and **exactly one** new `Activity` row
+  existed — `kind edited`, correct `orgId`/`leadId`/`subjectLabel`/`actorId`,
+  body naming the three changed fields.
+- Survived a full reload: the entry (and the Activity tab's count) still there,
+  now from Neon rather than optimistic state.
+- A no-op save (clicked Save with nothing changed) still logs one "edited"
+  activity, with `body: null` — documented as expected, not suppressed (see the
+  earlier task's note: "when a lead is edited" is read at the call level, not
+  gated on an actual diff).
+- **Real server rejection** (owner id rewritten to one in another org, forcing
+  the genuine 500): the optimistic title change **and** the optimistic "Edited"
+  activity both appeared first, then the toast, then both reverted; Neon's lead
+  was unchanged and **no orphan `edited` activity was written** (activity count
+  identical before/after).
+
 ## Fixed: deals moved to Won now get a close date; "this quarter" labels corrected (Sep 27 2026)
 
 **Bug (Sep 27 audit, #13):** moving a deal to Won left its close date alone, so
@@ -415,6 +488,83 @@ so the dev data follows the new rule.
 - Dev data left in place: Northwind is now Won (close date = today), a new won
   deal "Meridian Health — Compliance suite" ($27,000, Sep 12) was added, Calloway
   was back-filled.
+
+## Added: lead field editing (Sep 29 2026)
+
+**Only `status` was editable on a lead** (via "Change status"); every other
+field — name, email, phone, company, source, owner — had no UI to change it, and
+`notes` isn't a column on `Lead` at all (see below).
+
+**Pattern chosen: a modal, not inline editing.** The profile panel already uses a
+read-only `dl`/`KeyValue` list (`RecordDetail.tsx`), and every existing
+create/change flow in this app — `NewLeadModal`, `NewContactModal`,
+`NewDealModal`, `NewTaskModal`, `ConvertModal` — is a modal built from the same
+`Modal`/`Input`/`Select`/`Label` components. Turning six read-only rows into six
+independent inline-editable fields (focus/blur/save-per-field state, a new
+interaction pattern this codebase doesn't use anywhere) would be a bigger
+departure from the existing design than adding one more modal, and it would mean
+restructuring the `dl` markup the "hands off the UI" policy says not to touch
+without reason. A modal reuses that markup unchanged and matches everything else
+in the app.
+
+**`notes` is deliberately NOT a field in this modal.** `Lead` has no `notes`
+column — notes are an append-only `Activity` log (`kind: 'note'`), and the lead
+page already has a full composer for that (the textarea above the timeline) plus
+a dedicated Notes tab, both exercised and DB-verified in the Sep 27 audit. A
+single overwritable "notes" field would either require a schema migration (out
+of scope, not asked for) or silently discard prior notes if mapped onto "most
+recent note" — either way it would misrepresent the data model. Logging more
+context is still fully supported through the existing composer; this task adds
+editing of the *lead's own fields*, which the composer was never meant to cover.
+~~`title` (job title) is also not included~~ — added Sep 29 2026, see
+"Added: title field + a visible 'edited' activity on lead edits".
+
+**What was built:**
+- New pencil "Edit lead" `IconButton` next to "Change status" in the profile
+  panel (`RecordDetail.tsx`), opening `EditLeadModal` — name, email (optional,
+  format-checked), phone, company, source, owner. Pre-filled from the lead,
+  re-seeded whenever the modal (re)opens so it can't show stale values after a
+  background revalidation.
+- `updateLead` in `src/store/crm.tsx` follows the **`persist()`-based
+  optimistic + rollback + toast pattern** used by `setLeadStatus`/`moveDeal`
+  (the modal closes immediately, unlike `addLead`'s await-and-stay-open
+  pattern) — the user explicitly asked for the `persist()` pattern here.
+- `updateLeadAction` (`lib/actions/crm.ts`) validates the same way
+  `createLeadAction` does (required name/company, lengths, email format, source
+  against the enum) and **re-verifies the owner belongs to the caller's org**
+  via `getOwnerById(orgId, id)` before connecting it — a changed owner is
+  exactly the kind of client-supplied id this app's other actions already treat
+  as untrusted.
+- `updateLead` (`lib/data/leads.ts`) is one `$transaction`, scoped by
+  `{ id, orgId }` like every other write in this file, and bumps
+  `lastTouchedAt` to the edit time (an edit is a touch on the record, same as a
+  status change).
+- **No new Activity row is written for a plain field edit** (deliberate): no
+  existing `ActivityKind` fits "edited fields" (`stage` is specifically for
+  pipeline/status transitions), and adding a new enum value means a schema
+  migration against the live Neon database — a bigger change than this task
+  asked for. `lastTouchedAt` still moves, so the record correctly shows as
+  recently touched; there's just no timeline entry describing what changed.
+
+**Verified in a real browser against Neon (20/20):** the pencil button opens the
+modal prefilled with the lead's actual values; Cancel writes nothing. Edited
+every field on "Aisha Bello" at once (name, email, phone, company, source, and
+reassigned the owner to a different org member) — the new name appeared on the
+page **immediately, no reload**, and ~7s later Neon held every changed field
+exactly, `lastTouchedAt` had advanced, and `status`/`score`/`estValue`/`id` were
+untouched; no new Activity row was written. Reloaded the page: all fields
+persisted, and re-opening the modal showed the **saved** values, not the
+pre-edit ones. Client-side: an invalid email disables Save with an inline error;
+a blank email is allowed. **Real server rejections** (id rewritten in the
+in-flight request, so the server's own checks fire): an owner id from another
+org, and a source value not in the enum, were each refused — UI reverted to the
+last saved name, the "Couldn't save the changes" toast appeared, and Neon was
+completely unchanged both times.
+- Test edit was left in place: lead "Aisha Bello" is now "Aisha N.
+  Bello-Okafor" at "Meridian Health Systems", assigned to Riley Hart.
+- Not built: contacts and deals still have no field editing (same gap, out of
+  scope for this task); no undo/history for an edit beyond the new "edited"
+  timeline entries.
 
 ## Fixed: Tasks header "New task" button (Sep 27 2026)
 
@@ -699,7 +849,7 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
 | # | Flow | Verdict |
 |---|------|---------|
 | 3 | Create a lead | ✅ PASS (skipped per brief, but exercised anyway: 6 realistic leads through the modal) |
-| 4 | Edit a lead | ⚠️ PARTIAL — **status only**. Editing name/title/company/email/phone/source/owner/value is 🚧 NOT YET BUILT (also for contacts and deals) |
+| 4 | Edit a lead | ✅ PASS — status **and now every other field except title** are editable (fixed Sep 29, see "Added: lead field editing"). Contacts/deals still have no field editing. |
 | 5 | Convert a lead | ✅ PASS end to end (with a deal). Contact-only conversion is 🚧 NOT YET BUILT in the UI |
 | 6 | Create a contact | ✅ PASS (skipped per brief, but exercised: 3 contacts) |
 | 7 | Create a company | 🚧 NOT YET BUILT (confirmed) |
@@ -715,9 +865,9 @@ scratchpad (not committed). **Test data was deliberately left in place** — see
 - **Works:** status. All five transitions (contacted / qualified / unqualified /
   lost / new) update the UI, Neon `status`, `lastTouchedAt`, and log exactly one
   `set X to Y` activity each; survives a reload.
-- **Not built:** there is no editable field on the lead page (no inputs other
-  than the note and task boxes), no "Edit" button, and double-clicking a value
-  doesn't inline-edit. Same for contacts and deals.
+- ~~Not built: there is no editable field on the lead page~~ — **fixed Sep 29
+  2026**, see "Added: lead field editing". Contacts and deals still have no
+  field editing.
 - **Dead controls** (click → no dialog, no navigation, no server action): lead
   page "Email", "Call"; Leads row menu "Log activity", "Send email", "Delete
   lead" (verified nothing is deleted); Leads bulk "Email", "Reassign"; Leads and
