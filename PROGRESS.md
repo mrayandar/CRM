@@ -2,6 +2,74 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fixed three gaps in Team Settings (Oct 1 2026)
+
+### 1. Remove member now confirms first
+
+Clicking "Remove" on a team member used to fire `organization.removeMember()` immediately, no
+undo. Added a confirmation `Modal` (`TeamSection` in `src/screens/Settings.tsx`) with the exact
+required wording — "Remove [name] from the organization? They'll lose access immediately." —
+before the real call fires. Cancel does nothing; Confirm runs the removal.
+
+### 2. Role-change and Remove failures are no longer silent
+
+Both used to swallow every error (`catch { /* silently fail */ }`) — an admin could get a genuine
+Clerk API failure (network blip, permission issue, a stale/already-changed membership) and see
+nothing, with no way to tell the change didn't take. Wired both into the store's existing
+`persist()`/toast pattern: exposed `persist` from `CrmState` (`src/store/crm.tsx`) as a generic
+escape hatch for mutations that don't map to the store's own optimistic CRM record state — the
+exact same function every Lead/Contact/Deal edit already uses, just called with `activity:
+undefined` since there's nothing to log here. On failure it shows a toast and re-syncs the list
+from Clerk's real state (there's no local optimistic copy of the membership list to roll back —
+the `<Select>`'s value comes straight from Clerk's own cache — so the "rollback" here is a
+defensive revalidate rather than reverting a local mutation that never happened).
+
+### 3. Pending invitations are now listed, with revoke
+
+Added a "Pending invitations" section to Team settings using Clerk's own `useOrganization({
+invitations: { status: ['pending'] } })` — no custom invitation tracking, exactly as asked. Shows
+email, role, and sent date for every outstanding invitation, with a revoke button
+(`invitation.revoke()`) wired through the same `persist()` pattern as #2. Sending a new invite now
+also revalidates the invitations list (previously it only revalidated `memberships`, which was
+never the right resource for showing a *pending* invite in the first place) so a freshly-sent
+invite appears immediately. Resend was considered and deliberately not built: Clerk's SDK has no
+resend primitive for an existing invitation, and the task only asked for revoke — building a fake
+"resend" out of revoke+reinvite wasn't asked for and would have been new, undiscussed behavior.
+
+### Verified against real Clerk + Neon state, not just the UI
+
+Two disposable Clerk test users were created via the Backend API and added as real memberships to
+a disposable test org (`Nexo Fresh Org`) for this — none of the app's other seeded test orgs had
+enough membership quota headroom to add two more (Clerk's free-tier cap is 5 memberships +
+outstanding invitations per org).
+
+- **Confirmation dialog**: real dialog text matched exactly; clicking Cancel and then checking
+  Clerk's own `GET /organizations/.../memberships` confirmed the member was still there; clicking
+  Remove → Confirm and re-checking confirmed the membership was actually gone from Clerk, and the
+  row disappeared from the UI.
+- **Role-change happy path**: changed a real member's role via the UI, confirmed the change landed
+  in Clerk's membership record, then polled Neon and confirmed `Owner.role` updated too — proving
+  the existing `organizationMembership.updated` webhook sync (built earlier this session) still
+  picks up a role change made through this exact UI path.
+- **Role-change failure path**: deleted that same member's Clerk membership directly via the
+  Backend API (simulating an external removal/race condition) without letting the browser's stale
+  row refresh, then changed its role through the UI — a genuine Clerk API rejection, not a mock.
+  Confirmed a toast appeared (`role="alert"`) and the page didn't crash.
+- **Pending invitations**: sent a real invite through the UI, confirmed it appeared in the new
+  section *and* in Clerk's own `GET /organizations/.../invitations?status=pending`; revoked it
+  through the UI, confirmed it disappeared from the list and Clerk's API now reports
+  `status: "revoked"` for that invitation.
+
+13 checks, all passing. Test Clerk users and their Neon `Owner` rows were cleaned up afterward.
+
+**Gap noticed and disclosed, not fixed (out of this task's scope):** removing a member from
+Clerk currently leaves their `Owner` row behind in Neon — there's no `organizationMembership.deleted`
+webhook handler (only `.created`/`.updated` are handled, see `app/api/webhooks/clerk/route.ts`).
+Had to manually delete two orphaned `Owner` rows this test created. Worth a follow-up task.
+
+Full 58-test suite and `npx tsc --noEmit` both pass. Files touched:
+`src/screens/Settings.tsx`, `src/store/crm.tsx` (exposed `persist`).
+
 ## Replaced fabricated Dashboard/Reports/sidebar numbers with real data (Oct 1 2026)
 
 Dashboard, Reports, and the sidebar were showing several hardcoded literals dressed up as real

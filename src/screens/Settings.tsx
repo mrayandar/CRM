@@ -10,9 +10,10 @@ import { Avatar } from '@/components/ui/Avatar'
 import { Input, Label, Segmented, Select } from '@/components/ui/Field'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { Modal } from '@/components/ui/Modal'
+import { EmptyState } from '@/components/ui/Display'
 import { StageManager } from '@/components/common/StageManager'
 import { useCrm } from '@/store/crm'
-import { cn } from '@/lib/utils'
+import { cn, formatDate } from '@/lib/utils'
 import { useOrganization, useUser } from '@clerk/nextjs'
 
 type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
@@ -240,16 +241,20 @@ export function Settings() {
 
 function TeamSection() {
   const { user: clerkUser } = useUser()
-  const { organization, memberships, isLoaded } = useOrganization({
+  const { persist } = useCrm()
+  const { organization, memberships, invitations, isLoaded } = useOrganization({
     memberships: { pageSize: 50 },
+    invitations: { status: ['pending'], pageSize: 50 },
   })
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<'org:admin' | 'org:member'>('org:member')
   const [inviting, setInviting] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<{ userId: string; name: string } | null>(null)
 
   const memberList = memberships?.data ?? []
+  const invitationList = invitations?.data ?? []
   const totalSeats = memberList.length
 
   const handleInvite = async () => {
@@ -263,7 +268,7 @@ function TeamSection() {
       })
       setInviteOpen(false)
       setInviteEmail('')
-      if (memberships?.revalidate) memberships.revalidate()
+      if (invitations?.revalidate) invitations.revalidate()
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to send invitation'
       setInviteError(message)
@@ -272,27 +277,49 @@ function TeamSection() {
     }
   }
 
-  const handleRoleChange = async (
-    userId: string,
-    newRole: 'org:admin' | 'org:member',
-  ) => {
+  // Wired into the same persist()/toast pattern every other mutation in the app uses: on
+  // failure, the member list is revalidated back to whatever Clerk actually has (nothing was
+  // ever mutated locally — the <Select>'s value comes straight from Clerk's own cache — so this
+  // is a defensive resync rather than a true rollback) and the admin sees a clear toast instead
+  // of silently assuming the change worked.
+  const handleRoleChange = (userId: string, newRole: 'org:admin' | 'org:member') => {
     if (!organization) return
-    try {
-      await organization.updateMember({ userId, role: newRole })
-      if (memberships?.revalidate) memberships.revalidate()
-    } catch {
-      // Silently fail; Clerk may restrict self-demotion
-    }
+    persist(
+      async () => {
+        await organization.updateMember({ userId, role: newRole })
+        await memberships?.revalidate?.()
+      },
+      () => memberships?.revalidate?.(),
+      undefined,
+      "Couldn't change that member's role, please try again.",
+    )
   }
 
-  const handleRemove = async (userId: string) => {
-    if (!organization) return
-    try {
-      await organization.removeMember(userId)
-      if (memberships?.revalidate) memberships.revalidate()
-    } catch {
-      // Silently fail for now
-    }
+  const confirmRemove = () => {
+    if (!organization || !removeTarget) return
+    const { userId } = removeTarget
+    setRemoveTarget(null)
+    persist(
+      async () => {
+        await organization.removeMember(userId)
+        await memberships?.revalidate?.()
+      },
+      () => memberships?.revalidate?.(),
+      undefined,
+      "Couldn't remove that member, please try again.",
+    )
+  }
+
+  const handleRevoke = (invitation: { revoke: () => Promise<unknown>; emailAddress: string }) => {
+    persist(
+      async () => {
+        await invitation.revoke()
+        await invitations?.revalidate?.()
+      },
+      () => invitations?.revalidate?.(),
+      undefined,
+      "Couldn't revoke that invitation, please try again.",
+    )
   }
 
   if (!isLoaded) {
@@ -371,7 +398,7 @@ function TeamSection() {
                       <IconButton
                         label={`Remove ${name}`}
                         variant="danger"
-                        onClick={() => handleRemove(memberId)}
+                        onClick={() => setRemoveTarget({ userId: memberId, name })}
                       >
                         <UserX size={13} />
                       </IconButton>
@@ -382,6 +409,48 @@ function TeamSection() {
             })}
           </tbody>
         </TableShell>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <CardHeader
+          title="Pending invitations"
+          subtitle={`${invitationList.length} outstanding`}
+        />
+        {invitationList.length === 0 ? (
+          <EmptyState
+            title="No pending invitations"
+            description="Invites you send will show up here until they're accepted or revoked."
+          />
+        ) : (
+          <TableShell>
+            <Thead>
+              <Th>Email</Th>
+              <Th>Role</Th>
+              <Th>Sent</Th>
+              <Th align="right">Actions</Th>
+            </Thead>
+            <tbody>
+              {invitationList.map((invitation) => (
+                <Tr key={invitation.id}>
+                  <Td className="text-[13px] font-medium text-ink-900">{invitation.emailAddress}</Td>
+                  <Td>
+                    <Badge tone="neutral">{invitation.role === 'org:admin' ? 'Admin' : 'Member'}</Badge>
+                  </Td>
+                  <Td className="text-ink-500">{formatDate(invitation.createdAt.toISOString())}</Td>
+                  <Td align="right">
+                    <IconButton
+                      label={`Revoke invitation to ${invitation.emailAddress}`}
+                      variant="danger"
+                      onClick={() => handleRevoke(invitation)}
+                    >
+                      <UserX size={13} />
+                    </IconButton>
+                  </Td>
+                </Tr>
+              ))}
+            </tbody>
+          </TableShell>
+        )}
       </Card>
 
       <Modal
@@ -438,6 +507,30 @@ function TeamSection() {
             <p className="text-[12.5px] text-negative">{inviteError}</p>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        open={removeTarget !== null}
+        onClose={() => setRemoveTarget(null)}
+        width={420}
+        title="Remove team member"
+        description={
+          removeTarget
+            ? `Remove ${removeTarget.name} from the organization? They'll lose access immediately.`
+            : ''
+        }
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRemoveTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={confirmRemove}>
+              Remove
+            </Button>
+          </>
+        }
+      >
+        <></>
       </Modal>
     </>
   )

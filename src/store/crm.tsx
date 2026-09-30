@@ -184,6 +184,18 @@ interface CrmState {
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
   /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
   updateProfile: (input: { name: string; timezone: string | null }) => void
+  /**
+   * Generic escape hatch for mutations that don't map to the store's own optimistic CRM state —
+   * e.g. Clerk org-membership calls in Team settings. Same toast-on-failure pattern as every
+   * other mutation in this store: runs `run`, and on failure calls `rollback` and shows a toast
+   * with `failureMessage`. Pass `undefined` for `activity` (nothing to log here).
+   */
+  persist: (
+    run: () => Promise<unknown>,
+    rollback: () => void,
+    activity: undefined,
+    failureMessage?: string,
+  ) => void
 }
 
 const CrmContext = createContext<CrmState | null>(null)
@@ -1107,6 +1119,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addNote,
       logActivity: pushActivity,
       updateProfile,
+      persist,
     }),
     [
       owners,
@@ -1137,6 +1150,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addNote,
       pushActivity,
       updateProfile,
+      persist,
     ],
   )
 
