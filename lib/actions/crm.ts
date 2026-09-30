@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { requireAuth } from '@lib/auth'
+import { updateOrgQuota } from '@lib/data/organizations'
 import {
   createLead as dbCreateLead,
   getLeadById,
@@ -547,6 +548,18 @@ export async function updateProfileAction(input: { name: string; timezone: strin
   if (timezone && timezone.length > 100) throw new Error('Invalid time zone')
 
   await updateOwnerProfile(orgId, ownerId, { name, timezone })
+  revalidatePath('/', 'layout')
+}
+
+export async function updateQuotaAction(input: { quarterlyQuota: number | null }) {
+  const { orgId } = await requireAuth()
+
+  const quota = input.quarterlyQuota
+  if (quota !== null && (!Number.isInteger(quota) || quota < 0 || quota > 1_000_000_000)) {
+    throw new Error('Invalid quota')
+  }
+
+  await updateOrgQuota(orgId, quota)
   revalidatePath('/', 'layout')
 }
 

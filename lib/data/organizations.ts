@@ -60,3 +60,17 @@ export function updateOrg(
 export function deleteOrg(clerkOrgId: string) {
   return prisma.organization.delete({ where: { clerkOrgId } })
 }
+
+/**
+ * Sets (or clears, with `null`) the org's quarterly revenue quota. `orgId` always comes from
+ * `requireAuth()`'s own resolved org — never a client-supplied id — so this can only ever write
+ * the caller's own organization; there's no separate tenant dimension to double-check here the
+ * way there is for a sub-resource like an Owner or a Deal, since the org row itself is the
+ * tenant boundary.
+ */
+export function updateOrgQuota(orgId: string, quarterlyQuota: number | null) {
+  return prisma.organization.update({
+    where: { id: orgId },
+    data: { quarterlyQuota },
+  })
+}

@@ -8,6 +8,7 @@ import {
   listTasks,
   listActivities,
   listStages,
+  getOrgById,
 } from '@lib/data'
 import {
   mapOwner,
@@ -37,6 +38,7 @@ export interface CrmInitialData {
   tasks: Task[]
   activities: Activity[]
   stages: PipelineStage[]
+  quarterlyQuota: number | null
 }
 
 /**
@@ -48,7 +50,7 @@ export async function loadCrmData(
   orgId: string,
   currentOwnerId: string,
 ): Promise<CrmInitialData> {
-  const [rawOwners, rawLeads, rawContacts, rawDeals, rawTasks, rawActivities, rawStages] =
+  const [rawOwners, rawLeads, rawContacts, rawDeals, rawTasks, rawActivities, rawStages, org] =
     await Promise.all([
       listOwners(orgId),
       listLeads(orgId),
@@ -57,6 +59,7 @@ export async function loadCrmData(
       listTasks(orgId),
       listActivities(orgId),
       listStages(orgId),
+      getOrgById(orgId),
     ])
 
   const owners = rawOwners.map(mapOwner)
@@ -79,5 +82,6 @@ export async function loadCrmData(
     tasks: rawTasks.map(mapTask),
     activities: rawActivities.map(mapActivity),
     stages: rawStages.map(mapStage),
+    quarterlyQuota: org?.quarterlyQuota ?? null,
   }
 }

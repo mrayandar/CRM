@@ -103,6 +103,11 @@ model Organization {
   /// Populated when Stripe billing is wired. Null until then.
   stripeCustomerId String? @unique
 
+  /// Team-wide revenue target for the current quarter, set from Settings -> Workspace. Null
+  /// until an admin sets one — the Dashboard shows an honest "set a quota" prompt rather than a
+  /// zero-looking comparison when this is null.
+  quarterlyQuota Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

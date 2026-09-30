@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, Loader2, UserX } from 'lucide-react'
+import { Check, Plus, Loader2, UserX, X } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
@@ -25,14 +25,18 @@ const TIMEZONES = [
   { value: 'Central European Time', label: 'Central European Time' },
 ]
 
+const formatQuota = (quota: number | null) => (quota !== null ? quota.toLocaleString('en-US') : '')
+
 export function Settings() {
-  const { currentUser, updateProfile } = useCrm()
+  const { currentUser, updateProfile, quarterlyQuota, updateQuota } = useCrm()
   const [section, setSection] = useState<Section>('profile')
   const [profileName, setProfileName] = useState(currentUser.name)
   const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? TIMEZONES[0]!.value)
+  const [quotaInput, setQuotaInput] = useState(formatQuota(quarterlyQuota))
 
   const profileDirty =
     profileName.trim() !== currentUser.name || profileTimezone !== (currentUser.timezone ?? TIMEZONES[0]!.value)
+  const quotaDirty = quotaInput !== formatQuota(quarterlyQuota)
 
   const saveProfile = () => {
     const name = profileName.trim()
@@ -44,6 +48,14 @@ export function Settings() {
     setProfileName(currentUser.name)
     setProfileTimezone(currentUser.timezone ?? TIMEZONES[0]!.value)
   }
+
+  const saveQuota = () => {
+    const digits = quotaInput.replace(/[^0-9]/g, '')
+    updateQuota(digits ? Number(digits) : null)
+  }
+
+  const cancelQuota = () => setQuotaInput(formatQuota(quarterlyQuota))
+
   const [notifications, setNotifications] = useState({
     dealStage: true,
     mentions: true,
@@ -154,7 +166,36 @@ export function Settings() {
                 </div>
                 <div>
                   <Label>Quarterly team quota</Label>
-                  <Input defaultValue="1,200,000" className="tabular" />
+                  <div className="flex items-center gap-1.5">
+                    <div className="relative flex-1">
+                      <span className="absolute top-1/2 left-2.5 -translate-y-1/2 text-[13px] text-ink-400">
+                        $
+                      </span>
+                      <Input
+                        value={quotaInput}
+                        inputMode="numeric"
+                        placeholder="e.g. 1,200,000"
+                        onChange={(e) => {
+                          const digits = e.target.value.replace(/[^0-9]/g, '')
+                          setQuotaInput(digits ? Number(digits).toLocaleString('en-US') : '')
+                        }}
+                        className="tabular pl-6"
+                      />
+                    </div>
+                    {quotaDirty && (
+                      <>
+                        <IconButton label="Save quota" variant="secondary" onClick={saveQuota}>
+                          <Check size={13} />
+                        </IconButton>
+                        <IconButton label="Cancel" onClick={cancelQuota}>
+                          <X size={13} />
+                        </IconButton>
+                      </>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[11px] text-ink-400">
+                    Drives the "won this quarter" progress shown on the Dashboard.
+                  </p>
                 </div>
               </div>
             </Card>

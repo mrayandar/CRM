@@ -39,6 +39,7 @@ import {
   addNoteAction,
   logActivityAction,
   updateProfileAction,
+  updateQuotaAction,
   createStageAction,
   renameStageAction,
   reorderStageAction,
@@ -134,6 +135,8 @@ interface CrmState {
   tasks: Task[]
   activities: Activity[]
   stages: PipelineStage[]
+  /** Team-wide quarterly revenue target set from Settings -> Workspace; null until an admin sets one. */
+  quarterlyQuota: number | null
   ownerById: (id: string) => Owner
   stageById: (id: string) => PipelineStage
   moveDeal: (dealId: string, stageId: string) => void
@@ -184,6 +187,8 @@ interface CrmState {
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
   /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
   updateProfile: (input: { name: string; timezone: string | null }) => void
+  /** Sets (or clears, with null) the org's quarterly quota; rolls back and shows a toast on failure. */
+  updateQuota: (quota: number | null) => void
   /**
    * Generic escape hatch for mutations that don't map to the store's own optimistic CRM state —
    * e.g. Clerk org-membership calls in Team settings. Same toast-on-failure pattern as every
@@ -228,6 +233,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [owners, setOwners] = useState<Owner[]>(initialData.owners)
   const [currentUser, setCurrentUser] = useState<Owner>(initialData.currentUser)
   const [stages, setStages] = useState<PipelineStage[]>(initialData.stages)
+  const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const dismissToast = useCallback(
@@ -778,6 +784,20 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [currentUser, persist],
   )
 
+  const updateQuota = useCallback(
+    (quota: number | null) => {
+      const prev = quarterlyQuota
+      setQuarterlyQuota(quota)
+      persist(
+        () => updateQuotaAction({ quarterlyQuota: quota }),
+        () => setQuarterlyQuota(prev),
+        undefined,
+        "Couldn't save the quota, please try again.",
+      )
+    },
+    [quarterlyQuota, persist],
+  )
+
   const addStage = useCallback(
     (label: string) => {
       const trimmed = label.trim()
@@ -1099,6 +1119,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       tasks,
       activities,
       stages,
+      quarterlyQuota,
       ownerById,
       stageById,
       moveDeal,
@@ -1119,6 +1140,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addNote,
       logActivity: pushActivity,
       updateProfile,
+      updateQuota,
       persist,
     }),
     [
@@ -1130,6 +1152,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       tasks,
       activities,
       stages,
+      quarterlyQuota,
       ownerById,
       stageById,
       moveDeal,
@@ -1150,6 +1173,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addNote,
       pushActivity,
       updateProfile,
+      updateQuota,
       persist,
     ],
   )

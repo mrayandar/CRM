@@ -2,6 +2,73 @@
 
 > Living context file. Updated at the end of every task.
 
+## Wired the Dashboard quota comparison to a real, persisted quota (Oct 1 2026)
+
+Closes the recommendation from the Dashboard-honesty task: "Quarterly team quota" in Settings →
+Workspace existed but had never been wired to save anything (`<Input defaultValue="1,200,000" />`
+— a static placeholder, not backed by any field). Wired it end to end.
+
+### The field itself needed wiring first
+
+Added `Organization.quarterlyQuota` (`Int?`, additive migration
+`20261001130000_org_quarterly_quota` — nullable and defaulting to unset, since "no quota has been
+set yet" is a real, expected state this feature has to handle honestly, not an error). It's
+org-level ("applies to all members of this organization," per the card's own subtitle), not
+per-owner, so it lives on `Organization`, not `Owner`. New `updateOrgQuota`
+(`lib/data/organizations.ts`) and `updateQuotaAction` (`lib/actions/crm.ts`) follow the exact
+same shape as the earlier profile-save fix: `orgId` comes from `requireAuth()`'s own session,
+never client input, so there's no separate tenant check needed beyond using that `orgId`
+directly — the org row itself *is* the tenant boundary.
+
+Settings' quota field now has its own small inline Save/Cancel (a checkmark/X next to just that
+input, appearing only while it's dirty) — scoped deliberately to just this one field. The
+Workspace card's other three fields (name, currency, fiscal year) are still the same unwired
+placeholders they always were; giving the whole card one shared Save button would have implied
+those saved too, which isn't true and wasn't part of this task.
+
+### Dashboard: quarter-to-date revenue vs. the quota, not month-to-date
+
+The old hardcoded target lived on the "Won this month" tile, but comparing a *month's* revenue
+against an explicitly *quarterly* quota would have been a real (if easy to miss) unit mismatch. The
+new comparison sums Won deals with a `closeDate` in the **current calendar quarter** and compares
+that to the quota — shown as an addition to that same tile's footer: `"$X of $Y quota this
+quarter (Z%)"`. Reused `useCrm()`'s already-loaded `deals`/`stageById` — no new query, following
+the same "the data's already there, just compute it honestly" approach as the earlier trend-delta
+work.
+
+When no quota is set, the footer shows the exact honest prompt the task specified — "Set a quota
+in Settings to see progress" — linked straight to the Settings page, instead of a zero-looking or
+broken comparison.
+
+### Data flow
+
+`quarterlyQuota` is now part of `CrmInitialData` (`lib/data-loader.ts`, via the already-available
+`getOrgById`) and exposed through `CrmState` alongside a `updateQuota` store method that follows
+the store's standard `persist()`/toast/rollback pattern — identical in shape to `updateProfile`.
+
+### Verified against real Neon data
+
+Confirmed the full round trip on a real org with real Won-deal history:
+1. **Before setting a quota**: Dashboard showed the honest "Set a quota in Settings to see
+   progress" prompt (quota was genuinely `null` in Neon at this point).
+2. **Set a quota via the UI** ($200,000) → confirmed it landed in Neon (`quarterlyQuota: 200000`).
+3. Added one real Won deal closing in the current quarter ($50,000) and reloaded the Dashboard —
+   it showed **"$50K of $200K quota this quarter (25%)"**, which is exactly correct
+   (50,000 / 200,000).
+4. **Cleared the quota** via the UI → confirmed Neon went back to `null`, and the Dashboard
+   correctly reverted to the honest prompt rather than showing a stale or zero-looking figure.
+
+All 6 real checks passed. (One of my own verification script's assertions initially "failed" over
+an exact-string mismatch — it expected `"25.0%"`, the app correctly rendered `"25%"` per the
+existing `percent()` helper's default of 0 decimal places; the app's output was right, my
+assertion string was wrong, fixed by just reading the real output rather than rerunning.) Fixture
+deal deleted afterward; quota left cleared (`null`) in that org, matching its state before this
+verification began.
+
+Full 58-test suite and `npx tsc --noEmit` both pass. Files touched: `prisma/schema.prisma` +
+new migration, `lib/data/organizations.ts`, `lib/actions/crm.ts`, `lib/data-loader.ts`,
+`src/store/crm.tsx`, `src/screens/Settings.tsx`, `src/screens/Dashboard.tsx`.
+
 ## Added the missing organizationMembership.deleted webhook handler (Oct 1 2026)
 
 Closes the gap noted at the end of the previous Team Settings task: removing a member in Clerk

@@ -29,7 +29,7 @@ import {
 } from '@/lib/utils'
 
 export function Dashboard() {
-  const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById } = useCrm()
+  const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById, quarterlyQuota } = useCrm()
   const [newDealOpen, setNewDealOpen] = useState(false)
   const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
 
@@ -42,6 +42,15 @@ export function Dashboard() {
   const wonLastMonth = wonDeals.filter((d) => isMonthsAgo(d.closeDate, 1))
   const wonThisMonthValue = sum(wonThisMonth.map((d) => d.value))
   const wonDelta = momDelta(wonThisMonthValue, sum(wonLastMonth.map((d) => d.value)))
+
+  // The quota (Settings -> Workspace) is explicitly quarterly, so it's compared against
+  // quarter-to-date revenue, not the month-to-date figure the tile's headline value shows.
+  const now = new Date()
+  const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)
+  const wonThisQuarterValue = sum(
+    wonDeals.filter((d) => new Date(d.closeDate) >= quarterStart).map((d) => d.value),
+  )
+  const quotaProgress = quarterlyQuota ? Math.min((wonThisQuarterValue / quarterlyQuota) * 100, 999) : null
 
   const lostDeals = deals.filter((d) => {
     const s = stageById(d.stageId)
@@ -132,10 +141,27 @@ export function Dashboard() {
               label: 'Won this month',
               value: currencyCompact(wonThisMonthValue),
               ...(wonDelta !== null && { delta: wonDelta }),
-              footer:
-                wonDelta === null
-                  ? `${wonThisMonth.length} deals closed · not enough history for a trend yet`
-                  : `${wonThisMonth.length} deals closed`,
+              footer: (
+                <>
+                  {wonThisMonth.length} deals closed
+                  {wonDelta === null && ' · not enough history for a trend yet'}
+                  {quotaProgress !== null ? (
+                    <>
+                      {' · '}
+                      {currencyCompact(wonThisQuarterValue)} of {currencyCompact(quarterlyQuota!)} quota this
+                      quarter ({percent(quotaProgress)})
+                    </>
+                  ) : (
+                    <>
+                      {' · '}
+                      <Link to="/settings" className="underline hover:text-ink-600">
+                        Set a quota in Settings
+                      </Link>{' '}
+                      to see progress
+                    </>
+                  )}
+                </>
+              ),
             },
             {
               label: 'Conversion rate',
