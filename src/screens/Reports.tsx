@@ -6,13 +6,22 @@ import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Avatar } from '@/components/ui/Avatar'
-import { BarChart, Meter } from '@/components/ui/Display'
+import { BarChart, EmptyState, Meter } from '@/components/ui/Display'
 import { MetricRow } from '@/components/common/MetricTile'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
-import { monthlyPerformance } from '@/data/mock'
 import type { LeadSource } from '@/data/types'
-import { currency, currencyCompact, percent, sortBy, sum } from '@/lib/utils'
+import {
+  currency,
+  currencyCompact,
+  isMonthsAgo,
+  isThisMonth,
+  momDelta,
+  monthlyWonRevenue,
+  percent,
+  sortBy,
+  sum,
+} from '@/lib/utils'
 
 const SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 
@@ -28,6 +37,48 @@ export function Reports() {
   const openDeals = deals.filter((d) => !stageById(d.stageId).isClosed)
   const winRate = (won.length / Math.max(won.length + lost.length, 1)) * 100
   const avgDealSize = won.length ? sum(won.map((d) => d.value)) / won.length : 0
+
+  // Real month-over-month comparisons — each is null (rendered as no delta badge) unless both
+  // the current and prior calendar month actually have the data needed to compare.
+  const wonThisMonth = won.filter((d) => isThisMonth(d.closeDate))
+  const wonLastMonth = won.filter((d) => isMonthsAgo(d.closeDate, 1))
+  const revenueDelta = momDelta(sum(wonThisMonth.map((d) => d.value)), sum(wonLastMonth.map((d) => d.value)))
+
+  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate))
+  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1))
+  const winRateThisMonth = closedThisMonth.length
+    ? (closedThisMonth.filter((d) => stageById(d.stageId).isWon).length / closedThisMonth.length) * 100
+    : null
+  const winRateLastMonth = closedLastMonth.length
+    ? (closedLastMonth.filter((d) => stageById(d.stageId).isWon).length / closedLastMonth.length) * 100
+    : null
+  const winRateDelta =
+    winRateThisMonth !== null && winRateLastMonth !== null ? momDelta(winRateThisMonth, winRateLastMonth) : null
+
+  const avgDealSizeThisMonth = wonThisMonth.length ? sum(wonThisMonth.map((d) => d.value)) / wonThisMonth.length : null
+  const avgDealSizeLastMonth = wonLastMonth.length ? sum(wonLastMonth.map((d) => d.value)) / wonLastMonth.length : null
+  const avgDealSizeDelta =
+    avgDealSizeThisMonth !== null && avgDealSizeLastMonth !== null
+      ? momDelta(avgDealSizeThisMonth, avgDealSizeLastMonth)
+      : null
+
+  // Average days from a deal being opened to closing as Won — a real, if rough, cycle-time proxy
+  // (we don't track a distinct "first touch" event, so this is creation-to-close, not
+  // touch-to-signature as an idealized sales-cycle metric would use). Floored at 0 per deal: a
+  // deal can't really close before it was created, but a demo/backfilled row's closeDate can
+  // predate its own createdAt — clamping avoids a nonsensical negative average from that, without
+  // fabricating anything for deals where the data is sound.
+  const cycleDaysOf = (rows: typeof won) =>
+    rows.length
+      ? sum(rows.map((d) => Math.max(0, (+new Date(d.closeDate) - +new Date(d.createdAt)) / 86_400_000))) / rows.length
+      : null
+  const salesCycleDays = cycleDaysOf(won)
+  const salesCycleThisMonth = cycleDaysOf(wonThisMonth)
+  const salesCycleLastMonth = cycleDaysOf(wonLastMonth)
+  const salesCycleDelta =
+    salesCycleThisMonth !== null && salesCycleLastMonth !== null
+      ? momDelta(salesCycleThisMonth, salesCycleLastMonth)
+      : null
 
   const bySource = useMemo(
     () =>
@@ -79,6 +130,14 @@ export function Reports() {
   const maxWon = Math.max(...leaderboard.map((r) => r.wonValue), 1)
   const maxSourcePipeline = Math.max(...bySource.map((r) => r.pipeline), 1)
 
+  const monthlyRevenue = monthlyWonRevenue(won, 6)
+  const hasRevenueHistory = monthlyRevenue.some((m) => m.value > 0)
+  const chartData = monthlyRevenue.map((m, i) => ({
+    label: m.month,
+    value: m.value,
+    highlight: i === monthlyRevenue.length - 1,
+  }))
+
   return (
     <PageShell
       title="Reports"
@@ -100,47 +159,46 @@ export function Reports() {
             {
               label: 'Closed-won revenue',
               value: currencyCompact(sum(won.map((d) => d.value))),
-              delta: 9.8,
+              ...(revenueDelta !== null && { delta: revenueDelta }),
               emphasis: true,
               footer: `${won.length} deals closed-won · all time`,
             },
             {
               label: 'Win rate',
               value: percent(winRate),
-              delta: 3.4,
+              ...(winRateDelta !== null && { delta: winRateDelta }),
               footer: `${won.length} won vs. ${lost.length} lost`,
             },
             {
               label: 'Average deal size',
               value: currencyCompact(avgDealSize),
-              delta: -4.1,
+              ...(avgDealSizeDelta !== null && { delta: avgDealSizeDelta }),
               footer: 'Across all closed-won deals',
             },
             {
               label: 'Avg. sales cycle',
-              value: '38',
-              unit: 'days',
-              delta: -6.2,
-              invertDelta: true,
-              footer: 'First touch to signature',
+              value: salesCycleDays === null ? '—' : salesCycleDays.toFixed(0),
+              unit: salesCycleDays === null ? undefined : 'days',
+              ...(salesCycleDelta !== null && { delta: salesCycleDelta, invertDelta: true }),
+              // Deal creation to close — we don't track a distinct "first touch" event, so this
+              // is a real but rougher proxy than an idealized touch-to-signature metric.
+              footer: salesCycleDays === null ? 'No closed-won deals yet' : 'Deal creation to close',
             },
           ]}
         />
 
         <div className="grid gap-4 lg:grid-cols-3">
           <Card className="lg:col-span-2">
-            <CardHeader title="Revenue vs. target" subtitle="Closed-won by month" />
+            <CardHeader title="Closed-won revenue" subtitle="By month, last 6 months" />
             <div className="px-5 py-4">
-              <BarChart
-                height={180}
-                valueFormat={currencyCompact}
-                data={monthlyPerformance.map((m, i) => ({
-                  label: m.month,
-                  value: m.won,
-                  target: m.target,
-                  highlight: i === monthlyPerformance.length - 1,
-                }))}
-              />
+              {hasRevenueHistory ? (
+                <BarChart height={180} valueFormat={currencyCompact} data={chartData} />
+              ) : (
+                <EmptyState
+                  title="No closed-won deals yet"
+                  description="Revenue will show up here once deals start closing as Won."
+                />
+              )}
             </div>
           </Card>
 

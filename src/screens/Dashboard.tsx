@@ -14,20 +14,19 @@ import { ActivityFeed } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
-import { monthlyPerformance } from '@/data/mock'
 import {
   currency,
   currencyCompact,
   dayDelta,
   formatDate,
+  isMonthsAgo,
   isThisMonth,
+  momDelta,
+  monthlyWonRevenue,
   percent,
   sortBy,
   sum,
 } from '@/lib/utils'
-
-/** Period-over-period deltas — a real deployment would derive these from history. */
-const TREND = { pipeline: 12.4, active: 6.1, won: -8.3, conversion: 4.2 }
 
 export function Dashboard() {
   const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById } = useCrm()
@@ -40,13 +39,30 @@ export function Dashboard() {
 
   const wonDeals = deals.filter((d) => stageById(d.stageId).isWon)
   const wonThisMonth = wonDeals.filter((d) => isThisMonth(d.closeDate))
+  const wonLastMonth = wonDeals.filter((d) => isMonthsAgo(d.closeDate, 1))
   const wonThisMonthValue = sum(wonThisMonth.map((d) => d.value))
+  const wonDelta = momDelta(wonThisMonthValue, sum(wonLastMonth.map((d) => d.value)))
 
   const lostDeals = deals.filter((d) => {
     const s = stageById(d.stageId)
     return s.isClosed && !s.isWon
   })
   const conversionRate = (wonDeals.length / Math.max(wonDeals.length + lostDeals.length, 1)) * 100
+
+  // Real month-over-month conversion trend — only shown when both months actually had closed
+  // deals to compute a rate from; otherwise there's nothing honest to compare.
+  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate))
+  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1))
+  const conversionThisMonth = closedThisMonth.length
+    ? (closedThisMonth.filter((d) => stageById(d.stageId).isWon).length / closedThisMonth.length) * 100
+    : null
+  const conversionLastMonth = closedLastMonth.length
+    ? (closedLastMonth.filter((d) => stageById(d.stageId).isWon).length / closedLastMonth.length) * 100
+    : null
+  const conversionDelta =
+    conversionThisMonth !== null && conversionLastMonth !== null
+      ? momDelta(conversionThisMonth, conversionLastMonth)
+      : null
 
   const myTasks = sortBy(
     tasks.filter((t) => !t.done && t.ownerId === currentUser.id),
@@ -67,11 +83,12 @@ export function Dashboard() {
   })
   const maxStageValue = Math.max(...stageRows.map((r) => r.value), 1)
 
-  const chartData = monthlyPerformance.map((m, i) => ({
+  const monthlyRevenue = monthlyWonRevenue(wonDeals, 6)
+  const hasRevenueHistory = monthlyRevenue.some((m) => m.value > 0)
+  const chartData = monthlyRevenue.map((m, i) => ({
     label: m.month,
-    value: m.won,
-    target: m.target,
-    highlight: i === monthlyPerformance.length - 1,
+    value: m.value,
+    highlight: i === monthlyRevenue.length - 1,
   }))
 
   return (
@@ -98,28 +115,32 @@ export function Dashboard() {
         <MetricRow
           items={[
             {
+              // No historical snapshots of open pipeline value are kept, so there's nothing
+              // honest to compare against — no delta, rather than a fabricated one.
               label: 'Open pipeline value',
               value: currencyCompact(openValue),
-              delta: TREND.pipeline,
               emphasis: true,
               footer: `${currencyCompact(weightedValue)} weighted · ${openDeals.length} open deals`,
             },
             {
+              // Same reasoning: no time-series of the open-deal count exists to trend against.
               label: 'Active deals',
               value: String(openDeals.length),
-              delta: TREND.active,
               footer: `${stalled.length} with no activity in 5+ days`,
             },
             {
               label: 'Won this month',
               value: currencyCompact(wonThisMonthValue),
-              delta: TREND.won,
-              footer: `${wonThisMonth.length} deals closed · ${currencyCompact(280000)} target`,
+              ...(wonDelta !== null && { delta: wonDelta }),
+              footer:
+                wonDelta === null
+                  ? `${wonThisMonth.length} deals closed · not enough history for a trend yet`
+                  : `${wonThisMonth.length} deals closed`,
             },
             {
               label: 'Conversion rate',
               value: percent(conversionRate),
-              delta: TREND.conversion,
+              ...(conversionDelta !== null && { delta: conversionDelta }),
               footer: `${wonDeals.length} won / ${lostDeals.length} lost · all time`,
             },
           ]}
@@ -185,19 +206,25 @@ export function Dashboard() {
             <div className="grid gap-4 md:grid-cols-2">
               <Card>
                 <CardHeader
-                  title="Won vs. target"
-                  subtitle="Closed-won revenue, last 6 months"
+                  title="Closed-won revenue"
+                  subtitle="By month, last 6 months"
                 />
                 <div className="px-5 pt-4 pb-4">
-                  <BarChart data={chartData} valueFormat={currencyCompact} />
-                  <div className="mt-3 flex items-center gap-4 border-t border-line pt-3">
-                    <span className="flex items-center gap-1.5 text-[11.5px] text-ink-500">
-                      <span className="size-2 rounded-[2px] bg-brand-600" /> This month
-                    </span>
-                    <span className="flex items-center gap-1.5 text-[11.5px] text-ink-500">
-                      <span className="h-0 w-3 border-t border-dashed border-line-strong" /> Target
-                    </span>
-                  </div>
+                  {hasRevenueHistory ? (
+                    <>
+                      <BarChart data={chartData} valueFormat={currencyCompact} />
+                      <div className="mt-3 flex items-center gap-4 border-t border-line pt-3">
+                        <span className="flex items-center gap-1.5 text-[11.5px] text-ink-500">
+                          <span className="size-2 rounded-[2px] bg-brand-600" /> This month
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <EmptyState
+                      title="No closed-won deals yet"
+                      description="Revenue will show up here once deals start closing as Won."
+                    />
+                  )}
                 </div>
               </Card>
 

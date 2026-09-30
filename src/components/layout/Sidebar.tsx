@@ -7,7 +7,6 @@ import {
   Columns3,
   LayoutDashboard,
   Settings,
-  Sparkles,
   Users,
   UserPlus,
   ChevronsUpDown,
@@ -31,11 +30,15 @@ interface NavEntry {
 }
 
 export function Sidebar() {
-  const { leads, tasks } = useCrm()
+  const { leads, tasks, deals, contacts, stageById } = useCrm()
 
   const newLeads = leads.filter((l) => l.status === 'new').length
   const overdueTasks = tasks.filter((t) => !t.done && dayDelta(t.dueDate) < 0).length
   const openTasks = tasks.filter((t) => !t.done).length
+  // Same definition Dashboard's "Closing in 30 days" card uses: any open deal due within 30
+  // days (including already-overdue ones, same as that card).
+  const closingSoon = deals.filter((d) => !stageById(d.stageId).isClosed && dayDelta(d.closeDate) <= 30).length
+  const champions = contacts.filter((c) => c.lifecycle === 'Champion').length
 
   const primary: NavEntry[] = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -72,26 +75,18 @@ export function Sidebar() {
           </p>
           <ul className="space-y-0.5">
             <SavedView to="/leads?status=new" label="Untouched leads" count={newLeads} />
-            <SavedView to="/pipeline?close=30" label="Closing in 30 days" count={5} />
-            <SavedView to="/contacts?tag=Champion" label="Champions" count={3} />
+            <SavedView to="/pipeline?close=30" label="Closing in 30 days" count={closingSoon} />
+            <SavedView to="/contacts?tag=Champion" label="Champions" count={champions} />
           </ul>
         </div>
       </nav>
 
+      {/*
+        A quota widget belongs here once there's a real org-level target to show — see
+        PROGRESS.md for the recommendation (wire up Settings' "Quarterly team quota" field to a
+        persisted value). Showing one against a fabricated number was worse than showing nothing.
+      */}
       <div className="border-t border-line p-2">
-        <div className="mb-2 rounded-panel border border-line bg-subtler p-3">
-          <div className="flex items-center gap-1.5">
-            <Sparkles size={13} className="text-brand-600" />
-            <p className="text-[12px] font-semibold text-ink-800">Q3 quota</p>
-          </div>
-          <p className="tabular mt-1.5 text-[12px] text-ink-500">
-            <span className="font-semibold text-ink-900">54%</span> of $1.2M attained
-          </p>
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#ececef]">
-            <div className="h-full w-[54%] rounded-full bg-brand-600" />
-          </div>
-        </div>
-
         <UserMenu />
       </div>
     </aside>

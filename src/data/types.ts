@@ -81,6 +81,7 @@ export interface Deal {
   ownerId: string
   probability: number
   closeDate: string
+  createdAt: string
   updatedAt: string
   priority: Priority
   source: LeadSource

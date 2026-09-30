@@ -2,6 +2,89 @@
 
 > Living context file. Updated at the end of every task.
 
+## Replaced fabricated Dashboard/Reports/sidebar numbers with real data (Oct 1 2026)
+
+Dashboard, Reports, and the sidebar were showing several hardcoded literals dressed up as real
+metrics: a fabricated `monthlyPerformance` array for the two "revenue by month" bar charts, four
+made-up trend percentages on Dashboard plus four more on Reports, a `$280K` "target" and a
+sidebar "Q3 quota" widget with no underlying data at all, and sidebar "Closing in 30 days"/
+"Champions" counts that were just literal props (`count={5}`, `count={3}`) never computed from
+anything. Replaced all of it with real, honestly-computed values — and where a comparison
+genuinely can't be made honestly, removed it or said so instead of inventing a number.
+
+### What's real now
+
+- **Monthly revenue chart** (Dashboard's "Closed-won revenue" card, Reports' matching card):
+  `monthlyWonRevenue()` (new, `src/lib/utils.ts`) buckets actual Won deals by their `closeDate`
+  into the last 6 calendar months and sums `value` per month — every bucket in the window is
+  present even at zero, so a sparse org gets honest zero bars rather than a shorter chart padded
+  with fake data. When the whole 6-month window has no closed-won revenue, an `EmptyState` ("No
+  closed-won deals yet") replaces the chart entirely instead of rendering an all-zero graph that
+  could be mistaken for real data.
+- **Trend percentages**: `momDelta()` (new) computes a real month-over-month % change and returns
+  `null` — rendered as *no delta badge at all*, never a fabricated placeholder — whenever the
+  prior period has nothing to compare against. Applied to: Dashboard's "Won this month" and
+  "Conversion rate" tiles; Reports' "Closed-won revenue", "Win rate", "Average deal size", and
+  "Avg. sales cycle" tiles. Dashboard's "Open pipeline value" and "Active deals" tiles now show
+  **no delta at all** (not "0%", not a proxy) — they're point-in-time snapshots with no historical
+  tracking to trend against, so a real comparison isn't possible yet; inventing one would have
+  been exactly the kind of fabrication this task was about removing. When a real comparison comes
+  back null for a metric that used to always show one, the footer says so in words (e.g. "not
+  enough history for a trend yet") rather than silently going quiet.
+- **"Avg. sales cycle"** (Reports): was a hardcoded `38` with a hardcoded `-6.2%`. Now computed
+  for real as the average days from a deal's creation to its close date among Won deals — a
+  rougher proxy than an idealized "first touch to signature" (this app doesn't track a distinct
+  first-touch event), so the footer now honestly says "Deal creation to close" instead of
+  overclaiming. Found and fixed one rough edge while verifying against real Neon data: a
+  demo-fixture deal's `closeDate` predated its own `createdAt` (a backfilled test row, not a real
+  business scenario), which dragged the average negative (`-3 days`, displayed). Floored each
+  deal's contribution at 0 — a deal can't really close before it existed — rather than either
+  showing a nonsensical negative number or quietly excluding that deal's real close from the count.
+- **Sidebar "Closing in 30 days" / "Champions"**: were literal `count={5}` / `count={3}` props,
+  never connected to any data. Now computed in `Sidebar.tsx` from the same store data every other
+  screen uses — open deals due within 30 days (identical definition to Dashboard's own "Closing
+  in 30 days" card, including already-overdue ones) and contacts with `lifecycle === 'Champion'`.
+- **`$280K` "Won this month" target and the sidebar "Q3 quota" widget**: removed outright — no
+  org-level target-setting feature exists, so there was no real number to show. **Recommendation**
+  for whoever builds that feature: Settings → Pipeline already has an unwired "Quarterly team
+  quota" input (`src/screens/Settings.tsx`) that currently displays a hardcoded default and saves
+  nothing; wire *that* field to a new persisted value (e.g. `Organization.quarterlyQuota`) and the
+  Dashboard target and sidebar quota widget can both come back for real, computed as
+  `wonThisQuarterValue / quota`. Didn't build that now — it needs the settings field wired up
+  first, and inventing a number in the meantime was exactly what this task was about avoiding.
+
+### Everything else found while in this code, left alone and disclosed rather than silently fixed
+
+Reports' "Closed-won revenue" and "Win rate" `footer` text (`all time`, `won vs. lost`) and the
+lead-source/rep-attainment tables were already real (computed from `deals`/`leads`/`owners`) —
+no change needed there.
+
+### Verified against real Neon data, two orgs with different amounts of history
+
+Playwright + Clerk sign-in tickets, same method as every prior verification this session.
+- **Nexo Verified Org** (4 real Won deals, all closed in September): expected values
+  hand-computed directly from Postgres (`wonThisMonthValue=$0`, `wonLastMonthValue=$129,500` since
+  today is Oct 1 and nothing has closed this month yet, real `closingSoon=4`, real `champions=0`)
+  matched the rendered Dashboard/Reports/sidebar exactly, including a real `-100.0%` trend badge
+  on "Won this month" — a stark but genuine number (October just started), not suppressed, because
+  the prior period *did* have real data to compare against.
+- **A brand-new org with zero deals** (auto-created on sign-in via the on-demand path in
+  `resolveAuth()`, so this also doubled as a real test of that path plus `ensureDefaultStages`):
+  confirmed the honest-empty-state path on both Dashboard and Reports, no trend badge on "Won this
+  month" plus the "not enough history yet" footer text, and `closingSoon`/`champions` both
+  correctly rendering `0` rather than the old hardcoded `5`/`3`.
+
+13 checks across both orgs, all passing. `npx tsc --noEmit` and the full 58-test suite
+(`tests/integration/cross-tenant.test.ts` — untouched by this task, still green) both pass.
+
+### Files touched
+
+`src/lib/utils.ts` (new `isMonthsAgo`, `momDelta`, `monthlyWonRevenue`), `src/screens/Dashboard.tsx`,
+`src/screens/Reports.tsx`, `src/components/layout/Sidebar.tsx`, `src/data/mock.ts` (deleted the
+now-fully-unused `monthlyPerformance` fixture). Also added `Deal.createdAt` to the frontend type
+(`src/data/types.ts`) and `mapDeal` (`lib/mappers.ts`) — it existed in Prisma but was never
+mapped through, and the sales-cycle metric needed it.
+
 ## Per-org PipelineStage system, replacing the hardcoded DealStage enum (Sep 30 2026)
 
 Follow-up to the "Customize stages" decision flagged in the section below: built the real thing

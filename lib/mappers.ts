@@ -107,6 +107,7 @@ export function mapDeal(d: PrismaDeal): Deal {
     ownerId: d.ownerId,
     probability: d.probability,
     closeDate: d.closeDate.toISOString(),
+    createdAt: d.createdAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
     priority: d.priority,
     source: d.source,
