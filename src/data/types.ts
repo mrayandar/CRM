@@ -29,6 +29,9 @@ export interface Owner {
   role: string
   email: string
   timezone?: string
+  /** False once this person is removed from the org in Clerk — still shown (never deleted) so
+   *  historical ownership/activity attribution stays accurate; just no longer assignable. */
+  active: boolean
 }
 
 export interface Lead {

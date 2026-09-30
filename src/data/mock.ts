@@ -27,6 +27,7 @@ export const owners: Owner[] = [
     initials: 'AM',
     role: 'Account Executive',
     email: 'ava.mitchell@nexo.io',
+    active: true,
   },
   {
     id: 'u2',
@@ -34,6 +35,7 @@ export const owners: Owner[] = [
     initials: 'DR',
     role: 'Senior AE',
     email: 'daniel.reyes@nexo.io',
+    active: true,
   },
   {
     id: 'u3',
@@ -41,6 +43,7 @@ export const owners: Owner[] = [
     initials: 'PN',
     role: 'SDR Lead',
     email: 'priya.nair@nexo.io',
+    active: true,
   },
   {
     id: 'u4',
@@ -48,6 +51,7 @@ export const owners: Owner[] = [
     initials: 'MC',
     role: 'Enterprise AE',
     email: 'marcus.cole@nexo.io',
+    active: true,
   },
   {
     id: 'u5',
@@ -55,6 +59,7 @@ export const owners: Owner[] = [
     initials: 'SL',
     role: 'Solutions Consultant',
     email: 'sofia.l@nexo.io',
+    active: true,
   },
   {
     id: 'u6',
@@ -62,6 +67,7 @@ export const owners: Owner[] = [
     initials: 'TA',
     role: 'SDR',
     email: 'tobi.a@nexo.io',
+    active: true,
   },
 ]
 

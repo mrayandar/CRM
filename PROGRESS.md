@@ -2,6 +2,85 @@
 
 > Living context file. Updated at the end of every task.
 
+## Added the missing organizationMembership.deleted webhook handler (Oct 1 2026)
+
+Closes the gap noted at the end of the previous Team Settings task: removing a member in Clerk
+had no handler at all, so their `Owner` row just sat there forever with no indication they'd
+left.
+
+### Soft-delete, not a hard delete — and why
+
+Checked the actual FK constraints before deciding anything: every `Lead.ownerId`, `Contact.ownerId`,
+`Deal.ownerId`, `Task.ownerId`, and `Activity.actorId` foreign key to `Owner` is `ON DELETE
+RESTRICT` (confirmed directly in the original migration SQL). A real `DELETE FROM owners` would
+throw for any member who ever created a record or logged an activity — in practice, every real
+team member. So a hard delete was never actually viable here, independent of preference.
+
+Added `Owner.active` (`Boolean @default(true)`, additive migration
+`20261001120000_owner_active`, applied to the real Neon database — confirmed all 7 existing owners
+came through as `active: true`, which is correct: every current Owner really is still active).
+`deactivateOwner(orgId, clerkUserId)` (`lib/data/owners.ts`) flips it to `false` via `updateMany`
+(not `update`) so a webhook for a membership that was never fully synced to an Owner row is a
+harmless no-op rather than a thrown error.
+
+### Does this orphan any Lead/Contact/Deal/Task rows? No — by construction
+
+Because the Owner row is never actually deleted, every record still assigned to a departed
+member keeps a perfectly valid `ownerId`/`actorId` reference — there's nothing to reassign, and
+nothing to block. Verified directly: created a real Lead and a real Task assigned to a test
+owner, removed that owner, and confirmed both rows were untouched — same id, same `ownerId`,
+still resolvable. The Owner's `name`/`email` are also preserved (not blanked out), so historical
+activity/ownership attribution ("who actually did this") stays accurate instead of turning into
+"Unknown" once someone leaves.
+
+**Deliberately not built in this pass:** excluding inactive owners from the owner-assignment
+dropdowns (`NewLeadModal`, `EditDealModal`, the bulk Reassign modal, etc.) so a departed member
+can't be picked for *new* work. `getOwnerById` — the check every create/update action already
+runs on a client-supplied `ownerId` — doesn't distinguish "this ownerId is unchanged from what's
+already on the record" from "this is a brand-new assignment," so filtering it to active-only
+would break editing any *existing* record still legitimately owned by someone who's since left
+(the edit modals always resubmit the current `ownerId` even when the admin is only changing, say,
+the name). Doing this properly needs the action layer to skip the active check when `ownerId`
+isn't actually changing — a real but separate piece of work, not a side effect of wiring this
+webhook. Flagging it here rather than either half-building it or silently leaving it unconsidered.
+
+### Order-proofing, matching the pattern already used for org/membership updates
+
+`handleMemberDeleted` (`app/api/webhooks/clerk/route.ts`) reads Clerk's *current* membership list
+for that user before deactivating — the same principle `handleOrgUpdated`/`handleMemberCreated`
+already use, for the same reason: Svix can redeliver or reorder events, so a stale `.deleted`
+event arriving after the person has already rejoined must not deactivate someone who is, right
+now, a real active member.
+
+### Verified against real Clerk + Neon state (not a mock)
+
+A disposable Clerk test user was created via the Backend API, added as a real membership to a
+spare test org (`Nexo Fresh Org`), and assigned a real fixture Lead and Task. The webhook itself
+was exercised by signing a real Clerk-shaped payload with the actual `CLERK_WEBHOOK_SECRET`
+(via the `svix` package, mirroring this session's established local-webhook-verification
+pattern — a live public tunnel isn't kept running for the whole session) and POSTing it straight
+to the local `/api/webhooks/clerk` route, so the handler code under test is exactly what a real
+Svix delivery would invoke.
+
+12 checks, all passing:
+- `organizationMembership.created` syncs a new, active Owner row.
+- The real Clerk membership was actually removed (checked via `GET /organizations/.../memberships`)
+  before the `.deleted` webhook was sent.
+- `.deleted` → `200`, and the Owner row is soft-deleted (`active: false`) — never hard-deleted.
+- The fixture Lead and Task, previously assigned to that owner, are completely untouched —
+  same id, same `ownerId`, no orphaning.
+- The removed owner's name/email survive for historical attribution.
+- Redelivering the same `.deleted` event is a harmless no-op (idempotent).
+- Rejoining (`organizationMembership.created` again) correctly reactivates the Owner
+  (`upsertOwnerFromClerk`'s update branch now explicitly sets `active: true`).
+- A *stale* `.deleted` event delivered after a real rejoin does **not** deactivate the
+  now-current member — the order-proofing actually works, not just in theory.
+
+Test Clerk user, membership, and the fixture Lead/Task/Owner rows were all cleaned up afterward.
+Full 58-test suite and `npx tsc --noEmit` both pass. Files touched: `prisma/schema.prisma` +
+new migration, `lib/data/owners.ts`, `app/api/webhooks/clerk/route.ts`, `src/data/types.ts`,
+`lib/mappers.ts`, `lib/data-loader.ts`, `src/data/mock.ts` (type-only fixture update).
+
 ## Fixed three gaps in Team Settings (Oct 1 2026)
 
 ### 1. Remove member now confirms first

@@ -2,7 +2,7 @@ import { headers } from 'next/headers'
 import { clerkClient } from '@clerk/nextjs/server'
 import { Webhook } from 'svix'
 import { upsertOrg, updateOrg, deleteOrg, getOrgByClerkId } from '@lib/data/organizations'
-import { upsertOwnerFromClerk } from '@lib/data/owners'
+import { upsertOwnerFromClerk, deactivateOwner } from '@lib/data/owners'
 import { ensureDefaultStages } from '@lib/data/stages'
 import { ownerRoleFromClerk } from '@lib/roles'
 
@@ -61,6 +61,9 @@ export async function POST(request: Request) {
         break
       case 'organizationMembership.updated':
         await handleMemberUpdated(event.data)
+        break
+      case 'organizationMembership.deleted':
+        await handleMemberDeleted(event.data)
         break
       default:
         // Ignored event type
@@ -153,4 +156,33 @@ async function handleMemberCreated(data: Record<string, unknown>) {
 async function handleMemberUpdated(data: Record<string, unknown>) {
   // Same logic as created — upsert handles both
   await handleMemberCreated(data)
+}
+
+/**
+ * Soft-deletes the Owner row (see deactivateOwner) when a member is removed from the org in
+ * Clerk. Same order-proofing as handleMemberCreated: a stale/out-of-order redelivery of this
+ * event must not deactivate someone who has since rejoined, so this checks Clerk's *current*
+ * membership list rather than trusting that the deletion is still in effect.
+ */
+async function handleMemberDeleted(data: Record<string, unknown>) {
+  const publicUserData = data.public_user_data as Record<string, unknown> | undefined
+  const clerkOrgId = (data.organization as Record<string, unknown>)?.id as string
+  const clerkUserId = publicUserData?.user_id as string
+
+  if (!clerkOrgId || !clerkUserId) return
+
+  const org = await getOrgByClerkId(clerkOrgId)
+  if (!org) return // org not synced; nothing to deactivate
+
+  let stillMember = false
+  try {
+    const clerk = await clerkClient()
+    const memberships = await clerk.users.getOrganizationMembershipList({ userId: clerkUserId, limit: 100 })
+    stillMember = memberships.data.some((m) => m.organization.id === clerkOrgId)
+  } catch {
+    // User may have been deleted from Clerk entirely — treat as "not a member" and proceed.
+  }
+  if (stillMember) return
+
+  await deactivateOwner(org.id, clerkUserId)
 }

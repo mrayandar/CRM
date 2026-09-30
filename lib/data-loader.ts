@@ -71,6 +71,7 @@ export async function loadCrmData(
       initials: 'Y',
       role: 'Member',
       email: '',
+      active: true,
     },
     leads: rawLeads.map(mapLead),
     contacts: rawContacts.map(mapContact),

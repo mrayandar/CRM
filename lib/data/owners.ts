@@ -79,6 +79,25 @@ export function upsertOwnerFromClerk(
       // A role change (organizationMembership.updated) must reach the Owner row.
       role: data.role,
       avatarUrl: data.avatarUrl ?? null,
+      // The row is never actually deleted when someone leaves (see deactivateOwner) — if they
+      // rejoin, this same upsert's update branch fires again and must flip them back on.
+      active: true,
     },
+  })
+}
+
+/**
+ * Soft-deletes the Owner for a member removed from the org in Clerk
+ * (organizationMembership.deleted). Never a real delete: every Lead/Contact/Deal/Task.ownerId and
+ * Activity.actorId is a required, ON DELETE RESTRICT foreign key to Owner, so deleting the row
+ * would throw for anyone who ever created a record or logged an activity — in practice, everyone.
+ * Soft-deleting also keeps historical ownership/activity attribution intact. `updateMany` (not
+ * `update`) so a webhook for a membership that was never synced to an Owner row is a harmless
+ * no-op instead of a thrown error.
+ */
+export function deactivateOwner(orgId: string, clerkUserId: string) {
+  return prisma.owner.updateMany({
+    where: { orgId, clerkUserId },
+    data: { active: false },
   })
 }

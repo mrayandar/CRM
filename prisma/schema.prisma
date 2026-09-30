@@ -125,6 +125,13 @@ model Owner {
   /// validated against a zone database — display preference only, nothing schedules against it.
   timezone    String?
 
+  /// False once this person is removed from the org in Clerk (organizationMembership.deleted).
+  /// Soft-delete, not a hard delete: every Lead/Contact/Deal/Task.ownerId and Activity.actorId FK
+  /// to Owner is ON DELETE RESTRICT, so a real delete would throw for anyone who ever created a
+  /// record or logged an activity — in practice, every real member. Soft-deleting also keeps
+  /// historical activity/ownership attribution intact instead of erasing who actually did what.
+  active      Boolean @default(true)
+
   leads      Lead[]
   contacts   Contact[]
   deals      Deal[]

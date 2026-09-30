@@ -44,6 +44,7 @@ export function mapOwner(o: PrismaOwner): Owner {
     role: o.role,
     email: o.email,
     timezone: o.timezone ?? undefined,
+    active: o.active,
   }
 }
 
