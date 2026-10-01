@@ -30,6 +30,7 @@ import { ActivityTimeline } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
+import { RelativeTime } from '@/components/common/RelativeTime'
 import { useCrm } from '@/store/crm'
 import {
   LEAD_STATUS_LABEL,
@@ -42,7 +43,6 @@ import {
   cn,
   currency,
   formatDate,
-  relativeTime,
   sortBy,
 } from '@/lib/utils'
 
@@ -344,7 +344,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
               </KeyValue>
               <KeyValue label="Created">{formatDate(record.createdAt)}</KeyValue>
               <KeyValue label="Last activity">
-                {relativeTime(lead ? lead.lastTouchedAt : contact!.lastInteractionAt)}
+                <RelativeTime iso={lead ? lead.lastTouchedAt : contact!.lastInteractionAt} />
               </KeyValue>
             </dl>
 

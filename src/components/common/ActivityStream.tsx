@@ -14,8 +14,9 @@ import {
   Trophy,
 } from 'lucide-react'
 import type { Activity, ActivityKind } from '@/data/types'
-import { cn, formatDateTime, relativeTime } from '@/lib/utils'
+import { cn, formatDateTime } from '@/lib/utils'
 import { useCrm } from '@/store/crm'
+import { RelativeTime } from '@/components/common/RelativeTime'
 
 const KIND_META: Record<
   ActivityKind,
@@ -99,7 +100,7 @@ export function ActivityFeed({ items, limit }: { items: Activity[]; limit?: numb
                 <p className="mt-0.5 line-clamp-2 text-[12px] leading-[17px] text-ink-500">{item.body}</p>
               )}
               <div className="mt-1 flex items-center gap-2">
-                <span className="tabular text-[11.5px] text-ink-400">{relativeTime(item.at)}</span>
+                <RelativeTime iso={item.at} className="tabular text-[11.5px] text-ink-400" />
                 {href && item.subject && (
                   <>
                     <span className="text-ink-400/60">·</span>

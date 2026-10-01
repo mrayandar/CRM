@@ -2,6 +2,83 @@
 
 > Living context file. Updated at the end of every task.
 
+## Applied the RelativeTime hydration fix everywhere `relativeTime()` was called during render (Oct 2 2026)
+
+Follow-up to the Dashboard hydration fix immediately below: found and fixed every other place in
+the app with the identical structural bug.
+
+**Found by searching, not guessing:** grepped the whole `src/` tree for `relativeTime(` call
+sites. Found four beyond the one already fixed in `ActivityStream.tsx`:
+- `src/screens/Leads.tsx` — the "last activity" list column.
+- `src/screens/Contacts.tsx` — both the "by company" group header's relative time and the flat-view
+  "last interaction" column.
+- `src/screens/RecordDetail.tsx` — the "Last activity" field in the profile panel.
+
+All four called `relativeTime(iso)` directly during render, on 'use client' pages that still get
+server-rendered on first load — the exact same SSR-vs-hydrate race as the Dashboard bug.
+
+**Fix:** extracted the `RelativeTime` component out of `ActivityStream.tsx` into its own module,
+`src/components/common/RelativeTime.tsx` (same structural fix as before — renders the stable
+`formatDate` on both the server pass and the client's first/hydrating pass, swaps in the live
+`relativeTime` label via a post-mount `useEffect`), and swapped all five call sites (the original
+plus these four) over to it.
+
+**Verified, not just applied:**
+- Live-checked all four locations after the change: Leads list, Contacts "by company" view,
+  Contacts flat view, and RecordDetail's profile panel all still show real relative-time text
+  ("Xm ago" / "Just now" / etc.), with zero hydration errors across those navigations.
+- Ran the same deterministic near-minute-boundary test used for the Dashboard fix against Contacts'
+  detail page: bumped a real contact's `lastInteractionAt` to ~2s before a minute boundary, then
+  fired a fresh navigation timed so hydration would land on the other side of it — 0 hydration
+  errors, confirming the race is closed there too, not just reasoned about.
+- Full `vitest run` (75/75) and `npm run build` both clean.
+
+Files changed: `src/components/common/RelativeTime.tsx` (new), `src/components/common/ActivityStream.tsx`,
+`src/screens/Leads.tsx`, `src/screens/Contacts.tsx`, `src/screens/RecordDetail.tsx`.
+
+## Fixed the Dashboard hydration-mismatch warning (Oct 2 2026)
+
+Investigated the hydration warning the previous task flagged as a minor aside.
+
+**Reproduced first, not assumed:** scripted 10 fresh full-page navigations to Dashboard from
+various starting pages. It fired on 1 of 10 (confirming the original "fired once" report) —
+genuinely intermittent, not deterministic.
+
+**Root cause, found by code trace:** `ActivityFeed` (`src/components/common/ActivityStream.tsx`,
+used only by Dashboard's "Recent activity" card) called `relativeTime(item.at)` — which renders
+"Just now" / "2m ago" / etc. — directly during render. Dashboard is a `'use client'` page that
+still gets server-rendered on the initial load; `relativeTime` is called once on the server at
+request time and once more on the client during hydration, a few seconds later. Any activity
+timestamped near a whole-minute boundary at request time can tick from "Just now" to "1m ago" in
+that gap, so the server-rendered text and the client's hydration-time text genuinely disagree —
+a real mismatch, not a flake in the tooling. (Checked the rest of the app for similar `new
+Date()`-during-render patterns first — `dayDelta`-based text elsewhere compares at day granularity,
+which is for-practical-purposes never going to flip within an SSR-to-hydrate gap, so this was the
+one real culprit.)
+
+**Fix:** `ActivityFeed` now renders through a small `RelativeTime` component that shows the stable,
+minute-insensitive `formatDate(iso)` on both the server pass and the client's first (hydrating)
+pass — identical by construction, since `formatDate` has no second/minute-level time dependency —
+then swaps in the live `relativeTime` label via a `useEffect` that only ever runs post-mount, after
+hydration has already committed. This isn't a probabilistic improvement; it's structurally
+impossible for the initial paint to mismatch anymore, since neither render pass touches "now" at
+all until after React has already reconciled against the server HTML.
+
+**Verified, not just reasoned about:**
+- Re-ran the same 10-navigation sweep against the fixed code: **0/10** hydration errors (down from
+  1/10 before the fix).
+- Ran a second, deterministic test: created a real Activity timed a couple seconds before a minute
+  boundary (the exact condition that should trigger the bug) and navigated to Dashboard — 0
+  hydration errors.
+- Full `vitest run` (75/75) and `npm run build` both clean after the change.
+
+**Scope note:** `relativeTime` was also called the same way at a few other call sites (Contacts'
+"last interaction" column, Leads' "last activity" column, RecordDetail's "Last activity" field).
+Only Dashboard's activity feed was fixed in this pass — see the entry above this one for the
+same fix applied everywhere else.
+
+Files changed: `src/components/common/ActivityStream.tsx`.
+
 ## Wired Reports export, Companies export, and Tasks/Owners in the command palette (Oct 2 2026)
 
 Follow-up to the audit immediately below, fixing three of its findings.

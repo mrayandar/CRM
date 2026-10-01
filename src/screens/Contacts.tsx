@@ -24,7 +24,8 @@ import { GroupRow, Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
 import type { Contact } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, exportCsv, relativeTime, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, dayDelta, exportCsv, sortBy, sum } from '@/lib/utils'
+import { RelativeTime } from '@/components/common/RelativeTime'
 
 const LIFECYCLE_TONE: Record<Contact['lifecycle'], Tone> = {
   Customer: 'positive',
@@ -241,7 +242,7 @@ export function Contacts() {
                               {accountValue > 0 ? `${currencyCompact(accountValue)} account` : 'No revenue yet'}
                             </span>
                             <span className="tabular w-[100px] text-right text-[11.5px] text-ink-400">
-                              {relativeTime(lastInteractionAt)}
+                              <RelativeTime iso={lastInteractionAt} />
                             </span>
                           </span>
                         </button>
@@ -469,7 +470,7 @@ function ContactRow({
           className={cn('tabular text-[12.5px]', stale ? 'text-warning' : 'text-ink-500')}
           title={stale ? 'No interaction in over 30 days' : undefined}
         >
-          {relativeTime(contact.lastInteractionAt)}
+          <RelativeTime iso={contact.lastInteractionAt} />
         </span>
       </Td>
       <Td>

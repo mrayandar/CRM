@@ -32,7 +32,8 @@ import {
   type LeadSource,
   type LeadStatus,
 } from '@/data/types'
-import { cn, currency, currencyCompact, exportCsv, relativeTime, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, exportCsv, sortBy, sum } from '@/lib/utils'
+import { RelativeTime } from '@/components/common/RelativeTime'
 
 type SortKey = 'name' | 'company' | 'score' | 'estValue' | 'lastTouchedAt'
 
@@ -356,7 +357,7 @@ export function Leads() {
                         {currency(lead.estValue)}
                       </Td>
                       <Td align="right" className="tabular text-[12.5px] text-ink-500">
-                        {relativeTime(lead.lastTouchedAt)}
+                        <RelativeTime iso={lead.lastTouchedAt} />
                       </Td>
                       <Td>
                         <span onClick={(e) => e.stopPropagation()}>
