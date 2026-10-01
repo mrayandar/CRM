@@ -1,6 +1,8 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { headers } from 'next/headers'
+import { auth, clerkClient } from '@clerk/nextjs/server'
 import { requireAuth } from '@lib/auth'
 import { updateOrgQuota } from '@lib/data/organizations'
 import {
@@ -124,6 +126,40 @@ export async function updateCompanyAction(input: {
 export async function deleteCompanyAction(companyId: string) {
   const { orgId } = await requireAuth()
   await dbDeleteCompany(orgId, companyId)
+  revalidatePath('/', 'layout')
+}
+
+const ORG_ROLES = ['org:admin', 'org:member'] as const
+
+/**
+ * Creates a real Clerk organization invitation server-side via the Backend API, instead of the
+ * client SDK's `organization.inviteMember()` — that method has no `redirectUrl` parameter, so
+ * without this, Clerk falls back to its own hosted Account Portal (`<slug>.accounts.dev`) for the
+ * invitation's "Accept invitation" link, bouncing the invitee to a generic Clerk-branded page
+ * instead of this app's own sign-up flow. `redirectUrl` here is exactly the dashboard-level
+ * setting middleware.ts's `signInUrl`/`signUpUrl` already pin for the ordinary sign-in/up flows —
+ * organization invitations just aren't covered by those, and need their own.
+ */
+export async function inviteMemberAction(input: { emailAddress: string; role: 'org:admin' | 'org:member' }) {
+  const { userId, orgId: clerkOrgId } = await auth()
+  if (!userId || !clerkOrgId) throw new Error('Unauthorized')
+
+  const email = input.emailAddress.trim()
+  if (!email || email.length > 320 || !EMAIL_RE.test(email)) throw new Error('Invalid email')
+  if (!ORG_ROLES.includes(input.role)) throw new Error('Invalid role')
+
+  const h = await headers()
+  const host = h.get('host') ?? 'localhost:3000'
+  const protocol = host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https'
+
+  const clerk = await clerkClient()
+  await clerk.organizations.createOrganizationInvitation({
+    organizationId: clerkOrgId,
+    emailAddress: email,
+    role: input.role,
+    inviterUserId: userId,
+    redirectUrl: `${protocol}://${host}/sign-up`,
+  })
   revalidatePath('/', 'layout')
 }
 

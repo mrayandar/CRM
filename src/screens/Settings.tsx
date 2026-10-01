@@ -15,6 +15,7 @@ import { StageManager } from '@/components/common/StageManager'
 import { useCrm } from '@/store/crm'
 import { cn, formatDate } from '@/lib/utils'
 import { useOrganization, useUser } from '@clerk/nextjs'
+import { inviteMemberAction } from '@lib/actions/crm'
 
 type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
 
@@ -298,12 +299,16 @@ function TeamSection() {
   const invitationList = invitations?.data ?? []
   const totalSeats = memberList.length
 
+  // Goes through a server action (inviteMemberAction) rather than the client SDK's
+  // organization.inviteMember() — that client method has no redirectUrl parameter, so without
+  // this the invitation's "Accept invitation" link falls back to Clerk's own hosted Account
+  // Portal instead of this app's sign-up page. See the comment on inviteMemberAction itself.
   const handleInvite = async () => {
-    if (!organization || !inviteEmail.trim()) return
+    if (!inviteEmail.trim()) return
     setInviting(true)
     setInviteError(null)
     try {
-      await organization.inviteMember({
+      await inviteMemberAction({
         emailAddress: inviteEmail.trim(),
         role: inviteRole,
       })

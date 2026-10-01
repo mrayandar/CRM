@@ -2,6 +2,75 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fixed Team Settings "Invite" landing on Clerk's hosted portal instead of this app (Oct 1 2026)
+
+A real invite test showed the recipient getting "a plain 6-digit numeric code with no mention of
+the organization" instead of a proper org invitation. Investigated end to end rather than guessing.
+
+### What was actually happening
+
+`handleInvite` (`src/screens/Settings.tsx`) was calling the client SDK's
+`organization.inviteMember()`, which **is** the real Clerk org-invite API — confirmed via the
+Clerk Backend API that it creates a genuine `OrganizationInvitation` record, and confirmed (by
+reading the actual email through Mailinator's public inbox for a fresh test address) that Clerk
+sends a correctly-worded invitation: *"Muhammad Rayan has invited you to join the Muhammad Rayan's
+Organization organization on CRM... Accept invitation"*. So the invite creation and the email
+content were never the bug.
+
+The bug was the **destination of the "Accept invitation" link**. `organization.inviteMember()` (the
+client SDK method) has no `redirectUrl` parameter, and nothing else in the app configured one. Without
+it, Clerk falls back to its own hosted Account Portal (`<slug>.accounts.dev`) to complete the
+invitation — a generic, unbranded Clerk page, not this app's own `/sign-up`. Landing there to
+complete a brand-new sign-up (password + email verification code) is almost certainly what looked
+like "just a 6-digit code with no org mention" — the invitation *email* mentioned the org correctly,
+but the page the link led to didn't carry that framing, because it was never this app's own UI.
+This is the same class of bug `middleware.ts` already pins `signInUrl`/`signUpUrl` against for the
+ordinary sign-in/up flows (see its comment) — organization invitations just aren't covered by that
+fix, since they need their own, separately-configured redirect.
+
+### The fix
+
+Moved invitation creation server-side: `inviteMemberAction` (`lib/actions/crm.ts`) uses
+`clerkClient().organizations.createOrganizationInvitation()` (the Backend SDK, which *does* accept
+`redirectUrl`) instead of the client SDK, deriving the base URL from the request's own `host` header
+so it works in any environment without a new hardcoded/env-configured app URL. `orgId`/`userId` come
+straight from `auth()`, not client input. `Settings.tsx`'s `handleInvite` now calls this action
+instead of `organization.inviteMember()`.
+
+### Verified for real, not just "an email was sent"
+
+- Confirmed via the Clerk Backend API that the invitation ticket created by the **actual Settings
+  UI** ("Invite" button, clicked through Playwright) now carries `redirectUrl: http://localhost:3000/sign-up`
+  in its signed ticket payload, where before the fix it carried no `rurl` claim at all and the
+  browser landed on `<slug>.accounts.dev` instead of this app.
+- Followed the real "Accept invitation" link end to end: before the fix, it landed on Clerk's
+  hosted portal; after the fix, the same flow redirects to `http://localhost:3000/sign-up` with the
+  ticket attached — this app's own branded sign-up page.
+- Could not fully click through a **brand-new** account's password + email-code steps inside this
+  sandboxed headless-Chrome environment — Clerk's bot-protection (Cloudflare Turnstile) challenge
+  subdomain is unreachable from here even with a Clerk testing token appended, which looks like a
+  sandbox networking limitation (the exact hostname resolves to IPv6-only addresses; outbound IPv6
+  appears blocked in this environment) rather than an app issue. Flagging this honestly rather than
+  claiming a full UI click-through that didn't actually complete.
+- Independently verified the other half of the loop instead: created a real Clerk user and added
+  them as an org member directly via the Backend API (what a completed sign-up produces), and
+  confirmed the existing `organizationMembership.created` webhook (already built and tested in an
+  earlier task) created a real `Owner` row in Neon within seconds, with the correct `orgId`,
+  `clerkUserId`, and `role: "Member"`. Cleaned up all test invitations, memberships, and users
+  created during this investigation.
+
+### Why earlier verification missed this
+
+Every previous live-verification pass this session signed in via a **sign-in ticket** for an
+*existing* account (`ticket.js`), never through a brand-new account's actual sign-up — so the
+organization-invitation-specific redirect path was never exercised. The bug was invisible to every
+check that only ever used already-provisioned test accounts.
+
+### Files changed
+
+`lib/actions/crm.ts` (new `inviteMemberAction`), `src/screens/Settings.tsx` (`handleInvite` now
+calls it instead of the client SDK).
+
 ## Made Company a real entity, replacing the plain string field (Oct 1 2026)
 
 Lead/Contact/Deal each had a plain `company: String`. Promoted it to a real `Company` model with
