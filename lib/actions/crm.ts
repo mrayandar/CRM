@@ -12,6 +12,13 @@ import {
 } from '@lib/data/leads'
 import { getOwnerById, updateOwnerProfile } from '@lib/data/owners'
 import {
+  getCompanyById,
+  getCompanyByName,
+  createCompany as dbCreateCompany,
+  updateCompany as dbUpdateCompany,
+  deleteCompany as dbDeleteCompany,
+} from '@lib/data/companies'
+import {
   createContact as dbCreateContact,
   getContactByEmail,
   getContactById,
@@ -63,6 +70,63 @@ function assertClientId(id: unknown): asserts id is string {
   if (typeof id !== 'string' || !UUID_RE.test(id)) throw new Error('Invalid id')
 }
 
+export async function createCompanyAction(input: {
+  id: string
+  name: string
+  website?: string
+  industry?: string
+  notes?: string
+}) {
+  const { orgId } = await requireAuth()
+  assertClientId(input.id)
+
+  const name = input.name.trim()
+  const website = input.website?.trim() || undefined
+  const industry = input.industry?.trim() || undefined
+  const notes = input.notes?.trim() || undefined
+  if (!name || name.length > 200) throw new Error('Company name is required')
+  if (website && website.length > 300) throw new Error('Website is too long')
+  if (industry && industry.length > 200) throw new Error('Industry is too long')
+  if (notes && notes.length > 5000) throw new Error('Notes are too long')
+
+  // Avoid creating a second row for a name that (modulo case) already exists — the inline
+  // create-or-select picker should always resolve to one company per distinct name per org.
+  const existing = await getCompanyByName(orgId, name)
+  if (existing) return { id: existing.id, name: existing.name, existing: true as const }
+
+  const company = await dbCreateCompany(orgId, { id: input.id, name, website, industry, notes })
+  revalidatePath('/', 'layout')
+  return { id: company.id, name: company.name, existing: false as const }
+}
+
+export async function updateCompanyAction(input: {
+  id: string
+  name: string
+  website?: string
+  industry?: string
+  notes?: string
+}) {
+  const { orgId } = await requireAuth()
+
+  const name = input.name.trim()
+  const website = input.website?.trim() || undefined
+  const industry = input.industry?.trim() || undefined
+  const notes = input.notes?.trim() || undefined
+  if (!name || name.length > 200) throw new Error('Company name is required')
+  if (website && website.length > 300) throw new Error('Website is too long')
+  if (industry && industry.length > 200) throw new Error('Industry is too long')
+  if (notes && notes.length > 5000) throw new Error('Notes are too long')
+
+  await dbUpdateCompany(orgId, input.id, { name, website, industry, notes })
+  revalidatePath('/', 'layout')
+}
+
+export async function deleteCompanyAction(companyId: string) {
+  const { orgId } = await requireAuth()
+  await dbDeleteCompany(orgId, companyId)
+  revalidatePath('/', 'layout')
+}
+
 export async function moveDealAction(dealId: string, stageId: string) {
   const { orgId } = await requireAuth()
   // stageId comes from the client (the kanban column it was dropped on) — must belong to this org.
@@ -77,7 +141,7 @@ export async function createLeadAction(input: {
   name: string
   email: string
   phone: string
-  company: string
+  companyId: string
   source: LeadSource
   status: LeadStatus
   ownerId: string
@@ -87,28 +151,28 @@ export async function createLeadAction(input: {
   assertClientId(input.id)
 
   const name = input.name.trim()
-  const company = input.company.trim()
   const email = input.email.trim()
   const phone = input.phone.trim()
   const notes = input.notes?.trim()
   if (!name || name.length > 200) throw new Error('Name is required')
-  if (!company || company.length > 200) throw new Error('Company is required')
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
   if (notes && notes.length > 5000) throw new Error('Notes are too long')
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
   if (!LEAD_STATUSES.includes(input.status)) throw new Error('Invalid status')
 
-  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  // ownerId and companyId come from the client — both must belong to this org before connecting them.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
+  const company = await getCompanyById(orgId, input.companyId)
+  if (!company) throw new Error('Company not found')
 
   const subject = { subjectType: 'lead' as const, subjectLabel: name }
   const lead = await dbCreateLead(orgId, {
     id: input.id,
     name,
     title: '',
-    company,
+    company: { connect: { id: company.id } },
     email,
     phone,
     location: '',
@@ -148,7 +212,7 @@ export async function createContactAction(input: {
   name: string
   email: string
   phone: string
-  company: string
+  companyId: string
   title: string
   ownerId: string
 }) {
@@ -156,19 +220,19 @@ export async function createContactAction(input: {
   assertClientId(input.id)
 
   const name = input.name.trim()
-  const company = input.company.trim()
   const title = input.title.trim()
   const email = input.email.trim()
   const phone = input.phone.trim()
   if (!name || name.length > 200) throw new Error('Name is required')
-  if (!company || company.length > 200) throw new Error('Company is required')
   if (title.length > 200) throw new Error('Title is too long')
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
 
-  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  // ownerId and companyId come from the client — both must belong to this org before connecting them.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
+  const company = await getCompanyById(orgId, input.companyId)
+  if (!company) throw new Error('Company not found')
 
   // Email is optional; only a non-blank email can collide. Returned (not thrown) because it's an
   // expected validation failure — thrown messages are redacted from the client in production.
@@ -180,7 +244,7 @@ export async function createContactAction(input: {
     id: input.id,
     name,
     title,
-    company,
+    company: { connect: { id: company.id } },
     email,
     phone,
     location: '',
@@ -210,25 +274,25 @@ export async function updateContactAction(input: {
   title: string
   email: string
   phone: string
-  company: string
+  companyId: string
   ownerId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
 
   const name = input.name.trim()
   const title = input.title.trim()
-  const company = input.company.trim()
   const email = input.email.trim()
   const phone = input.phone.trim()
   if (!name || name.length > 200) throw new Error('Name is required')
   if (title.length > 200) throw new Error('Title is too long')
-  if (!company || company.length > 200) throw new Error('Company is required')
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
 
-  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  // ownerId and companyId come from the client — both must belong to this org before connecting them.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
+  const company = await getCompanyById(orgId, input.companyId)
+  if (!company) throw new Error('Company not found')
 
   // Same duplicate-email guard as creation, minus the inline-error UX: the edit modal doesn't await
   // this (persist()'s toast + revert instead), so a thrown error is enough — no {ok, error} shape
@@ -238,14 +302,19 @@ export async function updateContactAction(input: {
     if (existing && existing.id !== input.id) throw new Error('A contact with this email already exists')
   }
 
-  await dbUpdateContact(orgId, input.id, { name, title, email, phone, company, ownerId: owner.id }, actorId)
+  await dbUpdateContact(
+    orgId,
+    input.id,
+    { name, title, email, phone, companyId: company.id, ownerId: owner.id },
+    actorId,
+  )
   revalidatePath('/', 'layout')
 }
 
 export async function createDealAction(input: {
   id: string
   name: string
-  company: string
+  companyId?: string
   value: number
   stageId: string
   closeDate: string
@@ -258,10 +327,8 @@ export async function createDealAction(input: {
   assertClientId(input.id)
 
   const name = input.name.trim()
-  const companyInput = input.company.trim()
   const closeDate = new Date(input.closeDate)
   if (!name || name.length > 200) throw new Error('Name is required')
-  if (companyInput.length > 200) throw new Error('Company is too long')
   if (!Number.isInteger(input.value) || input.value <= 0 || input.value > 1_000_000_000) {
     throw new Error('Invalid value')
   }
@@ -280,13 +347,17 @@ export async function createDealAction(input: {
     if (!contact) throw new Error('Contact not found')
   }
 
-  const company = companyInput || contact?.company || ''
-  if (!company) throw new Error('Company is required')
+  // Company is required on a deal; falls back to the linked contact's company when none is
+  // explicitly chosen (mirrors the old company-string inheritance behavior).
+  const companyId = input.companyId || contact?.companyId
+  if (!companyId) throw new Error('Company is required')
+  const company = await getCompanyById(orgId, companyId)
+  if (!company) throw new Error('Company not found')
 
   const deal = await dbCreateDeal(orgId, {
     id: input.id,
     name,
-    company,
+    company: { connect: { id: company.id } },
     value: input.value,
     stage: { connect: { id: stage.id } },
     priority: input.priority,
@@ -320,6 +391,7 @@ export async function updateDealAction(input: {
   closeDate: string
   contactId?: string
   ownerId: string
+  companyId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
 
@@ -331,11 +403,14 @@ export async function updateDealAction(input: {
   }
   if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
 
-  // ownerId, contactId, and stageId all come from the client — every one must belong to this org.
+  // ownerId, contactId, stageId, and companyId all come from the client — every one must belong
+  // to this org.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const stage = await getStageById(orgId, input.stageId)
   if (!stage) throw new Error('Stage not found')
+  const company = await getCompanyById(orgId, input.companyId)
+  if (!company) throw new Error('Company not found')
   let contact = null
   if (input.contactId) {
     contact = await getContactById(orgId, input.contactId)
@@ -352,6 +427,7 @@ export async function updateDealAction(input: {
       closeDate,
       contactId: contact?.id ?? null,
       ownerId: owner.id,
+      companyId: company.id,
     },
     actorId,
   )
@@ -364,7 +440,7 @@ export async function updateLeadAction(input: {
   title: string
   email: string
   phone: string
-  company: string
+  companyId: string
   source: LeadSource
   ownerId: string
 }) {
@@ -372,24 +448,24 @@ export async function updateLeadAction(input: {
 
   const name = input.name.trim()
   const title = input.title.trim()
-  const company = input.company.trim()
   const email = input.email.trim()
   const phone = input.phone.trim()
   if (!name || name.length > 200) throw new Error('Name is required')
   if (title.length > 200) throw new Error('Title is too long')
-  if (!company || company.length > 200) throw new Error('Company is required')
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
 
-  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  // ownerId and companyId come from the client — both must belong to this org before connecting them.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
+  const company = await getCompanyById(orgId, input.companyId)
+  if (!company) throw new Error('Company not found')
 
   await dbUpdateLead(
     orgId,
     input.id,
-    { name, title, email, phone, company, source: input.source, ownerId: owner.id },
+    { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id },
     actorId,
   )
   revalidatePath('/', 'layout')

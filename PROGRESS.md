@@ -2,6 +2,116 @@
 
 > Living context file. Updated at the end of every task.
 
+## Made Company a real entity, replacing the plain string field (Oct 1 2026)
+
+Lead/Contact/Deal each had a plain `company: String`. Promoted it to a real `Company` model with
+its own id, relations, and detail page — the actual payoff being company-level rollups (every
+Lead/Contact/Deal at a company, visible in one place) and a real place to hang a website/industry/
+notes, instead of a free-text string that drifted across records.
+
+### Schema: additive FK, then cutover, in two separate migrations
+
+Went in two steps, each applied directly to Neon and verified before the next:
+
+1. **`20261001150000_add_company`** (additive) — created the `companies` table (`id, orgId, name,
+   website, industry, notes, createdAt, updatedAt`) and added a **nullable** `companyId` to
+   `leads`/`contacts`/`deals`, alongside their existing `company` string column (left untouched).
+   This let the backfill run and be verified before anything destructive happened.
+2. **Backfill** (one-off script, not a migration) — per org, grouped every Lead/Contact/Deal's
+   `company` string by `.trim().toLowerCase()`; one `Company` row created per distinct group
+   (name = the first-seen original casing), every record in that group linked via `companyId`. No
+   fuzzy matching across different-looking names, as decided — "Fjord Marine" and "Fjord Marine
+   Group" became two separate Company rows, not one.
+3. **Verified lossless** before touching anything else: every Lead/Contact/Deal has a non-null
+   `companyId` (0 unlinked), 0 orphaned `companyId` references, 0 cross-org leakage (a record's
+   `companyId` always resolves to a Company in that same org), and every linked Company's `name`
+   round-trips the original string case-insensitively. Real counts: **17 companies created, 38
+   records linked** across the only two orgs with real company data (15 companies / 34 records in
+   "Nexo Verified Org", 2 companies / 4 records in "Muhammad Rayan's Organization"; the other three
+   real orgs had zero Lead/Contact/Deal data to migrate).
+4. **`20261001160000_company_cutover`** — once verified, dropped the old `company` string columns
+   on all three tables and made `companyId` `NOT NULL`. The stale `contacts_orgId_company_idx`
+   (on the now-gone string column) was dropped in the same migration; the `(orgId, companyId)`
+   indexes added in step 1 replace it.
+
+**Near-duplicates found during the backfill survey, flagged here per instructions (not merged):**
+- **"Fjord Marine" vs "Fjord Marine Group"** (Nexo Verified Org) — likely the same company,
+  different suffix. Left as two separate Company rows.
+- **"Meridian Health" vs "Meridian Health Systems"** (Nexo Verified Org) — same shape of
+  near-duplicate. Left as two separate Company rows.
+
+These are flagged for a human to resolve manually (e.g. merging one into the other and
+re-pointing its linked records) — nothing in this change attempts that automatically.
+
+### Deletion: blocked while linked, not soft-deleted
+
+`deleteCompany` (`lib/data/companies.ts`) explicitly counts linked Leads/Contacts/Deals first and
+throws a clear, actionable error (`"Can't delete this company — it's still linked to N
+record(s)..."`) rather than letting the DB's `ON DELETE RESTRICT` surface a raw constraint error.
+No soft-delete flag was added — deleting an unlinked company is a real, permanent delete.
+
+### Company picker: create-or-select inline, shared by all three forms
+
+`CompanyPicker` (`src/components/common/CompanyPicker.tsx`) is a single component used by the
+Lead/Contact/Deal new and edit forms: typing filters the org's existing companies (via a Popover +
+search input), picking one selects it, and a name with no exact case-insensitive match offers
+"Create '<name>'" — which calls `addCompany` (client-generated id, same `persist()`-less
+optimistic-then-reconcile pattern as `addContact`) and selects the result in one step.
+`createCompanyAction` itself also resolves to an existing case-insensitive match server-side
+(returning `{existing: true}`) rather than ever creating two rows for the same name within an org —
+covered by its own cross-tenant test (a same-named company created by org B never resolves to org
+A's row).
+
+### Frontend shape: `companyId` + a derived display `company` string
+
+Rather than rewrite every display site (`lead.company`, `CompanyMark name={...}`, CSV exports,
+etc.) to walk a nested relation, the frontend `Lead`/`Contact`/`Deal` types keep a `company: string`
+field — now populated from the real `Company.name` by the mappers/store (via a new `companyById`
+lookup, the same pattern `ownerById`/`stageById` already use) — alongside the new `companyId:
+string` that every mutation actually sends to the server. Editing a company's name live-propagates
+that string onto every Lead/Contact/Deal that links to it, both optimistically and on rollback.
+
+### Tenant checks and the cross-tenant suite
+
+Every Company operation is tenant-checked the same way every other entity in this app is:
+`getCompanyById(orgId, id)` in the data layer, called by the action layer before any `connect`.
+Extended the permanent `tests/integration/cross-tenant.test.ts` suite from 63 to **75 tests**,
+adding: `getCompanyById`/`getCompanyDetail` read-isolation, `deleteCompany` write-rejection,
+`updateCompanyAction`/`deleteCompanyAction` id-rejection, `createLeadAction`/`createContactAction`/
+`createDealAction` rejecting a `companyId` from another org, `updateLeadAction`/
+`updateContactAction`/`updateDealAction` rejecting a `companyId` from another org even on the
+caller's own record, and the same-name-never-crosses-orgs test above.
+
+### Live-verified against real Neon data
+
+Via a minted Clerk ticket against "Nexo Verified Org" (the richest real dataset): the companies
+list correctly shows "Fjord Marine"/"Fjord Marine Group" and "Meridian Health"/"Meridian Health
+Systems" as separate rows with correct rollup counts; "Audit Corp"'s detail page lists all 4 real
+linked leads, 3 contacts, and 2 deals exactly matching Neon; creating a new company inline from the
+New Lead form persisted a real row and linked the new lead to it; deleting a still-linked company
+is blocked with the exact "linked to N records" message (confirmed after a test-script timing fix —
+the first pass checked the dialog before the server's 500 response had round-tripped, a bug in the
+verification script, not the app). Full `vitest run` (75/75) and `tsc --noEmit` both clean; `npm
+run build` succeeds with `/companies` and `/companies/[id]` both compiling as dynamic routes.
+
+### Files changed
+
+Schema/migrations: `prisma/schema.prisma`, `prisma/migrations/20261001150000_add_company/`,
+`prisma/migrations/20261001160000_company_cutover/`.
+Data layer: `lib/data/companies.ts` (new), `lib/data/leads.ts`, `lib/data/contacts.ts`,
+`lib/data/deals.ts`, `lib/data/index.ts`, `lib/mappers.ts`, `lib/data-loader.ts`.
+Actions: `lib/actions/crm.ts`.
+Frontend types/store: `src/data/types.ts`, `src/store/crm.tsx`.
+UI: `src/components/common/CompanyPicker.tsx` (new), `src/screens/Companies.tsx` (new),
+`src/screens/CompanyDetail.tsx` (new), `src/screens/Leads.tsx`, `src/screens/Contacts.tsx`,
+`src/screens/RecordDetail.tsx`, `src/components/common/NewDealModal.tsx`,
+`src/components/common/EditDealModal.tsx`, `src/components/layout/Sidebar.tsx`,
+`src/components/layout/CommandPalette.tsx`.
+Routes: `app/(app)/companies/page.tsx` (new), `app/(app)/companies/[id]/page.tsx` (new).
+Removed: `src/data/mock.ts` (dead code — unused mock dataset that would otherwise have needed 20+
+fake company ids maintained for no reader).
+Tests: `tests/integration/cross-tenant.test.ts` (63 → 75 tests).
+
 ## Added task editing and deleting (Oct 1 2026)
 
 Tasks could previously only be created and toggled done/not-done. Added full edit and delete,

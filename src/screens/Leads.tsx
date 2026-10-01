@@ -23,6 +23,7 @@ import { MenuDivider, MenuItem, MenuLabel, Popover } from '@/components/ui/Menu'
 import { EmptyState } from '@/components/ui/Display'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { LeadFunnel } from '@/components/common/LeadFunnel'
+import { CompanyPicker } from '@/components/common/CompanyPicker'
 import { useCrm } from '@/store/crm'
 import {
   LEAD_STATUS_LABEL,
@@ -425,7 +426,7 @@ function ReassignModal({
     title: string
     email: string
     phone: string
-    company: string
+    companyId: string
     source: Lead['source']
     ownerId: string
   }) => void
@@ -442,7 +443,7 @@ function ReassignModal({
         title: lead.title,
         email: lead.email,
         phone: lead.phone,
-        company: lead.company,
+        companyId: lead.companyId,
         source: lead.source,
         ownerId,
       })
@@ -484,7 +485,7 @@ function ReassignModal({
 function NewLeadModal({ onClose }: { onClose: () => void }) {
   const { addLead, owners, currentUser } = useCrm()
   const [name, setName] = useState('')
-  const [company, setCompany] = useState('')
+  const [companyId, setCompanyId] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [source, setSource] = useState<LeadSource>('Inbound')
@@ -495,14 +496,14 @@ function NewLeadModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
 
   const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid && !saving
+  const canSubmit = name.trim() !== '' && companyId !== '' && !emailInvalid && !saving
 
   const submit = async () => {
     if (!canSubmit) return
     setSaving(true)
     setError(null)
     try {
-      await addLead({ name, company, email, phone, source, status, ownerId, notes })
+      await addLead({ name, companyId, email, phone, source, status, ownerId, notes })
       onClose()
     } catch {
       setError('Could not save the lead. Please try again.')
@@ -539,9 +540,7 @@ function NewLeadModal({ onClose }: { onClose: () => void }) {
           <Field label="Full name">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Cooper" autoFocus />
           </Field>
-          <Field label="Company">
-            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Inc." />
-          </Field>
+          <CompanyPicker companyId={companyId} onChange={setCompanyId} />
           <Field label="Email">
             <Input
               type="email"

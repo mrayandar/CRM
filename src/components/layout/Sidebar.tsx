@@ -3,6 +3,7 @@
 import { NavLink } from '@/lib/router-compat'
 import {
   BarChart3,
+  Building2,
   CheckSquare,
   Columns3,
   LayoutDashboard,
@@ -44,6 +45,7 @@ export function Sidebar() {
     { to: '/', label: 'Dashboard', icon: LayoutDashboard },
     { to: '/leads', label: 'Leads', icon: UserPlus, count: newLeads },
     { to: '/contacts', label: 'Contacts', icon: Users },
+    { to: '/companies', label: 'Companies', icon: Building2 },
     { to: '/pipeline', label: 'Pipeline', icon: Columns3 },
     {
       to: '/tasks',

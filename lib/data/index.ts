@@ -1,5 +1,6 @@
 export * from './organizations'
 export * from './owners'
+export * from './companies'
 export * from './leads'
 export * from './contacts'
 export * from './deals'

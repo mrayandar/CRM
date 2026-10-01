@@ -13,6 +13,7 @@ import { useNavigate } from '@/lib/router-compat'
 import {
   ArrowRight,
   BarChart3,
+  Building2,
   CheckSquare,
   Columns3,
   CornerDownLeft,
@@ -47,7 +48,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const navigate = useNavigate()
-  const { leads, contacts, deals, stageById } = useCrm()
+  const { leads, contacts, deals, companies, stageById } = useCrm()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -68,6 +69,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       { id: 'n1', title: 'Dashboard', meta: 'Go to', group: 'Navigate', to: '/' },
       { id: 'n2', title: 'Leads', meta: 'Go to', group: 'Navigate', to: '/leads' },
       { id: 'n3', title: 'Contacts', meta: 'Go to', group: 'Navigate', to: '/contacts' },
+      { id: 'n3b', title: 'Companies', meta: 'Go to', group: 'Navigate', to: '/companies' },
       { id: 'n4', title: 'Pipeline', meta: 'Go to', group: 'Navigate', to: '/pipeline' },
       { id: 'n5', title: 'Tasks', meta: 'Go to', group: 'Navigate', to: '/tasks' },
       { id: 'n6', title: 'Reports', meta: 'Go to', group: 'Navigate', to: '/reports' },
@@ -98,13 +100,21 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       to: '/pipeline',
     }))
 
-    const all = [...navRows, ...leadRows, ...contactRows, ...dealRows]
+    const companyRows: Row[] = companies.map((c) => ({
+      id: c.id,
+      title: c.name,
+      meta: c.industry ?? 'Company',
+      group: 'Companies',
+      to: `/companies/${c.id}`,
+    }))
+
+    const all = [...navRows, ...leadRows, ...contactRows, ...dealRows, ...companyRows]
     const q = query.trim().toLowerCase()
     if (!q) return all.filter((r) => r.group === 'Navigate')
     return all
       .filter((r) => `${r.title} ${r.meta}`.toLowerCase().includes(q))
       .slice(0, 24)
-  }, [query, leads, contacts, deals, stageById])
+  }, [query, leads, contacts, deals, companies, stageById])
 
   const go = (row?: Row) => {
     if (!row) return
@@ -134,6 +144,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         Dashboard: LayoutDashboard,
         Leads: UserPlus,
         Contacts: Users,
+        Companies: Building2,
         Pipeline: Columns3,
         Tasks: CheckSquare,
         Reports: BarChart3,

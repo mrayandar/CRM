@@ -22,6 +22,7 @@ import { MenuDivider, MenuItem, Popover } from '@/components/ui/Menu'
 import { EmptyState } from '@/components/ui/Display'
 import { GroupRow, Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
+import { CompanyPicker } from '@/components/common/CompanyPicker'
 import type { Contact } from '@/data/types'
 import { cn, currency, currencyCompact, dayDelta, exportCsv, relativeTime, sortBy, sum } from '@/lib/utils'
 
@@ -302,7 +303,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
   const { addContact, owners, currentUser } = useCrm()
   const [name, setName] = useState('')
   const [title, setTitle] = useState('')
-  const [company, setCompany] = useState('')
+  const [companyId, setCompanyId] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [ownerId, setOwnerId] = useState(currentUser.id)
@@ -310,13 +311,13 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
 
   const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid && !saving
+  const canSubmit = name.trim() !== '' && companyId !== '' && !emailInvalid && !saving
 
   const submit = async () => {
     if (!canSubmit) return
     setSaving(true)
     setError(null)
-    const result = await addContact({ name, title, company, email, phone, ownerId })
+    const result = await addContact({ name, title, companyId, email, phone, ownerId })
     if (result.ok) {
       onClose()
     } else {
@@ -357,9 +358,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
           <Field label="Title">
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="VP of Operations" />
           </Field>
-          <Field label="Company">
-            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Inc." />
-          </Field>
+          <CompanyPicker companyId={companyId} onChange={setCompanyId} />
           <Field label="Owner">
             <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
               {owners.map((o) => (

@@ -32,14 +32,14 @@ export function listDeals(orgId: string, options: ListDealsOptions = {}) {
     ...(search && {
       OR: [
         { name: { contains: search, mode: 'insensitive' } },
-        { company: { contains: search, mode: 'insensitive' } },
+        { company: { name: { contains: search, mode: 'insensitive' } } },
       ],
     }),
   }
 
   return prisma.deal.findMany({
     where,
-    include: { owner: true, contact: true, stage: true },
+    include: { owner: true, contact: true, stage: true, company: true },
     orderBy: { value: 'desc' },
   })
 }
@@ -65,7 +65,7 @@ export async function getPipelineTotals(orgId: string) {
 export function getDealById(orgId: string, id: string) {
   return prisma.deal.findFirst({
     where: { id, orgId },
-    include: { owner: true, contact: true, lead: true, stage: true },
+    include: { owner: true, contact: true, lead: true, stage: true, company: true },
   })
 }
 
@@ -115,6 +115,7 @@ export interface UpdateDealInput {
   closeDate: Date
   contactId: string | null
   ownerId: string
+  companyId: string
 }
 
 /**
@@ -144,6 +145,7 @@ export async function updateDeal(orgId: string, id: string, data: UpdateDealInpu
     if (+existing.closeDate !== +closeDate) changed.push('close date')
     if (existing.contactId !== data.contactId) changed.push('contact')
     if (existing.ownerId !== data.ownerId) changed.push('owner')
+    if (existing.companyId !== data.companyId) changed.push('company')
 
     if (changed.length === 0) return existing
 
@@ -157,6 +159,7 @@ export async function updateDeal(orgId: string, id: string, data: UpdateDealInpu
         closeDate,
         contactId: data.contactId,
         ownerId: data.ownerId,
+        companyId: data.companyId,
       },
     })
 

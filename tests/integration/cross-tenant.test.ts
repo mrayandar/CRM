@@ -29,6 +29,7 @@ import { prisma } from '@lib/prisma'
 import { getLeadById, listLeads, updateLeadStatus, updateLead, convertLeadToDeal } from '@lib/data/leads'
 import { getContactById, listContacts, updateContact, addContactTag } from '@lib/data/contacts'
 import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/deals'
+import { getCompanyById, getCompanyDetail, deleteCompany } from '@lib/data/companies'
 import { getOwnerById, listOwners } from '@lib/data/owners'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
@@ -41,6 +42,7 @@ const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}
 interface Fixture {
   org: Awaited<ReturnType<typeof prisma.organization.create>>
   owner: Awaited<ReturnType<typeof prisma.owner.create>>
+  company: Awaited<ReturnType<typeof prisma.company.create>>
   lead: Awaited<ReturnType<typeof prisma.lead.create>>
   contact: Awaited<ReturnType<typeof prisma.contact.create>>
   deal: Awaited<ReturnType<typeof prisma.deal.create>>
@@ -70,12 +72,15 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
       role: 'Admin',
     },
   })
+  const company = await prisma.company.create({
+    data: { orgId: org.id, name: `Co ${tag}` },
+  })
   const lead = await prisma.lead.create({
     data: {
       orgId: org.id,
       name: `Lead ${tag}`,
       title: '',
-      company: `Co ${tag}`,
+      companyId: company.id,
       email: `lead-${tag}-${RUN}@example.com`,
       phone: '',
       source: 'Inbound',
@@ -88,7 +93,7 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
       orgId: org.id,
       name: `Contact ${tag}`,
       title: '',
-      company: `Co ${tag}`,
+      companyId: company.id,
       email: `contact-${tag}-${RUN}@example.com`,
       phone: '',
       location: '',
@@ -99,7 +104,7 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
     data: {
       orgId: org.id,
       name: `Deal ${tag}`,
-      company: `Co ${tag}`,
+      companyId: company.id,
       value: 1000,
       source: 'Inbound',
       probability: stage.probability,
@@ -112,7 +117,7 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
   const task = await prisma.task.create({
     data: { orgId: org.id, title: `Task ${tag}`, dueDate: new Date(), ownerId: owner.id },
   })
-  return { org, owner, lead, contact, deal, task, stages, stage, otherStage }
+  return { org, owner, company, lead, contact, deal, task, stages, stage, otherStage }
 }
 
 async function destroyFixture(f: Fixture) {
@@ -122,6 +127,7 @@ async function destroyFixture(f: Fixture) {
   await prisma.deal.deleteMany({ where: { orgId } })
   await prisma.contact.deleteMany({ where: { orgId } })
   await prisma.lead.deleteMany({ where: { orgId } })
+  await prisma.company.deleteMany({ where: { orgId } })
   await prisma.owner.deleteMany({ where: { orgId } })
   await prisma.pipelineStage.deleteMany({ where: { orgId } })
   await prisma.organization.delete({ where: { id: orgId } })
@@ -164,6 +170,12 @@ describe('lib/data: reads are scoped by orgId', () => {
   it('getStageById returns null for another org\'s stage', async () => {
     expect(await getStageById(B.org.id, A.stage.id)).toBeNull()
   })
+  it('getCompanyById returns null for another org\'s company', async () => {
+    expect(await getCompanyById(B.org.id, A.company.id)).toBeNull()
+  })
+  it('getCompanyDetail returns null for another org\'s company', async () => {
+    expect(await getCompanyDetail(B.org.id, A.company.id)).toBeNull()
+  })
   it('listLeads never includes another org\'s leads', async () => {
     expect((await listLeads(B.org.id)).map((l) => l.id)).not.toContain(A.lead.id)
   })
@@ -200,7 +212,7 @@ describe('lib/data: writes reject a record id from another org', () => {
       updateLead(
         B.org.id,
         A.lead.id,
-        { name: 'x', title: '', email: '', phone: '', company: 'x', source: 'Inbound', ownerId: B.owner.id },
+        { name: 'x', title: '', email: '', phone: '', companyId: B.company.id, source: 'Inbound', ownerId: B.owner.id },
         B.owner.id,
       ),
     ).rejects.toThrow()
@@ -215,7 +227,7 @@ describe('lib/data: writes reject a record id from another org', () => {
       updateContact(
         B.org.id,
         A.contact.id,
-        { name: 'x', title: '', email: '', phone: '', company: 'x', ownerId: B.owner.id },
+        { name: 'x', title: '', email: '', phone: '', companyId: B.company.id, ownerId: B.owner.id },
         B.owner.id,
       ),
     ).rejects.toThrow()
@@ -235,6 +247,7 @@ describe('lib/data: writes reject a record id from another org', () => {
           closeDate: new Date(),
           contactId: null,
           ownerId: B.owner.id,
+          companyId: B.company.id,
         },
         B.owner.id,
       ),
@@ -274,6 +287,9 @@ describe('lib/data: writes reject a record id from another org', () => {
   it('deleteStage throws', async () => {
     await expect(deleteStage(B.org.id, A.stage.id)).rejects.toThrow()
   })
+  it('deleteCompany throws for another org\'s company', async () => {
+    await expect(deleteCompany(B.org.id, A.company.id)).rejects.toThrow()
+  })
 
   it('none of the above mutated the org A rows', async () => {
     const lead = await prisma.lead.findUnique({ where: { id: A.lead.id } })
@@ -281,6 +297,7 @@ describe('lib/data: writes reject a record id from another org', () => {
     const deal = await prisma.deal.findUnique({ where: { id: A.deal.id } })
     const task = await prisma.task.findUnique({ where: { id: A.task.id } })
     const stage = await prisma.pipelineStage.findUnique({ where: { id: A.stage.id } })
+    const company = await prisma.company.findUnique({ where: { id: A.company.id } })
     expect(lead?.status).toBe('new')
     expect(contact?.name).toBe(A.contact.name)
     expect(deal?.stageId).toBe(A.stage.id)
@@ -288,6 +305,8 @@ describe('lib/data: writes reject a record id from another org', () => {
     expect(task?.title).toBe(A.task.title)
     expect(task?.done).toBe(false)
     expect(stage?.label).toBe(A.stage.label)
+    expect(company).not.toBeNull()
+    expect(company?.name).toBe(A.company.name)
   })
 })
 
@@ -301,7 +320,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         name: 'x',
         email: '',
         phone: '',
-        company: 'x',
+        companyId: B.company.id,
         source: 'Inbound',
         status: 'new',
         ownerId: A.owner.id,
@@ -316,7 +335,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         name: 'x',
         email: '',
         phone: '',
-        company: 'x',
+        companyId: B.company.id,
         title: '',
         ownerId: A.owner.id,
       }),
@@ -328,7 +347,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
       actions.createDealAction({
         id: crypto.randomUUID(),
         name: 'x',
-        company: 'x',
+        companyId: B.company.id,
         value: 100,
         stageId: B.stage.id,
         closeDate: new Date().toISOString(),
@@ -344,7 +363,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
       actions.createDealAction({
         id: crypto.randomUUID(),
         name: 'x',
-        company: 'x',
+        companyId: B.company.id,
         value: 100,
         stageId: A.stage.id,
         closeDate: new Date().toISOString(),
@@ -360,7 +379,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
       actions.createDealAction({
         id: crypto.randomUUID(),
         name: 'x',
-        company: 'x',
+        companyId: B.company.id,
         value: 100,
         stageId: B.stage.id,
         closeDate: new Date().toISOString(),
@@ -380,7 +399,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         title: '',
         email: '',
         phone: '',
-        company: 'x',
+        companyId: B.company.id,
         source: 'Inbound',
         ownerId: B.owner.id,
       }),
@@ -390,7 +409,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
 
   it('updateLeadAction rejects an ownerId from another org, even on the caller\'s own lead', async () => {
     const own = await prisma.lead.create({
-      data: { orgId: B.org.id, name: 'B-own-lead', title: '', company: 'x', email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-lead', title: '', companyId: B.company.id, email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
     })
     await expect(
       actions.updateLeadAction({
@@ -399,7 +418,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         title: '',
         email: '',
         phone: '',
-        company: 'x',
+        companyId: B.company.id,
         source: 'Inbound',
         ownerId: A.owner.id,
       }),
@@ -414,7 +433,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         title: '',
         email: '',
         phone: '',
-        company: 'x',
+        companyId: B.company.id,
         ownerId: B.owner.id,
       }),
     ).rejects.toThrow()
@@ -430,6 +449,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         stageId: B.stage.id,
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
+        companyId: B.company.id,
       }),
     ).rejects.toThrow()
     expect((await prisma.deal.findUnique({ where: { id: A.deal.id } }))?.name).toBe(A.deal.name)
@@ -437,7 +457,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
 
   it('updateDealAction rejects a stageId from another org', async () => {
     const own = await prisma.deal.create({
-      data: { orgId: B.org.id, name: 'B-own-deal-stage', company: 'x', value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-deal-stage', companyId: B.company.id, value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
     })
     await expect(
       actions.updateDealAction({
@@ -447,13 +467,14 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         stageId: A.stage.id,
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
+        companyId: B.company.id,
       }),
     ).rejects.toThrow(/Stage not found/)
   })
 
   it('updateDealAction rejects a contactId from another org', async () => {
     const own = await prisma.deal.create({
-      data: { orgId: B.org.id, name: 'B-own-deal', company: 'x', value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-deal', companyId: B.company.id, value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
     })
     await expect(
       actions.updateDealAction({
@@ -464,6 +485,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
         contactId: A.contact.id,
+        companyId: B.company.id,
       }),
     ).rejects.toThrow(/Contact not found/)
   })
@@ -475,7 +497,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
 
   it('moveDealAction rejects a stageId from another org, even on the caller\'s own deal', async () => {
     const own = await prisma.deal.create({
-      data: { orgId: B.org.id, name: 'B-own-deal-2', company: 'x', value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-deal-2', companyId: B.company.id, value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
     })
     await expect(actions.moveDealAction(own.id, A.otherStage.id)).rejects.toThrow(/Stage not found/)
   })
@@ -494,7 +516,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
 
   it('convertLeadAction rejects an ownerId from another org', async () => {
     const own = await prisma.lead.create({
-      data: { orgId: B.org.id, name: 'B-own-lead-2', title: '', company: 'x', email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-lead-2', title: '', companyId: B.company.id, email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
     })
     await expect(
       actions.convertLeadAction(own.id, { ownerId: A.owner.id, contactId: crypto.randomUUID() }),
@@ -503,7 +525,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
 
   it('convertLeadAction rejects a stageId from another org when opening a deal', async () => {
     const own = await prisma.lead.create({
-      data: { orgId: B.org.id, name: 'B-own-lead-3', title: '', company: 'x', email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
+      data: { orgId: B.org.id, name: 'B-own-lead-3', title: '', companyId: B.company.id, email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
     })
     await expect(
       actions.convertLeadAction(own.id, {
@@ -626,6 +648,120 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
   it('deleteStageAction rejects a stage id from another org', async () => {
     await expect(actions.deleteStageAction(A.stage.id)).rejects.toThrow()
     expect(await prisma.pipelineStage.findUnique({ where: { id: A.stage.id } })).not.toBeNull()
+  })
+
+  it('updateCompanyAction rejects a company id from another org', async () => {
+    await expect(actions.updateCompanyAction({ id: A.company.id, name: 'Hijacked' })).rejects.toThrow()
+    expect((await prisma.company.findUnique({ where: { id: A.company.id } }))?.name).toBe(A.company.name)
+  })
+
+  it('deleteCompanyAction rejects a company id from another org', async () => {
+    await expect(actions.deleteCompanyAction(A.company.id)).rejects.toThrow()
+    expect(await prisma.company.findUnique({ where: { id: A.company.id } })).not.toBeNull()
+  })
+
+  it('createLeadAction rejects a companyId from another org', async () => {
+    await expect(
+      actions.createLeadAction({
+        id: crypto.randomUUID(),
+        name: 'x',
+        email: '',
+        phone: '',
+        companyId: A.company.id,
+        source: 'Inbound',
+        status: 'new',
+        ownerId: B.owner.id,
+      }),
+    ).rejects.toThrow(/Company not found/)
+  })
+
+  it('createContactAction rejects a companyId from another org', async () => {
+    await expect(
+      actions.createContactAction({
+        id: crypto.randomUUID(),
+        name: 'x',
+        email: '',
+        phone: '',
+        companyId: A.company.id,
+        title: '',
+        ownerId: B.owner.id,
+      }),
+    ).rejects.toThrow(/Company not found/)
+  })
+
+  it('createDealAction rejects a companyId from another org', async () => {
+    await expect(
+      actions.createDealAction({
+        id: crypto.randomUUID(),
+        name: 'x',
+        companyId: A.company.id,
+        value: 100,
+        stageId: B.stage.id,
+        closeDate: new Date().toISOString(),
+        ownerId: B.owner.id,
+        source: 'Inbound',
+        priority: 'low',
+      }),
+    ).rejects.toThrow(/Company not found/)
+  })
+
+  it('updateLeadAction rejects a companyId from another org, even on the caller\'s own lead', async () => {
+    const own = await prisma.lead.create({
+      data: { orgId: B.org.id, name: 'B-own-lead-company', title: '', companyId: B.company.id, email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
+    })
+    await expect(
+      actions.updateLeadAction({
+        id: own.id,
+        name: 'x',
+        title: '',
+        email: '',
+        phone: '',
+        companyId: A.company.id,
+        source: 'Inbound',
+        ownerId: B.owner.id,
+      }),
+    ).rejects.toThrow(/Company not found/)
+  })
+
+  it('updateContactAction rejects a companyId from another org, even on the caller\'s own contact', async () => {
+    const own = await prisma.contact.create({
+      data: { orgId: B.org.id, name: 'B-own-contact', title: '', companyId: B.company.id, email: '', phone: '', location: '', ownerId: B.owner.id },
+    })
+    await expect(
+      actions.updateContactAction({
+        id: own.id,
+        name: 'x',
+        title: '',
+        email: '',
+        phone: '',
+        companyId: A.company.id,
+        ownerId: B.owner.id,
+      }),
+    ).rejects.toThrow(/Company not found/)
+  })
+
+  it('updateDealAction rejects a companyId from another org, even on the caller\'s own deal', async () => {
+    const own = await prisma.deal.create({
+      data: { orgId: B.org.id, name: 'B-own-deal-company', companyId: B.company.id, value: 1, source: 'Inbound', probability: 20, stageId: B.stage.id, closeDate: new Date(), ownerId: B.owner.id },
+    })
+    await expect(
+      actions.updateDealAction({
+        id: own.id,
+        name: 'x',
+        value: 100,
+        stageId: B.stage.id,
+        closeDate: new Date().toISOString(),
+        ownerId: B.owner.id,
+        companyId: A.company.id,
+      }),
+    ).rejects.toThrow(/Company not found/)
+  })
+
+  it('createCompanyAction\'s case-insensitive name match never resolves to another org\'s company', async () => {
+    const result = await actions.createCompanyAction({ id: crypto.randomUUID(), name: A.company.name.toUpperCase() })
+    expect(result.id).not.toBe(A.company.id)
+    expect(result.existing).toBe(false)
+    await prisma.company.delete({ where: { id: result.id } })
   })
 
   it('no cross-tenant attempt above left an Activity authored by B on org A', async () => {

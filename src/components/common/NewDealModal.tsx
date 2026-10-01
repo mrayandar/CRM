@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Input, Label, Select } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
+import { CompanyPicker } from '@/components/common/CompanyPicker'
 import { useCrm } from '@/store/crm'
 import { sortBy } from '@/lib/utils'
 
@@ -37,25 +38,24 @@ export function NewDealModal({
     return d.toISOString().slice(0, 10)
   })
   const [contactId, setContactId] = useState(initialContact?.id ?? '')
-  const [company, setCompany] = useState(initialContact?.company ?? '')
+  const [companyId, setCompanyId] = useState(initialContact?.companyId ?? '')
   const [companyEdited, setCompanyEdited] = useState(false)
   const [ownerId, setOwnerId] = useState(currentUser.id)
 
   const numericValue = Number(value.replace(/[^0-9]/g, '')) || 0
-  const canSubmit =
-    name.trim() !== '' && numericValue > 0 && company.trim() !== '' && closeDate !== ''
+  const canSubmit = name.trim() !== '' && numericValue > 0 && companyId !== '' && closeDate !== ''
 
   const onContactChange = (id: string) => {
     setContactId(id)
     const contact = contacts.find((c) => c.id === id)
-    if (contact && !companyEdited) setCompany(contact.company)
+    if (contact && !companyEdited) setCompanyId(contact.companyId)
   }
 
   const submit = () => {
     if (!canSubmit) return
     addDeal({
       name,
-      company,
+      companyId,
       value: numericValue,
       stageId,
       closeDate: new Date(`${closeDate}T12:00:00`).toISOString(),
@@ -155,16 +155,13 @@ export function NewDealModal({
           </Select>
         </Field>
 
-        <Field label="Company">
-          <Input
-            value={company}
-            onChange={(e) => {
-              setCompany(e.target.value)
-              setCompanyEdited(true)
-            }}
-            placeholder="Acme Inc."
-          />
-        </Field>
+        <CompanyPicker
+          companyId={companyId}
+          onChange={(id) => {
+            setCompanyId(id)
+            setCompanyEdited(true)
+          }}
+        />
       </form>
     </Modal>
   )

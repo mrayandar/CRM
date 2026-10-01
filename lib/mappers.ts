@@ -16,6 +16,7 @@ import type {
   Task as PrismaTask,
   Activity as PrismaActivity,
   PipelineStage as PrismaPipelineStage,
+  Company as PrismaCompany,
 } from '@prisma/client'
 import type {
   Owner,
@@ -25,6 +26,7 @@ import type {
   Task,
   Activity,
   PipelineStage,
+  Company,
 } from '@/data/types'
 
 function initialsOf(name: string): string {
@@ -48,8 +50,26 @@ export function mapOwner(o: PrismaOwner): Owner {
   }
 }
 
+export function mapCompany(
+  c: PrismaCompany & { _count?: { leads: number; contacts: number; deals: number } },
+): Company {
+  return {
+    id: c.id,
+    name: c.name,
+    website: c.website ?? undefined,
+    industry: c.industry ?? undefined,
+    notes: c.notes ?? undefined,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+    leadCount: c._count?.leads,
+    contactCount: c._count?.contacts,
+    dealCount: c._count?.deals,
+  }
+}
+
 export function mapLead(
   l: PrismaLead & {
+    company: PrismaCompany
     convertedDeal?: { id: string } | null
     convertedContact?: { id: string } | null
   },
@@ -58,7 +78,8 @@ export function mapLead(
     id: l.id,
     name: l.name,
     title: l.title,
-    company: l.company,
+    companyId: l.companyId,
+    company: l.company.name,
     email: l.email,
     phone: l.phone,
     status: l.status,
@@ -75,13 +96,14 @@ export function mapLead(
 }
 
 export function mapContact(
-  c: PrismaContact & { _count?: { deals: number } },
+  c: PrismaContact & { company: PrismaCompany; _count?: { deals: number } },
 ): Contact {
   return {
     id: c.id,
     name: c.name,
     title: c.title,
-    company: c.company,
+    companyId: c.companyId,
+    company: c.company.name,
     email: c.email,
     phone: c.phone,
     ownerId: c.ownerId,
@@ -96,11 +118,12 @@ export function mapContact(
   }
 }
 
-export function mapDeal(d: PrismaDeal): Deal {
+export function mapDeal(d: PrismaDeal & { company: PrismaCompany }): Deal {
   return {
     id: d.id,
     name: d.name,
-    company: d.company,
+    companyId: d.companyId,
+    company: d.company.name,
     contactId: d.contactId ?? undefined,
     leadId: d.leadId ?? undefined,
     value: d.value,

@@ -34,10 +34,25 @@ export interface Owner {
   active: boolean
 }
 
+export interface Company {
+  id: string
+  name: string
+  website?: string
+  industry?: string
+  notes?: string
+  createdAt: string
+  updatedAt: string
+  /** Rollup counts, populated on the list/detail views; absent on freshly-created optimistic rows. */
+  leadCount?: number
+  contactCount?: number
+  dealCount?: number
+}
+
 export interface Lead {
   id: string
   name: string
   title: string
+  companyId: string
   company: string
   email: string
   phone: string
@@ -58,6 +73,7 @@ export interface Contact {
   id: string
   name: string
   title: string
+  companyId: string
   company: string
   email: string
   phone: string
@@ -76,6 +92,7 @@ export interface Contact {
 export interface Deal {
   id: string
   name: string
+  companyId: string
   company: string
   contactId?: string
   leadId?: string

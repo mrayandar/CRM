@@ -12,6 +12,7 @@ import {
 import type {
   Activity,
   ActivityKind,
+  Company,
   Contact,
   Deal,
   Lead,
@@ -31,6 +32,9 @@ import {
   updateDealAction,
   createContactAction,
   updateContactAction,
+  createCompanyAction,
+  updateCompanyAction,
+  deleteCompanyAction,
   moveDealAction,
   setLeadStatusAction,
   convertLeadAction,
@@ -71,7 +75,7 @@ export interface UpdateLeadInput {
   title: string
   email: string
   phone: string
-  company: string
+  companyId: string
   source: LeadSource
   ownerId: string
 }
@@ -80,7 +84,7 @@ export interface NewLeadInput {
   name: string
   email: string
   phone: string
-  company: string
+  companyId: string
   source: LeadSource
   status: LeadStatus
   ownerId: string
@@ -91,7 +95,7 @@ export interface NewContactInput {
   name: string
   email: string
   phone: string
-  company: string
+  companyId: string
   title: string
   ownerId: string
 }
@@ -101,7 +105,7 @@ export interface UpdateContactInput {
   title: string
   email: string
   phone: string
-  company: string
+  companyId: string
   ownerId: string
 }
 
@@ -109,7 +113,7 @@ export type NewContactResult = { ok: true; id: string } | { ok: false; error: st
 
 export interface NewDealInput {
   name: string
-  company: string
+  companyId?: string
   value: number
   stageId: string
   /** ISO timestamp */
@@ -126,6 +130,21 @@ export interface UpdateDealInput {
   closeDate: string
   ownerId: string
   contactId?: string
+  companyId: string
+}
+
+export interface NewCompanyInput {
+  name: string
+  website?: string
+  industry?: string
+  notes?: string
+}
+
+export interface UpdateCompanyInput {
+  name: string
+  website?: string
+  industry?: string
+  notes?: string
 }
 
 export interface UpdateTaskInput {
@@ -147,10 +166,22 @@ interface CrmState {
   tasks: Task[]
   activities: Activity[]
   stages: PipelineStage[]
+  companies: Company[]
   /** Team-wide quarterly revenue target set from Settings -> Workspace; null until an admin sets one. */
   quarterlyQuota: number | null
   ownerById: (id: string) => Owner
   stageById: (id: string) => PipelineStage
+  companyById: (id: string) => Company | undefined
+  /** Adds the company to local state immediately; rolls back and shows a toast if the save fails.
+   *  If a company with this name (case-insensitive) already exists in the org, the server returns
+   *  that existing row instead of creating a duplicate — the optimistic row is reconciled to its
+   *  real id once that happens. Returns the real company. */
+  addCompany: (input: NewCompanyInput) => Promise<Company>
+  /** Updates a company's own fields; rolls back and shows a toast if the save fails. */
+  updateCompany: (companyId: string, input: UpdateCompanyInput) => void
+  /** Deletes a company outright; blocked server-side (returns {ok:false, error}) while any Lead,
+   *  Contact, or Deal is still linked to it. */
+  deleteCompany: (companyId: string) => Promise<{ ok: true } | { ok: false; error: string }>
   moveDeal: (dealId: string, stageId: string) => void
   /** Adds the lead to local state immediately; resolves once persisted, rejects (after rolling back) if the save fails. */
   addLead: (input: NewLeadInput) => Promise<Lead>
@@ -249,6 +280,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [owners, setOwners] = useState<Owner[]>(initialData.owners)
   const [currentUser, setCurrentUser] = useState<Owner>(initialData.currentUser)
   const [stages, setStages] = useState<PipelineStage[]>(initialData.stages)
+  const [companies, setCompanies] = useState<Company[]>(initialData.companies)
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
@@ -275,6 +307,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const stageById = useCallback(
     (id: string) => stages.find((s) => s.id === id) ?? stages[0]!,
     [stages],
+  )
+
+  const companyById = useCallback(
+    (id: string) => companies.find((c) => c.id === id),
+    [companies],
   )
 
   const removeActivity = useCallback(
@@ -403,7 +440,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         id,
         name,
         title: '',
-        company: input.company.trim(),
+        companyId: input.companyId,
+        company: companyById(input.companyId)?.name ?? '',
         email: input.email.trim(),
         phone: input.phone.trim(),
         status: input.status,
@@ -437,7 +475,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         throw err
       }
     },
-    [currentUser.id],
+    [currentUser.id, companyById],
   )
 
   const addContact = useCallback(
@@ -455,7 +493,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         id,
         name,
         title: input.title.trim(),
-        company: input.company.trim(),
+        companyId: input.companyId,
+        company: companyById(input.companyId)?.name ?? '',
         email,
         phone: input.phone.trim(),
         ownerId: input.ownerId,
@@ -489,7 +528,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           id,
           name,
           title: contact.title,
-          company: contact.company,
+          companyId: contact.companyId,
           email: contact.email,
           phone: contact.phone,
           ownerId: input.ownerId,
@@ -504,7 +543,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         return { ok: false, error: "Couldn't create the contact, please try again." }
       }
     },
-    [contacts, currentUser.id],
+    [contacts, currentUser.id, companyById],
   )
 
   const addDeal = useCallback(
@@ -513,7 +552,10 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const now = new Date().toISOString()
       const name = input.name.trim()
       const contact = input.contactId ? contacts.find((c) => c.id === input.contactId) : undefined
-      const company = input.company.trim() || contact?.company || ''
+      // Company is required on a deal; falls back to the linked contact's company when none is
+      // explicitly chosen (mirrors the server, see createDealAction).
+      const companyId = input.companyId || contact?.companyId || ''
+      const company = companyById(companyId)?.name ?? ''
       // Deal.source is required; inherit it from the contact's originating lead when there is one.
       const originLead = contact?.leadId ? leads.find((l) => l.id === contact.leadId) : undefined
       const source: LeadSource = originLead?.source ?? 'Inbound'
@@ -523,6 +565,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const deal: Deal = {
         id,
         name,
+        companyId,
         company,
         contactId: contact?.id,
         value: input.value,
@@ -558,7 +601,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           createDealAction({
             id,
             name,
-            company,
+            companyId,
             value: input.value,
             stageId: input.stageId,
             closeDate: input.closeDate,
@@ -581,7 +624,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       )
       return id
     },
-    [contacts, leads, currentUser.id, stageById, persist],
+    [contacts, leads, currentUser.id, stageById, companyById, persist],
   )
 
   const updateLead = useCallback(
@@ -594,7 +637,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         title: input.title.trim(),
         email: input.email.trim(),
         phone: input.phone.trim(),
-        company: input.company.trim(),
+        companyId: input.companyId,
         source: input.source,
         ownerId: input.ownerId,
       }
@@ -604,7 +647,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       if (lead.title !== trimmed.title) changed.push('title')
       if (lead.email !== trimmed.email) changed.push('email')
       if (lead.phone !== trimmed.phone) changed.push('phone')
-      if (lead.company !== trimmed.company) changed.push('company')
+      if (lead.companyId !== trimmed.companyId) changed.push('company')
       if (lead.source !== trimmed.source) changed.push('source')
       if (lead.ownerId !== trimmed.ownerId) changed.push('owner')
 
@@ -613,7 +656,12 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       if (changed.length === 0) return
 
       const now = new Date().toISOString()
-      const next: Lead = { ...lead, ...trimmed, lastTouchedAt: now }
+      const next: Lead = {
+        ...lead,
+        ...trimmed,
+        company: companyById(trimmed.companyId)?.name ?? lead.company,
+        lastTouchedAt: now,
+      }
 
       // Written to Postgres inside the same transaction as the field update (see updateLead in
       // lib/data/leads.ts) — not routed through persist()'s post-success activity log, which would
@@ -641,7 +689,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         "Couldn't save the changes, please try again.",
       )
     },
-    [leads, currentUser.id, persist],
+    [leads, currentUser.id, companyById, persist],
   )
 
   const updateContact = useCallback(
@@ -654,7 +702,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         title: input.title.trim(),
         email: input.email.trim(),
         phone: input.phone.trim(),
-        company: input.company.trim(),
+        companyId: input.companyId,
         ownerId: input.ownerId,
       }
 
@@ -663,7 +711,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       if (contact.title !== trimmed.title) changed.push('title')
       if (contact.email !== trimmed.email) changed.push('email')
       if (contact.phone !== trimmed.phone) changed.push('phone')
-      if (contact.company !== trimmed.company) changed.push('company')
+      if (contact.companyId !== trimmed.companyId) changed.push('company')
       if (contact.ownerId !== trimmed.ownerId) changed.push('owner')
 
       // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
@@ -671,7 +719,12 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       if (changed.length === 0) return
 
       const now = new Date().toISOString()
-      const next: Contact = { ...contact, ...trimmed, lastInteractionAt: now }
+      const next: Contact = {
+        ...contact,
+        ...trimmed,
+        company: companyById(trimmed.companyId)?.name ?? contact.company,
+        lastInteractionAt: now,
+      }
 
       // Written to Postgres inside the same transaction as the field update (see updateContact in
       // lib/data/contacts.ts) — not routed through persist()'s post-success activity log, which
@@ -699,7 +752,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         "Couldn't save the changes, please try again.",
       )
     },
-    [contacts, currentUser.id, persist],
+    [contacts, currentUser.id, companyById, persist],
   )
 
   const updateDeal = useCallback(
@@ -714,6 +767,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         closeDate: input.closeDate,
         contactId: input.contactId,
         ownerId: input.ownerId,
+        companyId: input.companyId,
       }
 
       // Same close-date rule the server applies in updateDeal/moveDealToStage (lib/data/deals.ts):
@@ -731,6 +785,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       if (deal.closeDate !== closeDate) changed.push('close date')
       if ((deal.contactId ?? '') !== (trimmed.contactId ?? '')) changed.push('contact')
       if (deal.ownerId !== trimmed.ownerId) changed.push('owner')
+      if (deal.companyId !== trimmed.companyId) changed.push('company')
 
       // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
       // and the activity rather than log an empty "edited" entry for it.
@@ -745,6 +800,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         closeDate,
         contactId: trimmed.contactId,
         ownerId: trimmed.ownerId,
+        companyId: trimmed.companyId,
+        company: companyById(trimmed.companyId)?.name ?? deal.company,
         updatedAt: now,
       }
 
@@ -774,7 +831,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         "Couldn't save the changes, please try again.",
       )
     },
-    [deals, stageById, currentUser.id, persist],
+    [deals, stageById, companyById, currentUser.id, persist],
   )
 
   const updateProfile = useCallback(
@@ -812,6 +869,109 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       )
     },
     [quarterlyQuota, persist],
+  )
+
+  // Not routed through persist(): the caller (the inline create-or-select picker) needs the real
+  // company back — either the one just created, or the existing one the server resolved to when
+  // a case-insensitive name match already existed — so the form can immediately use its real id.
+  const addCompany = useCallback(
+    async (input: NewCompanyInput): Promise<Company> => {
+      const id = newEntityId()
+      const now = new Date().toISOString()
+      const name = input.name.trim()
+      const optimistic: Company = {
+        id,
+        name,
+        website: input.website?.trim() || undefined,
+        industry: input.industry?.trim() || undefined,
+        notes: input.notes?.trim() || undefined,
+        createdAt: now,
+        updatedAt: now,
+        leadCount: 0,
+        contactCount: 0,
+        dealCount: 0,
+      }
+      setCompanies((prev) => [...prev, optimistic])
+      try {
+        const result = await createCompanyAction({ id, ...input })
+        if (result.existing) {
+          // The server resolved to a pre-existing company instead of creating a new one — drop
+          // the optimistic row (nothing new was actually created).
+          setCompanies((prev) => prev.filter((c) => c.id !== id))
+          const existing = companies.find((c) => c.id === result.id)
+          return existing ?? { ...optimistic, id: result.id, name: result.name }
+        }
+        return optimistic
+      } catch (err) {
+        setCompanies((prev) => prev.filter((c) => c.id !== id))
+        throw err
+      }
+    },
+    [companies],
+  )
+
+  const updateCompany = useCallback(
+    (companyId: string, input: UpdateCompanyInput) => {
+      const company = companies.find((c) => c.id === companyId)
+      if (!company) return
+
+      const trimmed = {
+        name: input.name.trim(),
+        website: input.website?.trim() || undefined,
+        industry: input.industry?.trim() || undefined,
+        notes: input.notes?.trim() || undefined,
+      }
+
+      const changed =
+        company.name !== trimmed.name ||
+        company.website !== trimmed.website ||
+        company.industry !== trimmed.industry ||
+        company.notes !== trimmed.notes
+      if (!changed) return
+
+      const now = new Date().toISOString()
+      const next: Company = { ...company, ...trimmed, updatedAt: now }
+
+      setCompanies((prev) => prev.map((c) => (c.id === companyId ? next : c)))
+      // A company's name is denormalized onto every Lead/Contact/Deal that links to it (for the
+      // list views); keep those in sync locally so a rename shows up everywhere immediately.
+      if (company.name !== trimmed.name) {
+        setLeads((prev) => prev.map((l) => (l.companyId === companyId ? { ...l, company: trimmed.name } : l)))
+        setContacts((prev) => prev.map((c) => (c.companyId === companyId ? { ...c, company: trimmed.name } : c)))
+        setDeals((prev) => prev.map((d) => (d.companyId === companyId ? { ...d, company: trimmed.name } : d)))
+      }
+
+      persist(
+        () => updateCompanyAction({ id: companyId, ...input }),
+        () => {
+          setCompanies((prev) => prev.map((c) => (c.id === companyId ? company : c)))
+          if (company.name !== trimmed.name) {
+            setLeads((prev) => prev.map((l) => (l.companyId === companyId ? { ...l, company: company.name } : l)))
+            setContacts((prev) => prev.map((c) => (c.companyId === companyId ? { ...c, company: company.name } : c)))
+            setDeals((prev) => prev.map((d) => (d.companyId === companyId ? { ...d, company: company.name } : d)))
+          }
+        },
+        undefined,
+        "Couldn't save the changes, please try again.",
+      )
+    },
+    [companies, persist],
+  )
+
+  // Not routed through persist(): deletion can be legitimately blocked server-side (still linked
+  // to a Lead/Contact/Deal) and the caller needs that specific message, not a generic toast —
+  // same {ok, error} shape as addContact's duplicate-email case / deleteStage.
+  const deleteCompany = useCallback(
+    async (companyId: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      try {
+        await deleteCompanyAction(companyId)
+        setCompanies((prev) => prev.filter((c) => c.id !== companyId))
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Couldn't delete the company" }
+      }
+    },
+    [],
   )
 
   const addStage = useCallback(
@@ -936,6 +1096,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         id: contactId,
         name: lead.name,
         title: lead.title,
+        companyId: lead.companyId,
         company: lead.company,
         email: lead.email,
         phone: lead.phone,
@@ -954,6 +1115,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           ? {
               id: dealId,
               name: input.deal.name,
+              companyId: lead.companyId,
               company: lead.company,
               contactId,
               leadId,
@@ -1212,9 +1374,14 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       tasks,
       activities,
       stages,
+      companies,
       quarterlyQuota,
       ownerById,
       stageById,
+      companyById,
+      addCompany,
+      updateCompany,
+      deleteCompany,
       moveDeal,
       addLead,
       updateLead,
@@ -1247,9 +1414,14 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       tasks,
       activities,
       stages,
+      companies,
       quarterlyQuota,
       ownerById,
       stageById,
+      companyById,
+      addCompany,
+      updateCompany,
+      deleteCompany,
       moveDeal,
       addLead,
       updateLead,

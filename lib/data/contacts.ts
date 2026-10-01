@@ -23,7 +23,7 @@ export function listContacts(orgId: string, options: ListContactsOptions = {}) {
     ...(search && {
       OR: [
         { name: { contains: search, mode: 'insensitive' } },
-        { company: { contains: search, mode: 'insensitive' } },
+        { company: { name: { contains: search, mode: 'insensitive' } } },
         { email: { contains: search, mode: 'insensitive' } },
       ],
     }),
@@ -31,7 +31,7 @@ export function listContacts(orgId: string, options: ListContactsOptions = {}) {
 
   return prisma.contact.findMany({
     where,
-    include: { owner: true, _count: { select: { deals: true } } },
+    include: { owner: true, company: true, _count: { select: { deals: true } } },
     orderBy: { lastInteractionAt: 'desc' },
   })
 }
@@ -39,7 +39,7 @@ export function listContacts(orgId: string, options: ListContactsOptions = {}) {
 export function getContactById(orgId: string, id: string) {
   return prisma.contact.findFirst({
     where: { id, orgId },
-    include: { owner: true, deals: true, originLead: true },
+    include: { owner: true, company: true, deals: true, originLead: true },
   })
 }
 
@@ -63,7 +63,7 @@ export interface UpdateContactInput {
   title: string
   email: string
   phone: string
-  company: string
+  companyId: string
   ownerId: string
 }
 
@@ -89,7 +89,7 @@ export async function updateContact(
     if (existing.title !== data.title) changed.push('title')
     if (existing.email !== data.email) changed.push('email')
     if (existing.phone !== data.phone) changed.push('phone')
-    if (existing.company !== data.company) changed.push('company')
+    if (existing.companyId !== data.companyId) changed.push('company')
     if (existing.ownerId !== data.ownerId) changed.push('owner')
 
     if (changed.length === 0) return existing

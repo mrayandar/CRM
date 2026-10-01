@@ -29,6 +29,7 @@ import { MenuItem, Popover } from '@/components/ui/Menu'
 import { ActivityTimeline } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
+import { CompanyPicker } from '@/components/common/CompanyPicker'
 import { useCrm } from '@/store/crm'
 import {
   LEAD_STATUS_LABEL,
@@ -125,14 +126,14 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
 
   const relatedDeals = deals.filter(
     (d) =>
-      d.company === record.company ||
+      d.companyId === record.companyId ||
       d.leadId === record.id ||
       (contact && d.contactId === contact.id),
   )
 
   // A lead that has been converted also exists as a contact — don't list it as a colleague.
   const colleagues = contacts.filter(
-    (c) => c.company === record.company && c.id !== record.id && c.leadId !== record.id,
+    (c) => c.companyId === record.companyId && c.id !== record.id && c.leadId !== record.id,
   )
 
   const submitNote = () => {
@@ -321,10 +322,13 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                 <span className="tabular">{record.phone}</span>
               </KeyValue>
               <KeyValue label="Company">
-                <span className="inline-flex items-center gap-1.5">
+                <Link
+                  to={`/companies/${record.companyId}`}
+                  className="inline-flex items-center gap-1.5 text-brand-700 hover:underline"
+                >
                   <CompanyMark name={record.company} />
                   {record.company}
-                </span>
+                </Link>
               </KeyValue>
               <KeyValue label="Location">
                 <span className="inline-flex items-center gap-1.5 text-ink-600">
@@ -651,7 +655,7 @@ function EditLeadModal({
     title: string
     email: string
     phone: string
-    company: string
+    companyId: string
     source: Lead['source']
     ownerId: string
   }) => void
@@ -661,7 +665,7 @@ function EditLeadModal({
   const [title, setTitle] = useState(lead.title)
   const [email, setEmail] = useState(lead.email)
   const [phone, setPhone] = useState(lead.phone)
-  const [company, setCompany] = useState(lead.company)
+  const [companyId, setCompanyId] = useState(lead.companyId)
   const [source, setSource] = useState<Lead['source']>(lead.source)
   const [ownerId, setOwnerId] = useState(lead.ownerId)
 
@@ -673,17 +677,17 @@ function EditLeadModal({
     setTitle(lead.title)
     setEmail(lead.email)
     setPhone(lead.phone)
-    setCompany(lead.company)
+    setCompanyId(lead.companyId)
     setSource(lead.source)
     setOwnerId(lead.ownerId)
   }, [open, lead])
 
   const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid
+  const canSubmit = name.trim() !== '' && companyId !== '' && !emailInvalid
 
   const submit = () => {
     if (!canSubmit) return
-    updateLead(lead.id, { name, title, email, phone, company, source, ownerId })
+    updateLead(lead.id, { name, title, email, phone, companyId, source, ownerId })
     onClose()
   }
 
@@ -730,9 +734,7 @@ function EditLeadModal({
           <Field label="Phone">
             <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
           </Field>
-          <Field label="Company">
-            <Input value={company} onChange={(e) => setCompany(e.target.value)} />
-          </Field>
+          <CompanyPicker companyId={companyId} onChange={setCompanyId} />
           <Field label="Source">
             <Select
               value={source}
@@ -780,7 +782,7 @@ function EditContactModal({
     title: string
     email: string
     phone: string
-    company: string
+    companyId: string
     ownerId: string
   }) => void
 }) {
@@ -789,7 +791,7 @@ function EditContactModal({
   const [title, setTitle] = useState(contact.title)
   const [email, setEmail] = useState(contact.email)
   const [phone, setPhone] = useState(contact.phone)
-  const [company, setCompany] = useState(contact.company)
+  const [companyId, setCompanyId] = useState(contact.companyId)
   const [ownerId, setOwnerId] = useState(contact.ownerId)
 
   // Re-seed from the contact whenever the modal (re)opens, not on every render, so it doesn't
@@ -800,16 +802,16 @@ function EditContactModal({
     setTitle(contact.title)
     setEmail(contact.email)
     setPhone(contact.phone)
-    setCompany(contact.company)
+    setCompanyId(contact.companyId)
     setOwnerId(contact.ownerId)
   }, [open, contact])
 
   const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSubmit = name.trim() !== '' && company.trim() !== '' && !emailInvalid
+  const canSubmit = name.trim() !== '' && companyId !== '' && !emailInvalid
 
   const submit = () => {
     if (!canSubmit) return
-    updateContact(contact.id, { name, title, email, phone, company, ownerId })
+    updateContact(contact.id, { name, title, email, phone, companyId, ownerId })
     onClose()
   }
 
@@ -856,9 +858,7 @@ function EditContactModal({
           <Field label="Phone">
             <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
           </Field>
-          <Field label="Company">
-            <Input value={company} onChange={(e) => setCompany(e.target.value)} />
-          </Field>
+          <CompanyPicker companyId={companyId} onChange={setCompanyId} />
           <Field label="Owner">
             <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
               {owners.map((o) => (

@@ -23,7 +23,7 @@ export function listLeads(orgId: string, options: ListLeadsOptions = {}) {
     ...(search && {
       OR: [
         { name: { contains: search, mode: 'insensitive' } },
-        { company: { contains: search, mode: 'insensitive' } },
+        { company: { name: { contains: search, mode: 'insensitive' } } },
         { email: { contains: search, mode: 'insensitive' } },
       ],
     }),
@@ -33,6 +33,7 @@ export function listLeads(orgId: string, options: ListLeadsOptions = {}) {
     where,
     include: {
       owner: true,
+      company: true,
       convertedDeal: { select: { id: true } },
       convertedContact: { select: { id: true } },
     },
@@ -43,7 +44,7 @@ export function listLeads(orgId: string, options: ListLeadsOptions = {}) {
 export function getLeadById(orgId: string, id: string) {
   return prisma.lead.findFirst({
     where: { id, orgId },
-    include: { owner: true, convertedDeal: true, convertedContact: true },
+    include: { owner: true, company: true, convertedDeal: true, convertedContact: true },
   })
 }
 
@@ -74,7 +75,7 @@ export interface UpdateLeadInput {
   title: string
   email: string
   phone: string
-  company: string
+  companyId: string
   source: LeadSource
   ownerId: string
 }
@@ -96,7 +97,7 @@ export async function updateLead(orgId: string, id: string, data: UpdateLeadInpu
     if (existing.title !== data.title) changed.push('title')
     if (existing.email !== data.email) changed.push('email')
     if (existing.phone !== data.phone) changed.push('phone')
-    if (existing.company !== data.company) changed.push('company')
+    if (existing.companyId !== data.companyId) changed.push('company')
     if (existing.source !== data.source) changed.push('source')
     if (existing.ownerId !== data.ownerId) changed.push('owner')
 
@@ -163,7 +164,7 @@ export async function convertLeadToDeal(
         orgId,
         name: lead.name,
         title: lead.title,
-        company: lead.company,
+        companyId: lead.companyId,
         email: lead.email,
         phone: lead.phone,
         ownerId: input.ownerId,
@@ -181,7 +182,7 @@ export async function convertLeadToDeal(
           ...(input.dealId && { id: input.dealId }),
           orgId,
           name: input.deal.name,
-          company: lead.company,
+          companyId: lead.companyId,
           value: input.deal.value,
           stageId: input.deal.stage.id,
           ownerId: input.ownerId,

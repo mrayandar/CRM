@@ -159,12 +159,35 @@ model Owner {
 // Core CRM models
 // ---------------------------------------------------------------------------
 
+/// A real company entity, replacing the plain `company` string that used to live directly on
+/// Lead/Contact/Deal. One row per distinct company per org — see the backfill migration for how
+/// existing string values were grouped (exact, case-insensitive match within an org; no fuzzy
+/// matching across different-looking names).
+model Company {
+  id       String  @id @default(cuid())
+  orgId    String
+  name     String
+  website  String?
+  industry String?
+  notes    String?
+
+  leads    Lead[]
+  contacts Contact[]
+  deals    Deal[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orgId])
+  @@index([orgId, name])
+  @@map("companies")
+}
+
 model Lead {
   id       String     @id @default(cuid())
   orgId    String
   name     String
   title    String
-  company  String
   email    String
   phone    String
   status   LeadStatus @default(new)
@@ -172,6 +195,9 @@ model Lead {
   score    Int        @default(0)
   estValue Int        @default(0)
   location String
+
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
 
   owner   Owner  @relation(fields: [ownerId], references: [id])
   ownerId String
@@ -192,6 +218,7 @@ model Lead {
   @@index([orgId, status])
   @@index([orgId, ownerId])
   @@index([orgId, lastTouchedAt])
+  @@index([orgId, companyId])
   @@map("leads")
 }
 
@@ -200,10 +227,12 @@ model Contact {
   orgId   String
   name    String
   title   String
-  company String
   email   String
   phone   String
   tags    String[]
+
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
 
   lifecycle ContactLifecycle @default(Prospect)
   location  String
@@ -226,9 +255,9 @@ model Contact {
   activities Activity[]
 
   @@index([orgId])
-  @@index([orgId, company])
   @@index([orgId, ownerId])
   @@index([orgId, lastInteractionAt])
+  @@index([orgId, companyId])
   @@map("contacts")
 }
 
@@ -236,10 +265,12 @@ model Deal {
   id       String   @id @default(cuid())
   orgId    String
   name     String
-  company  String
   value    Int
   priority Priority @default(medium)
   source   LeadSource
+
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
 
   stage   PipelineStage @relation(fields: [stageId], references: [id])
   stageId String
@@ -267,6 +298,7 @@ model Deal {
   @@index([orgId])
   @@index([orgId, stageId])
   @@index([orgId, ownerId])
+  @@index([orgId, companyId])
   @@map("deals")
 }
 
