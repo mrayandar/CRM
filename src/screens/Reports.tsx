@@ -14,6 +14,7 @@ import type { LeadSource } from '@/data/types'
 import {
   currency,
   currencyCompact,
+  exportCsv,
   isMonthsAgo,
   isThisMonth,
   momDelta,
@@ -130,6 +131,34 @@ export function Reports() {
   const maxWon = Math.max(...leaderboard.map((r) => r.wonValue), 1)
   const maxSourcePipeline = Math.max(...bySource.map((r) => r.pipeline), 1)
 
+  // The page shows two real tables (no single flat list the way Leads/Contacts/Pipeline do), so
+  // Export writes one CSV per table — same exportCsv() used everywhere else, just called twice.
+  const exportReports = () => {
+    exportCsv(
+      'reports-by-source.csv',
+      bySource.map((row) => ({
+        source: row.source,
+        leads: row.leads,
+        qualified: row.qualified,
+        qualificationRate: row.leads ? Math.round((row.qualified / row.leads) * 100) : '',
+        openPipeline: row.pipeline,
+        closedWon: row.wonValue,
+        winRate: row.winRate === null ? '' : Math.round(row.winRate),
+      })),
+    )
+    exportCsv(
+      'reports-rep-attainment.csv',
+      leaderboard.map((row) => ({
+        rep: row.owner.name,
+        role: row.owner.role,
+        closedWon: row.wonValue,
+        dealsWon: row.wonCount,
+        openPipeline: row.pipeline,
+        openDeals: row.openCount,
+      })),
+    )
+  }
+
   const monthlyRevenue = monthlyWonRevenue(won, 6)
   const hasRevenueHistory = monthlyRevenue.some((m) => m.value > 0)
   const chartData = monthlyRevenue.map((m, i) => ({
@@ -147,7 +176,7 @@ export function Reports() {
           <Button variant="secondary" size="sm">
             This quarter
           </Button>
-          <Button variant="secondary" size="sm" icon={<Download size={14} />}>
+          <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportReports}>
             Export
           </Button>
         </>

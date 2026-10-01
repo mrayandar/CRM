@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from '@/lib/router-compat'
-import { Building2, Plus } from 'lucide-react'
+import { Building2, Download, Plus } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -12,7 +12,7 @@ import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/ui/Display'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
-import { sortBy } from '@/lib/utils'
+import { exportCsv, sortBy } from '@/lib/utils'
 
 export function Companies() {
   const navigate = useNavigate()
@@ -38,14 +38,34 @@ export function Companies() {
 
   const sorted = sortBy(filtered, ({ company }) => company.name.toLowerCase())
 
+  const exportCompanies = () => {
+    exportCsv(
+      'companies.csv',
+      sorted.map(({ company, leads: leadCount, contacts: contactCount, deals: dealCount }) => ({
+        name: company.name,
+        industry: company.industry ?? '',
+        website: company.website ?? '',
+        leads: leadCount,
+        contacts: contactCount,
+        deals: dealCount,
+        createdAt: company.createdAt,
+      })),
+    )
+  }
+
   return (
     <PageShell
       title="Companies"
       subtitle={`${companies.length} ${companies.length === 1 ? 'company' : 'companies'}`}
       actions={
-        <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setNewCompanyOpen(true)}>
-          New company
-        </Button>
+        <>
+          <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportCompanies}>
+            Export
+          </Button>
+          <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setNewCompanyOpen(true)}>
+            New company
+          </Button>
+        </>
       }
       toolbar={
         <SearchInput

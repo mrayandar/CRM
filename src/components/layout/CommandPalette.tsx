@@ -48,7 +48,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const navigate = useNavigate()
-  const { leads, contacts, deals, companies, stageById } = useCrm()
+  const { leads, contacts, deals, companies, tasks, owners, stageById } = useCrm()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -108,13 +108,31 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       to: `/companies/${c.id}`,
     }))
 
-    const all = [...navRows, ...leadRows, ...contactRows, ...dealRows, ...companyRows]
+    // Tasks have no detail route of their own — same "no detail page" fallback deals use for
+    // /pipeline — so a task result opens the Tasks page, where the real row lives.
+    const taskRows: Row[] = tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      meta: `${t.done ? 'Done' : 'Open'} · ${t.type}`,
+      group: 'Tasks',
+      to: '/tasks',
+    }))
+
+    const ownerRows: Row[] = owners.map((o) => ({
+      id: o.id,
+      title: o.name,
+      meta: `${o.role} · ${o.email}`,
+      group: 'Team',
+      to: '/settings',
+    }))
+
+    const all = [...navRows, ...leadRows, ...contactRows, ...dealRows, ...companyRows, ...taskRows, ...ownerRows]
     const q = query.trim().toLowerCase()
     if (!q) return all.filter((r) => r.group === 'Navigate')
     return all
       .filter((r) => `${r.title} ${r.meta}`.toLowerCase().includes(q))
       .slice(0, 24)
-  }, [query, leads, contacts, deals, companies, stageById])
+  }, [query, leads, contacts, deals, companies, tasks, owners, stageById])
 
   const go = (row?: Row) => {
     if (!row) return

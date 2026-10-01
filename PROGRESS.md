@@ -2,6 +2,99 @@
 
 > Living context file. Updated at the end of every task.
 
+## Wired Reports export, Companies export, and Tasks/Owners in the command palette (Oct 2 2026)
+
+Follow-up to the audit immediately below, fixing three of its findings.
+
+- **Reports "Export" button** (`src/screens/Reports.tsx`) was fully dead (no `onClick` at all). Unlike
+  Leads/Contacts/Pipeline, Reports has no single flat list — it shows two real tables ("Performance
+  by lead source" and "Rep attainment"). Rather than picking one arbitrarily, Export now calls the
+  same `exportCsv()` twice, once per table, same pattern as every other export in the app. Verified
+  live: clicking Export produces `reports-by-source.csv` and `reports-rep-attainment.csv`, both with
+  real header rows and real data (`Inbound,7,6,86,209000,129500,100`, etc.) matching what's on screen.
+- **Companies export** (noted missing in the audit — Companies never had an Export button at all).
+  Added one in the same position/style Leads and Contacts use (secondary button, Download icon,
+  left of the primary "New company" button), exporting the currently-filtered/sorted rows with
+  name, industry, website, and the three real rollup counts (leads/contacts/deals) shown in the
+  table. Verified live against real data — `Audit Corp,,,4,3,2,...` matches its known rollup
+  (4 leads/3 contacts/2 deals) exactly.
+- **Command palette** (`src/components/layout/CommandPalette.tsx`) now indexes Tasks and Owners,
+  following the exact pattern the existing Leads/Contacts/Deals/Companies rows already use. Tasks
+  have no detail route of their own (same situation Deals were already in), so a task result opens
+  `/tasks`, same fallback Deals already used for `/pipeline`. Owner results open `/settings`. Both
+  verified live: searching a real task's title and a real owner's name both surface the correct
+  result.
+
+Full test suite (75/75) and `tsc`/`npm run build` all clean after the change. Files changed:
+`src/screens/Reports.tsx`, `src/screens/Companies.tsx`, `src/components/layout/CommandPalette.tsx`.
+
+The Oct 2 audit below is otherwise unchanged — these three items are now fixed, out of its
+"prioritized findings" list; everything else in that audit (the Tasks real-time gap, the other
+dead controls, the "known/acceptable gaps" and "not built" lists) still stands as written.
+
+## Full honest state-of-the-codebase audit (Oct 2 2026)
+
+Re-verified every major feature area against the real running app and real Neon data — not
+against what earlier changelog entries claimed. **The old "Status" section below (originally
+written Sep 27 2026) and most of "Known gaps / explicitly deferred" (originally Sep 24–27 2026)
+are stale** — many of the gaps they list were fixed in the weeks since and never removed from that
+list; this section is the current source of truth. See each area for specifics.
+
+| Area | Verdict | Notes |
+|---|---|---|
+| Auth & multi-tenancy | **PASS** | Sign-in, org creation/selection, sign-out all real (`useClerk().signOut()`). Org switching live-verified: switching to an empty second org via the real `OrganizationSwitcher` correctly reloads to zero records, with the first org's data (e.g. "Audit Corp") gone from the page — proves a real org-scoped server reload, not stale client cache. Brand-new sign-up (password + email-code) could not be click-tested end-to-end in this sandbox (Clerk's Cloudflare bot-check is unreachable from here); the redirect-destination half of that flow was separately verified fixed (see the invite-redirect entry below), and the membership→Owner-row webhook path was independently proven live. |
+| Leads | **PASS** | Create (incl. inline company creation), edit, status, both conversion paths (contact-only live end-to-end: lead→qualified, real Contact row created, zero Deal rows; with-deal verified by code path + live dialog), activity logging, note persistence — all confirmed live against Neon or by direct code trace. |
+| Contacts | **PASS** | Create with real company link, duplicate-email rejection (UI error shown AND zero duplicate row written), edit, company linkage — all live-verified against Neon. |
+| Companies | **PASS** | List/detail rollups match Neon exactly (spot-checked "Audit Corp": 4 leads/3 contacts/2 deals, all correct); inline create-or-select from Lead/Contact/Deal forms verified live (again, independently, this audit); delete blocked with a clear message while linked, verified live. |
+| Deals | **PASS** | All four creation entry points wired to real `createDealAction`; kanban drag-and-drop is genuine HTML5 DnD (not a menu-only fallback) persisting via tenant-checked `moveDealAction`; Won/Lost close-date stamping rule identical on client and server; stage rename/reorder/add/delete-with-safety all call real, tenant-checked server actions. No gaps found. |
+| Tasks | **PASS** for create (3 entry points)/edit/delete/completion/assignment — all real, tenant-checked, reachable from every `TaskRow` (Dashboard, Tasks page, record detail). **CONFIRMED GAP (still present):** an assigned task does **not** appear for the assignee without a manual refresh/navigation — `CrmProvider` only re-fetches on a fresh server render of the layout; `revalidatePath` only affects the acting user's own next request, there is no websocket/SSE/polling anywhere in the repo. This was flagged as a concern and is now definitively confirmed true, not fixed. |
+| Dashboard & Reports | **PASS** | Every stat on both screens traced to a real query over real data; no `Math.random()`, no hardcoded literals, no TODO/mock markers found anywhere in `src/` or `lib/`. Quota comparison reads real `Organization.quarterlyQuota`, has an honest null-state prompt, and is tenant-checked end to end. **`src/data/mock.ts` is gone** (deleted as dead code during the Company migration) — the old "Known gaps" entry below describing it as still-imported fabricated chart data is stale. |
+| Team Settings | **PASS** | Invite now redirects into this app (not Clerk's hosted portal) — re-verified live via the actual UI this audit. Role change persists to Neon and was reverted cleanly after testing. Pending invitations list and Revoke both live-verified against real Clerk data. Remove-with-confirmation verified by code (identical confirm/persist/rollback pattern already proven for Task/Company/Stage deletion) — not exercised against the real second member live, to avoid disrupting an actual account. |
+| Search & Export | **PASS.** ~~Command palette indexes Leads/Contacts/Deals/Companies (not Tasks or Owners)~~ / ~~Companies has no export button~~ / ~~Reports' "Export" button has no `onClick`~~ — **all three fixed same-day**, see "Wired Reports export, Companies export, and Tasks/Owners in the command palette" above. |
+| Cross-tenant isolation | **PASS** | `tests/integration/cross-tenant.test.ts`: **75/75 passing** (grown from 63 after the Company work). Manually spot-checked live by switching the test user into a second, empty org — zero leakage of the first org's data. |
+
+### Dead controls found (not previously flagged, or previously flagged and never actually fixed)
+
+- `src/screens/Leads.tsx`: "Add filter" button (shows a filter count, no `onClick`); bulk "Email" button; bulk "Delete selected" icon button; per-row menu's "Log activity" / "Send email" / "Delete lead" (all just close the menu).
+- `src/screens/Contacts.tsx`: per-row popover's "Log activity" / "Add to sequence" / "View company" / "Delete contact" (all just close the menu).
+- `src/components/layout/Sidebar.tsx`: account menu's "Profile & preferences" / "Notification settings" / "Keyboard shortcuts" (all just close the menu).
+- `src/screens/Dashboard.tsx`: "Last 30 days" button; "View full history" button.
+- `src/screens/Reports.tsx`: "This quarter" button; **"Export" button** (no `exportCsv` wiring at all — the only dead Export button in the app; every other Export button actually works).
+- `src/screens/Settings.tsx`: "Upload photo" button.
+
+None of these regressed from a previously-working state — they were never wired. PROGRESS.md's Sep 30
+"Wired up dead controls" entry addressed a different set (activity logging, export, reassign, profile
+save); these are additional ones that entry didn't cover.
+
+### Prioritized findings
+
+**Real bugs needing a fix (if this app were going to real customers):**
+1. Tasks: no live-update mechanism, so an assignee doesn't see a newly-assigned task without reloading. Would need polling, SSE, or a websocket layer — a real architectural addition, not a quick fix.
+2. ~~Reports "Export" button is fully dead~~ — fixed same-day, see the entry above this audit.
+
+**Known/acceptable gaps (fine for now, not blocking):**
+- ~~Command palette doesn't index Tasks or Owners~~ / ~~Companies list has no CSV export~~ — both fixed same-day, see the entry above this audit.
+- The dead per-row menu items (Log activity, Send email, Add to sequence, View company, Delete contact/lead) and dead header buttons (Add filter, bulk Email/Delete, Last 30 days, View full history, This quarter, Upload photo, Profile & preferences, Notification settings, Keyboard shortcuts) — all look like intentionally-scaffolded future features, consistent in style with the rest of the app, not broken regressions.
+- Brand-new sign-up couldn't be click-tested in this sandbox due to a Cloudflare bot-check network limitation specific to the test environment.
+
+**Not built (by design, not a regression):**
+- No real-time/live-collaboration layer anywhere in the app.
+- No Companies CSV export.
+- No deal detail page (deals are only ever shown inline — Pipeline board, record-page "Deals" tab, company-page rollup).
+
+### Stale PROGRESS.md entries corrected by this audit
+
+The "Status" section (originally Sep 27 2026) claims "field editing, a Company entity and
+contact-only convert are not built" — all three have since been built (see the dated entries
+above them) and are now confirmed working; that section is historical only, not current state.
+The "Known gaps / explicitly deferred" section is similarly stale in several places: it still
+describes `src/data/mock.ts` as imported by Dashboard/Reports (the file no longer exists — deleted
+as confirmed-dead code during the Company migration), still lists "no field editing" and "pending
+invitations aren't listed" as open gaps (both fixed), and still calls Settings profile/workspace
+Save unwired (it persists via `updateProfile` → `updateProfileAction`, confirmed working). Left
+in place below for historical record, but **do not treat anything in "Status" or "Known gaps" as
+current without re-checking against the code** — that's exactly what this audit found rotted.
+
 ## Fixed Team Settings "Invite" landing on Clerk's hosted portal instead of this app (Oct 1 2026)
 
 A real invite test showed the recipient getting "a plain 6-digit numeric code with no mention of
@@ -790,6 +883,10 @@ of the above touches cross-tenant surfaces except item 5, which is self-only by 
 noted above.
 
 ## Status
+
+> **Stale as of Oct 2 2026** — this section is from Sep 27 2026 and predates field editing, the
+> Company entity, and contact-only convert, all of which are now built. See "Full honest
+> state-of-the-codebase audit (Oct 2 2026)" at the top of this file for current state.
 
 **Phase: Auth + real data — auth flow now working end to end.** Clerk
 authentication and multi-tenancy are integrated, the data layer
@@ -2847,6 +2944,11 @@ No other files import from `src/data/timeline.ts`. `src/data/mock.ts` is
 still imported by Dashboard and Reports only for the chart array above.
 
 ## Known gaps / explicitly deferred
+
+> **Stale as of Oct 2 2026** — several entries below (the `mock.ts` chart data, "no field editing",
+> "pending invitations aren't listed", Settings Save not persisting) were fixed in later tasks and
+> never removed from this list. See "Full honest state-of-the-codebase audit (Oct 2 2026)" at the
+> top of this file for what's actually still true today.
 
 ### Active org is not restored on sign-in
 
