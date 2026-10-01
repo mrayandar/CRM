@@ -2,6 +2,97 @@
 
 > Living context file. Updated at the end of every task.
 
+## Added task editing and deleting (Oct 1 2026)
+
+Tasks could previously only be created and toggled done/not-done. Added full edit and delete,
+following the exact patterns already established for Lead/Contact/Deal editing and the Team
+Settings Remove confirmation.
+
+### Schema: Task.description
+
+"Description" was one of the explicitly requested editable fields, but the `Task` model had no
+such column. Added `Task.description` (`String?`, additive migration
+`20261001140000_task_description`) — nothing else used this column before, so no backfill
+concerns.
+
+### Edit: same shape as updateLead/updateContact/updateDeal
+
+`updateTask` (`lib/data/tasks.ts`) is a transaction with a `findFirst({id, orgId})` tenant check,
+a diff against the existing row, a no-op skip when nothing actually changed, and an atomic
+activity log — identical structure to the other three. `updateTaskAction` tenant-checks a
+reassigned `ownerId` via `getOwnerById` before connecting it, same as every other action that
+accepts a client-supplied owner.
+
+**The one real wrinkle, and how it's handled:** `Activity` has no "task" subject type and no
+`taskId` column — editing a Lead/Contact/Deal logs its "edited" activity against *itself*, but a
+task has no "itself" to point at. The activity is instead attached to the task's own `relatedTo`
+(the lead/contact/deal it's already linked to, if any) — exactly mirroring how `toggleTask`'s
+existing "task" activity kind already works. A **standalone** task (no `relatedTo`) still gets a
+real activity row logged (for the global "Recent activity" feed), just with no subject — it won't
+show up on any specific record's timeline, because there isn't one for it to show up on. This
+required no new migration or enum value, as asked — `ActivityKind.edited` is reused exactly as
+it already exists.
+
+### Delete: no activity logged, and why
+
+`deleteTask` removes the row outright. Decided against logging an activity for it, for two
+reasons: (1) same structural issue as above — there's no subject to attach a "deleted" activity
+to for a standalone task, and attaching it to the related record for a *deletion* read oddly ("a
+task that doesn't exist anymore was edited on this record"); (2) deleting a stale to-do is routine
+list cleanup, not a business event like a deal closing or a lead converting — the kind of thing
+this app already treats as audit-worthy. No FK depends on `Task.id` (confirmed — nothing else in
+the schema references it), so deletion is safe and has no cascading-reference concerns the way
+Owner deletion did.
+
+Confirmation dialog follows the Team Settings Remove pattern exactly: `Delete "[title]"? This
+can't be undone.`, Cancel/Delete footer, nothing fires until confirmed.
+
+### Where it's wired: TaskRow itself, not per-screen
+
+Rather than deciding separately for the Tasks page vs. the Dashboard's "Today's focus" card vs. a
+record detail page's Tasks tab, the Edit/Delete "…" menu (and both modals) were added to the
+shared `TaskRow` component all three already render through. One change wires every surface that
+shows a task — including the record-page task box, which the task explicitly asked about —
+rather than choosing to leave some of them minimal or duplicating the controls three times.
+
+### Cross-tenant regression suite: extended again
+
+Added to the permanent `tests/integration/cross-tenant.test.ts` suite: `updateTask`/`deleteTask`
+(data layer) and `updateTaskAction`/`deleteTaskAction` (including the reassigned-`ownerId`
+rejection, even on the caller's *own* task) all reject another org's ids. **63/63 total, all
+passing** (58 previous + 5 new).
+
+### Verified against real Neon data
+
+Playwright + a real Clerk sign-in ticket, against real tasks in a real org (some fresh
+self-provisioned fixtures to avoid depending on leftover state from other runs). 10 checks, all
+passing:
+- Edit persists title, description, *and* a real same-org reassignment to Neon, and shows
+  correctly in the UI.
+- A standalone task's edit logs exactly one activity with no subject; a task linked to a lead
+  logs a real "edited" activity on that lead.
+- A no-op save (clicking Save with nothing changed) leaves `updatedAt` untouched — confirmed by
+  timestamp comparison, not just "no error."
+- Delete's confirmation dialog shows the exact task title and consequence text; Cancel leaves the
+  row in Neon untouched; Confirm actually removes it, and the row disappears from the UI.
+- A genuine server-side rejection — the task's row deleted out from under a stale browser edit,
+  a real race rather than a forged request — shows a real toast and the optimistic edit reverts
+  cleanly, with no phantom "(edited)" row left on screen. (The cross-org-`ownerId` rejection
+  itself is covered with real Neon assertions in the permanent test suite above; the UI
+  structurally can't produce a cross-org owner id to forge that *specific* failure through real
+  interaction, since the assignee dropdown only ever lists the caller's own org.)
+
+Two of my own test assertions were initially wrong in ways worth recording honestly: one expected
+zero activities for a standalone task's edit when the actual (correct, documented) behavior logs
+one with a null subject; the other checked for the rollback too soon after the failure toast
+appeared and needed a longer wait. Both were script bugs, confirmed by direct Neon queries and a
+screenshot-driven retest — not application bugs.
+
+Full 63-test suite and `npx tsc --noEmit` both pass. Files touched: `prisma/schema.prisma` + new
+migration, `lib/data/tasks.ts`, `lib/actions/crm.ts`, `src/data/types.ts`, `lib/mappers.ts`,
+`src/store/crm.tsx`, `src/components/common/TaskRow.tsx`,
+`src/components/common/EditTaskModal.tsx` (new), `tests/integration/cross-tenant.test.ts`.
+
 ## Wired the Dashboard quota comparison to a real, persisted quota (Oct 1 2026)
 
 Closes the recommendation from the Dashboard-honesty task: "Quarterly team quota" in Settings →

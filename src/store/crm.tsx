@@ -36,6 +36,8 @@ import {
   convertLeadAction,
   toggleTaskAction,
   addTaskAction,
+  updateTaskAction,
+  deleteTaskAction,
   addNoteAction,
   logActivityAction,
   updateProfileAction,
@@ -126,6 +128,16 @@ export interface UpdateDealInput {
   contactId?: string
 }
 
+export interface UpdateTaskInput {
+  title: string
+  description?: string
+  /** ISO timestamp */
+  dueDate: string
+  priority: Priority
+  type: Task['type']
+  ownerId: string
+}
+
 interface CrmState {
   owners: Owner[]
   currentUser: Owner
@@ -183,6 +195,10 @@ interface CrmState {
     ownerId?: string
     subject?: SubjectRef
   }) => void
+  /** Updates a task's own fields; rolls back and shows a toast if the save fails. A no-op (nothing changed) does nothing. */
+  updateTask: (taskId: string, input: UpdateTaskInput) => void
+  /** Deletes a task outright; rolls back (re-inserts it) and shows a toast if the delete fails. */
+  deleteTask: (taskId: string) => void
   addNote: (subject: SubjectRef, body: string) => void
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
   /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
@@ -1068,6 +1084,83 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [currentUser.id, persist],
   )
 
+  const updateTask = useCallback(
+    (taskId: string, input: UpdateTaskInput) => {
+      const task = tasks.find((t) => t.id === taskId)
+      if (!task) return
+
+      const trimmed = {
+        title: input.title.trim(),
+        description: input.description?.trim() || undefined,
+        dueDate: input.dueDate,
+        priority: input.priority,
+        type: input.type,
+        ownerId: input.ownerId,
+      }
+
+      const changed: string[] = []
+      if (task.title !== trimmed.title) changed.push('title')
+      if ((task.description ?? '') !== (trimmed.description ?? '')) changed.push('description')
+      if (task.dueDate !== trimmed.dueDate) changed.push('due date')
+      if (task.priority !== trimmed.priority) changed.push('priority')
+      if (task.type !== trimmed.type) changed.push('type')
+      if (task.ownerId !== trimmed.ownerId) changed.push('assignee')
+
+      // A no-op save: nothing actually differs. Matches the data layer, which also skips the
+      // write and the activity rather than log an empty "edited" entry for it.
+      if (changed.length === 0) return
+
+      const next: Task = { ...task, ...trimmed }
+
+      // Written to Postgres inside the same transaction as the field update (see updateTask in
+      // lib/data/tasks.ts) — not routed through persist()'s post-success activity log, which
+      // would write it a second time. Only a task linked to a lead/contact/deal gets a local
+      // optimistic activity to match: the server attaches the "edited" activity to that same
+      // subject (Activity has no "task" subject type of its own), so a standalone task has
+      // nothing to optimistically show here either.
+      const activity: Activity | null = task.relatedTo
+        ? {
+            id: nextId('a'),
+            kind: 'edited',
+            title: `edited ${next.title}`,
+            body: `Changed: ${changed.join(', ')}`,
+            at: new Date().toISOString(),
+            actorId: currentUser.id,
+            subject: task.relatedTo,
+          }
+        : null
+
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? next : t)))
+      if (activity) setActivities((prev) => [activity, ...prev])
+
+      persist(
+        () => updateTaskAction({ id: taskId, ...input }),
+        () => {
+          setTasks((prev) => prev.map((t) => (t.id === taskId ? task : t)))
+          if (activity) setActivities((prev) => prev.filter((a) => a.id !== activity.id))
+        },
+        undefined,
+        "Couldn't save the changes, please try again.",
+      )
+    },
+    [tasks, currentUser.id, persist],
+  )
+
+  const deleteTask = useCallback(
+    (taskId: string) => {
+      const task = tasks.find((t) => t.id === taskId)
+      if (!task) return
+      setTasks((prev) => prev.filter((t) => t.id !== taskId))
+      persist(
+        () => deleteTaskAction(taskId),
+        () => setTasks((prev) => [...prev, task]),
+        undefined,
+        "Couldn't delete the task, please try again.",
+      )
+    },
+    [tasks, persist],
+  )
+
   const addNote = useCallback(
     (subject: SubjectRef, body: string) => {
       // addNoteAction logs the note activity itself; don't also call logActivityAction (that saved every note twice).
@@ -1137,6 +1230,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       convertLead,
       toggleTask,
       addTask,
+      updateTask,
+      deleteTask,
       addNote,
       logActivity: pushActivity,
       updateProfile,
@@ -1170,6 +1265,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       convertLead,
       toggleTask,
       addTask,
+      updateTask,
+      deleteTask,
       addNote,
       pushActivity,
       updateProfile,

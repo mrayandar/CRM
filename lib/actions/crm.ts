@@ -23,7 +23,12 @@ import {
   moveDealToStage as dbMoveDealToStage,
   updateDeal as dbUpdateDeal,
 } from '@lib/data/deals'
-import { toggleTaskDone as dbToggleTaskDone, createTask as dbCreateTask } from '@lib/data/tasks'
+import {
+  toggleTaskDone as dbToggleTaskDone,
+  createTask as dbCreateTask,
+  updateTask as dbUpdateTask,
+  deleteTask as dbDeleteTask,
+} from '@lib/data/tasks'
 import { logActivity as dbLogActivity } from '@lib/data/activities'
 import {
   getStageById,
@@ -504,6 +509,45 @@ export async function addTaskAction(input: {
       deal: { connect: { id: input.subject.id } },
     }),
   })
+  revalidatePath('/', 'layout')
+}
+
+export async function updateTaskAction(input: {
+  id: string
+  title: string
+  description?: string
+  dueDate: string
+  priority: Priority
+  type: TaskType
+  ownerId: string
+}) {
+  const { orgId, ownerId: actorId } = await requireAuth()
+
+  const title = input.title.trim()
+  const description = input.description?.trim() || null
+  const dueDate = new Date(input.dueDate)
+  if (!title || title.length > 500) throw new Error('Title is required')
+  if (description && description.length > 5000) throw new Error('Description is too long')
+  if (Number.isNaN(dueDate.getTime())) throw new Error('Invalid due date')
+  if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
+  if (!TASK_TYPES.includes(input.type)) throw new Error('Invalid task type')
+
+  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner) throw new Error('Owner not found')
+
+  await dbUpdateTask(
+    orgId,
+    input.id,
+    { title, description, dueDate, priority: input.priority, type: input.type, ownerId: owner.id },
+    actorId,
+  )
+  revalidatePath('/', 'layout')
+}
+
+export async function deleteTaskAction(taskId: string) {
+  const { orgId } = await requireAuth()
+  await dbDeleteTask(orgId, taskId)
   revalidatePath('/', 'layout')
 }
 

@@ -138,6 +138,7 @@ export function mapTask(t: PrismaTask): Task {
   return {
     id: t.id,
     title: t.title,
+    description: t.description ?? undefined,
     dueDate: t.dueDate.toISOString(),
     done: t.done,
     priority: t.priority,

@@ -1,11 +1,16 @@
 'use client'
 
+import { useState } from 'react'
 import { Link } from '@/lib/router-compat'
-import { CalendarDays, Mail, Phone, SquareCheck } from 'lucide-react'
+import { CalendarDays, Mail, MoreHorizontal, Phone, SquareCheck } from 'lucide-react'
 import type { Task } from '@/data/types'
 import { cn, dueLabel } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/Field'
 import { Avatar } from '@/components/ui/Avatar'
+import { IconButton, Button } from '@/components/ui/Button'
+import { MenuItem, Popover } from '@/components/ui/Menu'
+import { Modal } from '@/components/ui/Modal'
+import { EditTaskModal } from '@/components/common/EditTaskModal'
 import { useCrm } from '@/store/crm'
 
 const TYPE_ICON = {
@@ -21,6 +26,11 @@ const PRIORITY_RAIL = {
   low: 'bg-transparent',
 } as const
 
+/**
+ * Shared by the Tasks page, the Dashboard's "Today's focus" card, and a record detail page's
+ * Tasks tab — wiring Edit/Delete in here once gives every task list the same capability, rather
+ * than deciding per-surface whether to add controls (or duplicating them three times).
+ */
 export function TaskRow({
   task,
   showOwner = false,
@@ -30,7 +40,9 @@ export function TaskRow({
   showOwner?: boolean
   showRelated?: boolean
 }) {
-  const { toggleTask, ownerById } = useCrm()
+  const { toggleTask, deleteTask, ownerById } = useCrm()
+  const [editOpen, setEditOpen] = useState(false)
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const due = dueLabel(task.dueDate)
   const Icon = TYPE_ICON[task.type]
   const owner = ownerById(task.ownerId)
@@ -41,6 +53,11 @@ export function TaskRow({
       : task.relatedTo?.type === 'contact'
         ? `/contacts/${task.relatedTo.id}`
         : '/pipeline'
+
+  const confirmDelete = () => {
+    setConfirmDeleteOpen(false)
+    deleteTask(task.id)
+  }
 
   return (
     <div className="group relative flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-subtler">
@@ -88,6 +105,71 @@ export function TaskRow({
       >
         {task.done ? 'Completed' : due.text}
       </span>
+
+      <span onClick={(e) => e.stopPropagation()}>
+        <Popover
+          align="end"
+          width={160}
+          trigger={({ toggle, open }) => (
+            <IconButton
+              label={`Actions for ${task.title}`}
+              onClick={toggle}
+              className={cn(
+                'size-7 text-ink-400',
+                open
+                  ? 'bg-subtle text-ink-700'
+                  : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+              )}
+            >
+              <MoreHorizontal size={14} />
+            </IconButton>
+          )}
+        >
+          {({ close }) => (
+            <>
+              <MenuItem
+                onClick={() => {
+                  setEditOpen(true)
+                  close()
+                }}
+              >
+                Edit task
+              </MenuItem>
+              <MenuItem
+                tone="danger"
+                onClick={() => {
+                  setConfirmDeleteOpen(true)
+                  close()
+                }}
+              >
+                Delete task
+              </MenuItem>
+            </>
+          )}
+        </Popover>
+      </span>
+
+      {editOpen && <EditTaskModal task={task} onClose={() => setEditOpen(false)} />}
+
+      <Modal
+        open={confirmDeleteOpen}
+        onClose={() => setConfirmDeleteOpen(false)}
+        width={420}
+        title="Delete task"
+        description={`Delete "${task.title}"? This can't be undone.`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={confirmDelete}>
+              Delete
+            </Button>
+          </>
+        }
+      >
+        <></>
+      </Modal>
     </div>
   )
 }

@@ -308,10 +308,12 @@ model PipelineStage {
 }
 
 model Task {
-  id       String   @id @default(cuid())
-  orgId    String
-  title    String
-  dueDate  DateTime
+  id          String   @id @default(cuid())
+  orgId       String
+  title       String
+  /// Optional longer note; added alongside task editing — nothing else used this column before.
+  description String?
+  dueDate     DateTime
   done     Boolean  @default(false)
   priority Priority @default(medium)
   type     TaskType @default(todo)

@@ -30,7 +30,7 @@ import { getLeadById, listLeads, updateLeadStatus, updateLead, convertLeadToDeal
 import { getContactById, listContacts, updateContact, addContactTag } from '@lib/data/contacts'
 import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/deals'
 import { getOwnerById, listOwners } from '@lib/data/owners'
-import { getTaskById, listTasks, toggleTaskDone } from '@lib/data/tasks'
+import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
 import * as actions from '@lib/actions/crm'
@@ -252,6 +252,19 @@ describe('lib/data: writes reject a record id from another org', () => {
   it('toggleTaskDone throws', async () => {
     await expect(toggleTaskDone(B.org.id, A.task.id, true)).rejects.toThrow()
   })
+  it('updateTask throws', async () => {
+    await expect(
+      updateTask(
+        B.org.id,
+        A.task.id,
+        { title: 'x', description: null, dueDate: new Date(), priority: 'low', type: 'todo', ownerId: B.owner.id },
+        B.owner.id,
+      ),
+    ).rejects.toThrow()
+  })
+  it('deleteTask throws', async () => {
+    await expect(deleteTask(B.org.id, A.task.id)).rejects.toThrow()
+  })
   it('renameStage throws', async () => {
     await expect(renameStage(B.org.id, A.stage.id, 'Hijacked')).rejects.toThrow()
   })
@@ -271,6 +284,8 @@ describe('lib/data: writes reject a record id from another org', () => {
     expect(lead?.status).toBe('new')
     expect(contact?.name).toBe(A.contact.name)
     expect(deal?.stageId).toBe(A.stage.id)
+    expect(task).not.toBeNull()
+    expect(task?.title).toBe(A.task.title)
     expect(task?.done).toBe(false)
     expect(stage?.label).toBe(A.stage.label)
   })
@@ -503,6 +518,41 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
   it('toggleTaskAction rejects a task id from another org', async () => {
     await expect(actions.toggleTaskAction(A.task.id, true)).rejects.toThrow()
     expect((await prisma.task.findUnique({ where: { id: A.task.id } }))?.done).toBe(false)
+  })
+
+  it('updateTaskAction rejects a task id from another org', async () => {
+    await expect(
+      actions.updateTaskAction({
+        id: A.task.id,
+        title: 'x',
+        dueDate: new Date().toISOString(),
+        priority: 'low',
+        type: 'todo',
+        ownerId: B.owner.id,
+      }),
+    ).rejects.toThrow()
+    expect((await prisma.task.findUnique({ where: { id: A.task.id } }))?.title).toBe(A.task.title)
+  })
+
+  it('updateTaskAction rejects an ownerId from another org, even on the caller\'s own task', async () => {
+    const own = await prisma.task.create({
+      data: { orgId: B.org.id, title: 'B-own-task', dueDate: new Date(), ownerId: B.owner.id },
+    })
+    await expect(
+      actions.updateTaskAction({
+        id: own.id,
+        title: 'x',
+        dueDate: new Date().toISOString(),
+        priority: 'low',
+        type: 'todo',
+        ownerId: A.owner.id,
+      }),
+    ).rejects.toThrow(/Owner not found/)
+  })
+
+  it('deleteTaskAction rejects a task id from another org', async () => {
+    await expect(actions.deleteTaskAction(A.task.id)).rejects.toThrow()
+    expect(await prisma.task.findUnique({ where: { id: A.task.id } })).not.toBeNull()
   })
 
   it('addTaskAction rejects an assignee ownerId from another org', async () => {
