@@ -17,12 +17,12 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { mockAuth } = vi.hoisted(() => ({ mockAuth: vi.fn() }))
+const { mockAuth, mockClerkClient } = vi.hoisted(() => ({ mockAuth: vi.fn(), mockClerkClient: vi.fn() }))
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@clerk/nextjs/server', () => ({
   auth: () => mockAuth(),
-  clerkClient: vi.fn(),
+  clerkClient: () => mockClerkClient(),
 }))
 
 import { prisma } from '@lib/prisma'
@@ -31,7 +31,7 @@ import { getContactById, listContacts, updateContact, addContactTag } from '@lib
 import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/deals'
 import { getCompanyById, getCompanyDetail, deleteCompany } from '@lib/data/companies'
 import { getOwnerById, listOwners, deactivateOwner } from '@lib/data/owners'
-import { requirePaymentAccess } from '@lib/auth'
+import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
@@ -135,7 +135,9 @@ async function destroyFixture(f: Fixture) {
 }
 
 function loginAs(f: Fixture) {
-  mockAuth.mockResolvedValue({ userId: f.owner.clerkUserId, orgId: f.org.clerkOrgId })
+  // Fixture owners are always created with role: 'Admin' (see makeFixture) — orgRole mirrors that,
+  // same as a real Clerk session would for this person.
+  mockAuth.mockResolvedValue({ userId: f.owner.clerkUserId, orgId: f.org.clerkOrgId, orgRole: 'org:admin' })
 }
 
 let A: Fixture
@@ -850,7 +852,7 @@ describe('requirePaymentAccess: stricter than requireAdmin — built for payment
         role: 'Member',
       },
     })
-    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' })
 
     await expect(requirePaymentAccess()).rejects.toThrow(/Admins only/)
 
@@ -868,7 +870,7 @@ describe('requirePaymentAccess: stricter than requireAdmin — built for payment
         active: false,
       },
     })
-    mockAuth.mockResolvedValue({ userId: deactivatedAdmin.clerkUserId, orgId: B.org.clerkOrgId })
+    mockAuth.mockResolvedValue({ userId: deactivatedAdmin.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:admin' })
 
     await expect(requirePaymentAccess()).rejects.toThrow(/Forbidden/)
 
@@ -885,12 +887,83 @@ describe('requirePaymentAccess: stricter than requireAdmin — built for payment
         role: 'Admin',
       },
     })
-    mockAuth.mockResolvedValue({ userId: admin.clerkUserId, orgId: B.org.clerkOrgId })
+    mockAuth.mockResolvedValue({ userId: admin.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:admin' })
     await expect(requirePaymentAccess()).resolves.toBeTruthy() // active by default — allowed before deactivation
 
     await deactivateOwner(B.org.id, admin.clerkUserId!)
     await expect(requirePaymentAccess()).rejects.toThrow(/Forbidden/)
 
     await prisma.owner.delete({ where: { id: admin.id } })
+  })
+
+  it('rejects when the session says org:member but the Owner row says Admin', async () => {
+    // Owner.role is correct (Admin) — but the Clerk session itself (the independent source) says
+    // this person is no longer an admin. The two sources disagree; fail closed either way.
+    mockAuth.mockResolvedValue({ userId: A.owner.clerkUserId, orgId: A.org.clerkOrgId, orgRole: 'org:member' })
+    await expect(requirePaymentAccess()).rejects.toThrow(/Forbidden/)
+  })
+
+  it('rejects the reverse: session says org:admin but the Owner row says Member', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-payaccess-reverse-${RUN}`,
+        name: 'Reverse Mismatch Member',
+        email: `payaccess-reverse-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    // The session claims admin (e.g. a promotion Clerk already knows about), but our DB's
+    // Owner.role hasn't caught up yet. Still denied — requireAdmin() rejects on Owner.role alone,
+    // before the session check even runs, which is the correct fail-closed outcome either way.
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:admin' })
+
+    await expect(requirePaymentAccess()).rejects.toThrow(/Admins only/)
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+})
+
+describe('requirePaymentWriteAccess: live Clerk check, no session-refresh window for writes', () => {
+  afterAll(() => mockClerkClient.mockReset())
+
+  it('allows a real admin whose live Clerk role matches', async () => {
+    loginAs(A)
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async () => ({
+          data: [{ organization: { id: A.org.clerkOrgId }, role: 'org:admin' }],
+        }),
+      },
+    })
+    await expect(requirePaymentWriteAccess()).resolves.toBeTruthy()
+  })
+
+  it('rejects a write immediately after a Clerk demotion, even while Owner.role is still stale', async () => {
+    // Owner.role is still "Admin" in our DB (makeFixture) — nothing has synced the demotion yet,
+    // simulating the exact gap described: a real webhook can take an unbounded amount of time,
+    // and this test doesn't wait for one. The live Backend API lookup is the only thing that has
+    // to be correct here, and it's mocked to report the demotion having already happened in Clerk.
+    loginAs(A)
+    const stillAdminInOurDb = await prisma.owner.findUnique({ where: { id: A.owner.id } })
+    expect(stillAdminInOurDb?.role).toBe('Admin') // confirms the DB really is stale for this test
+
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async () => ({
+          data: [{ organization: { id: A.org.clerkOrgId }, role: 'org:member' }], // demoted, live
+        }),
+      },
+    })
+
+    await expect(requirePaymentWriteAccess()).rejects.toThrow(/Forbidden/)
+  })
+
+  it('rejects when the live Clerk membership list has no entry for this org at all (e.g. removed)', async () => {
+    loginAs(A)
+    mockClerkClient.mockResolvedValue({
+      users: { getOrganizationMembershipList: async () => ({ data: [] }) },
+    })
+    await expect(requirePaymentWriteAccess()).rejects.toThrow(/Forbidden/)
   })
 })

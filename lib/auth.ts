@@ -66,7 +66,7 @@ export async function resolveAuth() {
  * layout first, which runs resolveAuth).
  */
 export async function requireAuth() {
-  const { userId, orgId: clerkOrgId } = await auth()
+  const { userId, orgId: clerkOrgId, orgRole } = await auth()
   if (!userId || !clerkOrgId) throw new Error('Unauthorized')
 
   const org = await getOrgByClerkId(clerkOrgId)
@@ -75,7 +75,17 @@ export async function requireAuth() {
   const owner = await getOwnerByClerkUserId(org.id, userId)
   if (!owner) throw new Error('Owner record not found')
 
-  return { orgId: org.id, ownerId: owner.id, role: owner.role, active: owner.active }
+  return {
+    orgId: org.id,
+    ownerId: owner.id,
+    role: owner.role,
+    active: owner.active,
+    // The live Clerk session's own role claim, alongside our DB's (possibly stale) Owner.role —
+    // requirePaymentAccess() checks both agree; nothing else currently reads this.
+    sessionOrgRole: orgRole,
+    clerkUserId: userId,
+    clerkOrgId,
+  }
 }
 
 /**
@@ -91,22 +101,49 @@ export async function requireAdmin() {
 }
 
 /**
+ * For payment READS (the Payments route, the data loader, command palette indexing, CSV export).
  * Stricter than `requireAdmin()` — do not reuse `requireAdmin()` as-is for payment actions.
+ *
  * `requireAdmin()`'s `role` check reads `Owner.role` from our own DB, which is only ever updated
  * by the `organizationMembership.updated` webhook (see `lib/data/owners.ts`'s
  * `upsertOwnerFromClerk` and the webhook route's `handleMemberUpdated`) — never re-synced on an
- * existing row by `resolveAuth()`'s on-demand path, which only sets role the first time an
- * Owner row is created. So between a demotion in Clerk and that webhook actually landing,
- * `Owner.role` is stale and `requireAdmin()` would still grant access on the old value — there is
- * no other point where this app re-validates role against Clerk's live state mid-request. Adding
- * the `active` check here does not close that specific window (a demoted admin is still
- * `active: true` — demotion isn't removal); it guards the separate case where someone was removed
- * from the org (soft-deleted via `organizationMembership.deleted`, see `deactivateOwner`) and that
- * webhook is itself still in flight. Payments gets both checks explicitly, on top of
- * `requireAdmin()`, rather than assuming `requireAdmin()` alone is strict enough for money data.
+ * existing row by `resolveAuth()`'s on-demand path, which only sets role the first time an Owner
+ * row is created. So between a demotion in Clerk and that webhook actually landing, `Owner.role`
+ * can be stale for an *unbounded* amount of time (however long webhook delivery takes, including
+ * retries) and `requireAdmin()` alone would still grant access on the old value.
+ *
+ * This checks two independent sources and fails closed if they disagree, in either direction:
+ * 1. `Owner.role === 'Admin'` and `Owner.active` (via `requireAdmin()`) — our DB.
+ * 2. `auth()`'s own `orgRole` claim === `'org:admin'` — Clerk's session JWT, which Clerk refreshes
+ *    roughly every minute, bounding *this* source's staleness to about a minute (vs. the DB's
+ *    unbounded webhook-delivery window).
+ * Neither source alone is trustworthy enough for money data; requiring agreement means an attacker
+ * (or a demoted admin) needs *both* a stale DB row *and* a stale session to slip through, and the
+ * session is the one that self-corrects quickly.
  */
 export async function requirePaymentAccess() {
   const session = await requireAdmin()
   if (!session.active) throw new Error('Forbidden')
+  if (session.sessionOrgRole !== 'org:admin') throw new Error('Forbidden')
+  return session
+}
+
+/**
+ * For payment WRITES (create, edit, mark paid, cancel, delete) — stricter still than
+ * `requirePaymentAccess()`. The session-JWT check above bounds staleness to Clerk's refresh
+ * interval (~1 minute), which is an acceptable read-path tradeoff but too slow for a mutation: a
+ * demotion should block a write *immediately*, not after up to a minute. Confirms the caller's
+ * role live against Clerk's Backend API — the same "current state, not the webhook payload"
+ * pattern already used by the webhook route's `handleMemberCreated` — which has no such window.
+ */
+export async function requirePaymentWriteAccess() {
+  const session = await requirePaymentAccess()
+  const clerk = await clerkClient()
+  const memberships = await clerk.users.getOrganizationMembershipList({
+    userId: session.clerkUserId,
+    limit: 100,
+  })
+  const current = memberships.data.find((m) => m.organization.id === session.clerkOrgId)
+  if (!current || current.role !== 'org:admin') throw new Error('Forbidden')
   return session
 }
