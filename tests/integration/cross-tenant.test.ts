@@ -30,7 +30,8 @@ import { getLeadById, listLeads, updateLeadStatus, updateLead, convertLeadToDeal
 import { getContactById, listContacts, updateContact, addContactTag } from '@lib/data/contacts'
 import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/deals'
 import { getCompanyById, getCompanyDetail, deleteCompany } from '@lib/data/companies'
-import { getOwnerById, listOwners } from '@lib/data/owners'
+import { getOwnerById, listOwners, deactivateOwner } from '@lib/data/owners'
+import { requirePaymentAccess } from '@lib/auth'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
@@ -829,5 +830,67 @@ describe('org currency: tenant isolation and admin-only enforcement', () => {
     await expect(actions.updateCurrencyAction({ currency: 'XXX' })).rejects.toThrow(/Unsupported currency/)
     const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
     expect(org?.currency).toBe('USD')
+  })
+})
+
+describe('requirePaymentAccess: stricter than requireAdmin — built for payments, not currency', () => {
+  it('allows an active Admin through', async () => {
+    loginAs(A) // A.owner is Admin + active by construction (makeFixture)
+    const session = await requirePaymentAccess()
+    expect(session).toMatchObject({ orgId: A.org.id, ownerId: A.owner.id, role: 'Admin', active: true })
+  })
+
+  it('rejects a Member, same as requireAdmin', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-payaccess-member-${RUN}`,
+        name: 'Payment Access Member',
+        email: `payaccess-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+
+    await expect(requirePaymentAccess()).rejects.toThrow(/Admins only/)
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it('rejects an Admin who has been deactivated (removed from the org), unlike requireAdmin alone', async () => {
+    const deactivatedAdmin = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-payaccess-inactive-${RUN}`,
+        name: 'Deactivated Admin',
+        email: `payaccess-inactive-${RUN}@example.com`,
+        role: 'Admin',
+        active: false,
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: deactivatedAdmin.clerkUserId, orgId: B.org.clerkOrgId })
+
+    await expect(requirePaymentAccess()).rejects.toThrow(/Forbidden/)
+
+    await prisma.owner.delete({ where: { id: deactivatedAdmin.id } })
+  })
+
+  it('rejects an Admin deactivated via the real deactivateOwner path, not just a hand-set flag', async () => {
+    const admin = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-payaccess-real-deactivate-${RUN}`,
+        name: 'Soon Deactivated Admin',
+        email: `payaccess-real-deactivate-${RUN}@example.com`,
+        role: 'Admin',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: admin.clerkUserId, orgId: B.org.clerkOrgId })
+    await expect(requirePaymentAccess()).resolves.toBeTruthy() // active by default — allowed before deactivation
+
+    await deactivateOwner(B.org.id, admin.clerkUserId!)
+    await expect(requirePaymentAccess()).rejects.toThrow(/Forbidden/)
+
+    await prisma.owner.delete({ where: { id: admin.id } })
   })
 })

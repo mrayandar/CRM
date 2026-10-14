@@ -75,7 +75,7 @@ export async function requireAuth() {
   const owner = await getOwnerByClerkUserId(org.id, userId)
   if (!owner) throw new Error('Owner record not found')
 
-  return { orgId: org.id, ownerId: owner.id, role: owner.role }
+  return { orgId: org.id, ownerId: owner.id, role: owner.role, active: owner.active }
 }
 
 /**
@@ -87,5 +87,26 @@ export async function requireAuth() {
 export async function requireAdmin() {
   const session = await requireAuth()
   if (session.role !== 'Admin') throw new Error('Admins only')
+  return session
+}
+
+/**
+ * Stricter than `requireAdmin()` — do not reuse `requireAdmin()` as-is for payment actions.
+ * `requireAdmin()`'s `role` check reads `Owner.role` from our own DB, which is only ever updated
+ * by the `organizationMembership.updated` webhook (see `lib/data/owners.ts`'s
+ * `upsertOwnerFromClerk` and the webhook route's `handleMemberUpdated`) — never re-synced on an
+ * existing row by `resolveAuth()`'s on-demand path, which only sets role the first time an
+ * Owner row is created. So between a demotion in Clerk and that webhook actually landing,
+ * `Owner.role` is stale and `requireAdmin()` would still grant access on the old value — there is
+ * no other point where this app re-validates role against Clerk's live state mid-request. Adding
+ * the `active` check here does not close that specific window (a demoted admin is still
+ * `active: true` — demotion isn't removal); it guards the separate case where someone was removed
+ * from the org (soft-deleted via `organizationMembership.deleted`, see `deactivateOwner`) and that
+ * webhook is itself still in flight. Payments gets both checks explicitly, on top of
+ * `requireAdmin()`, rather than assuming `requireAdmin()` alone is strict enough for money data.
+ */
+export async function requirePaymentAccess() {
+  const session = await requireAdmin()
+  if (!session.active) throw new Error('Forbidden')
   return session
 }
