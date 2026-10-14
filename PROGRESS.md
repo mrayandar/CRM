@@ -2,6 +2,61 @@
 
 > Living context file. Updated at the end of every task.
 
+## Refined the Dashboard's task widget into a real workload view (Oct 15 2026)
+
+### Starting point (reported before changing anything)
+
+The Dashboard's only task surface was the "Today's focus" card: `tasks.filter(t => !t.done &&
+t.ownerId === currentUser.id)`, sorted by due date, subtitle showing the real total count — but
+only the first 4 were ever rendered (`myTasks.slice(0, 4)`), with no grouping, no overdue/today/
+upcoming separation (TaskRow itself already tints overdue due-dates red via `dueLabel`, but there
+was no section-level grouping), and no team-wide toggle — current-user tasks only. "All tasks"
+link and an honest "Inbox zero" empty state both already existed. `TaskRow` (with its working
+edit/delete/complete controls) was already being reused, not duplicated.
+
+### What changed
+
+Replaced it with a "Task workload" card:
+- Three grouped sections — **Overdue** (`dayDelta < 0`, header styled `text-negative` for visual
+  distinction), **Due today** (`dayDelta === 0`), **Upcoming (7 days)** (`0 < dayDelta <= 7`) —
+  each with its own real count in the header, computed the same way as the rest of the app
+  (`dayDelta` from `lib/utils.ts`).
+- A `Segmented` "Mine" / "Team" toggle (same pattern Pipeline's "All deals / My deals" already
+  uses), defaulting to Mine. Team rows show the owner avatar (`TaskRow`'s existing `showOwner`
+  prop — no new prop needed).
+- Each section renders through the existing `TaskRow` unmodified — same edit/delete/complete
+  controls, no second implementation. Rows are capped at 5 per section for card real estate; when
+  a section has more, a "+N more — view all" link to `/tasks` appears **below** the cap, but the
+  section header's count is always the true, uncapped count.
+- A single combined empty state ("Inbox zero") when all three sections are empty for the active
+  scope, with scope-aware copy.
+
+### Verified against real Neon data
+
+Seeded 6 real test tasks spanning all three buckets, split across "mine" and a teammate ("Casey"),
+since every pre-existing task in the dev org had drifted into "overdue" by the time this ran
+(system clock had moved to Oct 15). Then, live against the real app:
+- Computed expected overdue/due-today/upcoming counts directly from Neon using the exact same
+  `dayDelta` logic, for both Mine and Team scopes, and confirmed the on-screen section headers
+  match exactly (6/6 count checks passed).
+- Confirmed the 5-row display cap and its "+N more" indicator work correctly: with 6 real overdue
+  team tasks, the 6th (the newest/least-overdue, since overdue sorts most-overdue-first) correctly
+  doesn't render as a row, and "+1 more overdue" appears instead — the section header still shows
+  the true "6", not "5".
+- Confirmed completing a task from the Dashboard updates the section count **immediately**
+  (optimistic: before=2, after=1, same render cycle) and that it actually **persists to Neon**
+  (confirmed via a direct follow-up query, after accounting for a test-script timing issue — my
+  first check ran before the server action's own write had landed, not an app bug).
+- Rollback-on-failure was **not** re-tested live: it's the same `toggleTask` call `TaskRow` already
+  made before this change (unmodified), already verified earlier this session for the Tasks page
+  and record-detail tabs. Since Overdue/Today/Upcoming are plain `.filter()`s derived from the same
+  live `tasks` array on every render, a rollback (which just resets `task.done` back to `false` in
+  that array) reappears in its section automatically — there's no separate cache to go stale.
+- Full `vitest run` (75/75) and `npm run build` both clean. All test fixtures cleaned up from Neon
+  afterward.
+
+Files changed: `src/screens/Dashboard.tsx`.
+
 ## Applied the RelativeTime hydration fix everywhere `relativeTime()` was called during render (Oct 2 2026)
 
 Follow-up to the Dashboard hydration fix immediately below: found and fixed every other place in

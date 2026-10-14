@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge, StatusDot, stageTone } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { BarChart, EmptyState } from '@/components/ui/Display'
+import { Segmented } from '@/components/ui/Field'
 import { MetricRow } from '@/components/common/MetricTile'
 import { ActivityFeed } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
@@ -31,6 +32,7 @@ import {
 export function Dashboard() {
   const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById, quarterlyQuota } = useCrm()
   const [newDealOpen, setNewDealOpen] = useState(false)
+  const [taskScope, setTaskScope] = useState<'mine' | 'team'>('mine')
   const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
 
   const openDeals = deals.filter((d) => !stageById(d.stageId).isClosed)
@@ -73,10 +75,20 @@ export function Dashboard() {
       ? momDelta(conversionThisMonth, conversionLastMonth)
       : null
 
-  const myTasks = sortBy(
-    tasks.filter((t) => !t.done && t.ownerId === currentUser.id),
-    (t) => new Date(t.dueDate).getTime(),
+  const myOpenTasks = tasks.filter((t) => !t.done && t.ownerId === currentUser.id)
+  const teamOpenTasks = tasks.filter((t) => !t.done)
+  // "Task workload" card: mine by default, toggled to the whole team. Grouped into
+  // overdue/due-today/upcoming(7d) so the counts in each section header are real, unfiltered
+  // counts straight off this array — never affected by how many rows are actually rendered below.
+  const scopedTasks = taskScope === 'mine' ? myOpenTasks : teamOpenTasks
+  const byDueDate = (list: typeof tasks) => sortBy(list, (t) => new Date(t.dueDate).getTime())
+  const overdueTasks = byDueDate(scopedTasks.filter((t) => dayDelta(t.dueDate) < 0))
+  const dueTodayTasks = byDueDate(scopedTasks.filter((t) => dayDelta(t.dueDate) === 0))
+  const upcomingTasks = byDueDate(
+    scopedTasks.filter((t) => dayDelta(t.dueDate) > 0 && dayDelta(t.dueDate) <= 7),
   )
+  const TASK_SECTION_LIMIT = 5
+
   const overdue = tasks.filter((t) => !t.done && dayDelta(t.dueDate) < 0)
   const stalled = openDeals.filter((d) => dayDelta(d.updatedAt) <= -5)
   const untouchedLeads = leads.filter((l) => l.status === 'new')
@@ -297,23 +309,97 @@ export function Dashboard() {
           <div className="space-y-4">
             <Card>
               <CardHeader
-                title="Today's focus"
-                subtitle={`${myTasks.length} open tasks assigned to you`}
+                title="Task workload"
+                subtitle={`${overdueTasks.length + dueTodayTasks.length + upcomingTasks.length} open ${taskScope === 'mine' ? 'tasks assigned to you' : 'team tasks'} · overdue, due today, or due within 7 days`}
                 action={
-                  <Link to="/tasks">
-                    <Button variant="ghost" size="xs">
-                      All tasks
-                    </Button>
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <Segmented
+                      value={taskScope}
+                      onChange={setTaskScope}
+                      options={[
+                        { value: 'mine', label: 'Mine' },
+                        { value: 'team', label: 'Team' },
+                      ]}
+                    />
+                    <Link to="/tasks">
+                      <Button variant="ghost" size="xs">
+                        All tasks
+                      </Button>
+                    </Link>
+                  </div>
                 }
               />
-              {myTasks.length === 0 ? (
-                <EmptyState title="Inbox zero" description="No open tasks assigned to you." />
+              {overdueTasks.length === 0 && dueTodayTasks.length === 0 && upcomingTasks.length === 0 ? (
+                <EmptyState
+                  title="Inbox zero"
+                  description={
+                    taskScope === 'mine'
+                      ? 'Nothing overdue, due today, or due this week.'
+                      : "Nothing overdue, due today, or due this week for the team."
+                  }
+                />
               ) : (
                 <div className="divide-y divide-line">
-                  {myTasks.slice(0, 4).map((task) => (
-                    <TaskRow key={task.id} task={task} />
-                  ))}
+                  {overdueTasks.length > 0 && (
+                    <div>
+                      <p className="px-5 pt-3 pb-1.5 text-[10.5px] font-semibold tracking-[0.07em] text-negative uppercase">
+                        Overdue · {overdueTasks.length}
+                      </p>
+                      <div className="divide-y divide-line">
+                        {overdueTasks.slice(0, TASK_SECTION_LIMIT).map((task) => (
+                          <TaskRow key={task.id} task={task} showOwner={taskScope === 'team'} />
+                        ))}
+                      </div>
+                      {overdueTasks.length > TASK_SECTION_LIMIT && (
+                        <Link
+                          to="/tasks"
+                          className="block px-5 py-2 text-[11.5px] text-ink-500 hover:text-brand-700 hover:underline"
+                        >
+                          +{overdueTasks.length - TASK_SECTION_LIMIT} more overdue — view all
+                        </Link>
+                      )}
+                    </div>
+                  )}
+                  {dueTodayTasks.length > 0 && (
+                    <div>
+                      <p className="px-5 pt-3 pb-1.5 text-[10.5px] font-semibold tracking-[0.07em] text-ink-400 uppercase">
+                        Due today · {dueTodayTasks.length}
+                      </p>
+                      <div className="divide-y divide-line">
+                        {dueTodayTasks.slice(0, TASK_SECTION_LIMIT).map((task) => (
+                          <TaskRow key={task.id} task={task} showOwner={taskScope === 'team'} />
+                        ))}
+                      </div>
+                      {dueTodayTasks.length > TASK_SECTION_LIMIT && (
+                        <Link
+                          to="/tasks"
+                          className="block px-5 py-2 text-[11.5px] text-ink-500 hover:text-brand-700 hover:underline"
+                        >
+                          +{dueTodayTasks.length - TASK_SECTION_LIMIT} more due today — view all
+                        </Link>
+                      )}
+                    </div>
+                  )}
+                  {upcomingTasks.length > 0 && (
+                    <div>
+                      <p className="px-5 pt-3 pb-1.5 text-[10.5px] font-semibold tracking-[0.07em] text-ink-400 uppercase">
+                        Upcoming (7 days) · {upcomingTasks.length}
+                      </p>
+                      <div className="divide-y divide-line">
+                        {upcomingTasks.slice(0, TASK_SECTION_LIMIT).map((task) => (
+                          <TaskRow key={task.id} task={task} showOwner={taskScope === 'team'} />
+                        ))}
+                      </div>
+                      {upcomingTasks.length > TASK_SECTION_LIMIT && (
+                        <Link
+                          to="/tasks"
+                          className="block px-5 py-2 text-[11.5px] text-ink-500 hover:text-brand-700 hover:underline"
+                        >
+                          +{upcomingTasks.length - TASK_SECTION_LIMIT} more upcoming — view all
+                        </Link>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </Card>
