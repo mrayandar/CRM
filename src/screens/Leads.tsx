@@ -41,7 +41,9 @@ const SOURCES = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website
 
 export function Leads() {
   const navigate = useNavigate()
-  const { leads, owners, ownerById, setLeadStatus, updateLead } = useCrm()
+  const { leads, owners, ownerById, setLeadStatus, updateLead, orgCurrency } = useCrm()
+  const fmt = (v: number) => currency(v, orgCurrency)
+  const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [params, setParams] = useSearchParams()
   const [newLeadOpen, setNewLeadOpen] = useState(false)
   const [reassignOpen, setReassignOpen] = useState(false)
@@ -108,6 +110,7 @@ export function Leads() {
         owner: ownerById(lead.ownerId).name,
         score: lead.score,
         estValue: lead.estValue,
+        currency: orgCurrency,
         lastTouchedAt: lead.lastTouchedAt,
       })),
     )
@@ -124,7 +127,7 @@ export function Leads() {
   return (
     <PageShell
       title="Leads"
-      subtitle={`${filtered.length} of ${leads.length} leads · ${currencyCompact(
+      subtitle={`${filtered.length} of ${leads.length} leads · ${fmtCompact(
         sum(filtered.map((l) => l.estValue)),
       )} estimated value`}
       actions={
@@ -354,7 +357,7 @@ export function Leads() {
                         <ScoreCell score={lead.score} />
                       </Td>
                       <Td align="right" className="tabular font-medium text-ink-900">
-                        {currency(lead.estValue)}
+                        {fmt(lead.estValue)}
                       </Td>
                       <Td align="right" className="tabular text-[12.5px] text-ink-500">
                         <RelativeTime iso={lead.lastTouchedAt} />
@@ -384,7 +387,7 @@ export function Leads() {
               <span className="tabular text-[12px] text-ink-500">
                 Total estimated value{' '}
                 <span className="font-semibold text-ink-900">
-                  {currency(sum(filtered.map((l) => l.estValue)))}
+                  {fmt(sum(filtered.map((l) => l.estValue)))}
                 </span>
               </span>
             </div>

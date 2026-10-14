@@ -2,23 +2,34 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
 }
 
-const compactFormatter = new Intl.NumberFormat('en-US', {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
-
-/** $148,000 */
-export function currency(value: number): string {
+/** $148,000 (or the org's own currency — pass `orgCurrency` from `useCrm()`; defaults to USD only
+ *  for the rare caller that genuinely has no org context, e.g. a pure unit test). */
+export function currency(value: number, currencyCode = 'USD'): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
-    currency: 'USD',
+    currency: currencyCode,
     maximumFractionDigits: 0,
   }).format(value)
 }
 
-/** $148K — for metric tiles and column headers where space is tight. */
-export function currencyCompact(value: number): string {
-  return `$${compactFormatter.format(value)}`
+/** $148K — for metric tiles and column headers where space is tight. Same currency-code param as
+ *  `currency()`. */
+export function currencyCompact(value: number, currencyCode = 'USD'): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: currencyCode,
+    notation: 'compact',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
+/** Just the symbol/prefix ("$", "PKR", "AED", ...) with no number — for input-field prefixes that
+ *  show a bare dollar sign today. Pulled from the same Intl formatter `currency()` uses, so it's
+ *  exactly what a 0-value `currency()` call would show, minus the digits. */
+export function currencySymbol(currencyCode = 'USD'): string {
+  const parts = new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).formatToParts(0)
+  return parts.find((p) => p.type === 'currency')?.value ?? currencyCode
 }
 
 export function percent(value: number, fractionDigits = 0): string {

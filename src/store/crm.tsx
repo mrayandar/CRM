@@ -46,6 +46,7 @@ import {
   logActivityAction,
   updateProfileAction,
   updateQuotaAction,
+  updateCurrencyAction,
   createStageAction,
   renameStageAction,
   reorderStageAction,
@@ -169,6 +170,9 @@ interface CrmState {
   companies: Company[]
   /** Team-wide quarterly revenue target set from Settings -> Workspace; null until an admin sets one. */
   quarterlyQuota: number | null
+  /** Org-level display currency (ISO 4217, e.g. "USD"), set from Settings -> Workspace, admin-only.
+   *  Relabels every amount in the app — never converts stored values. */
+  orgCurrency: string
   ownerById: (id: string) => Owner
   stageById: (id: string) => PipelineStage
   companyById: (id: string) => Company | undefined
@@ -236,6 +240,9 @@ interface CrmState {
   updateProfile: (input: { name: string; timezone: string | null }) => void
   /** Sets (or clears, with null) the org's quarterly quota; rolls back and shows a toast on failure. */
   updateQuota: (quota: number | null) => void
+  /** Sets the org's display currency (admin-only, rejected server-side for anyone else); rolls
+   *  back and shows a toast on failure. */
+  updateCurrency: (currency: string) => void
   /**
    * Generic escape hatch for mutations that don't map to the store's own optimistic CRM state —
    * e.g. Clerk org-membership calls in Team settings. Same toast-on-failure pattern as every
@@ -282,6 +289,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [stages, setStages] = useState<PipelineStage[]>(initialData.stages)
   const [companies, setCompanies] = useState<Company[]>(initialData.companies)
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
+  const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const dismissToast = useCallback(
@@ -871,6 +879,20 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [quarterlyQuota, persist],
   )
 
+  const updateCurrency = useCallback(
+    (currency: string) => {
+      const prev = orgCurrency
+      setOrgCurrency(currency)
+      persist(
+        () => updateCurrencyAction({ currency }),
+        () => setOrgCurrency(prev),
+        undefined,
+        "Couldn't save the currency, please try again.",
+      )
+    },
+    [orgCurrency, persist],
+  )
+
   // Not routed through persist(): the caller (the inline create-or-select picker) needs the real
   // company back — either the one just created, or the existing one the server resolved to when
   // a case-insensitive name match already existed — so the form can immediately use its real id.
@@ -1376,6 +1398,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       stages,
       companies,
       quarterlyQuota,
+      orgCurrency,
       ownerById,
       stageById,
       companyById,
@@ -1403,6 +1426,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       logActivity: pushActivity,
       updateProfile,
       updateQuota,
+      updateCurrency,
       persist,
     }),
     [
@@ -1416,6 +1440,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       stages,
       companies,
       quarterlyQuota,
+      orgCurrency,
       ownerById,
       stageById,
       companyById,
@@ -1443,6 +1468,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       pushActivity,
       updateProfile,
       updateQuota,
+      updateCurrency,
       persist,
     ],
   )

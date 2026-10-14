@@ -19,7 +19,7 @@ import { currency, formatDate, sortBy } from '@/lib/utils'
 export function CompanyDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { companies, leads, contacts, deals, stages, ownerById, stageById, updateCompany, deleteCompany } = useCrm()
+  const { companies, leads, contacts, deals, stages, ownerById, stageById, updateCompany, deleteCompany, orgCurrency } = useCrm()
   const company = companies.find((c) => c.id === id)
 
   const [editOpen, setEditOpen] = useState(false)
@@ -181,7 +181,7 @@ export function CompanyDetail() {
                       <div className="flex items-center gap-2.5 px-5 py-2.5">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-[13px] font-medium text-ink-900">{deal.name}</p>
-                          <p className="truncate text-[11.5px] text-ink-400">{currency(deal.value)}</p>
+                          <p className="truncate text-[11.5px] text-ink-400">{currency(deal.value, orgCurrency)}</p>
                         </div>
                         <Badge tone={stageTone(stage, stages.filter((s) => !s.isClosed))}>{stage.label}</Badge>
                       </div>

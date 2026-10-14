@@ -3,8 +3,9 @@
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { auth, clerkClient } from '@clerk/nextjs/server'
-import { requireAuth } from '@lib/auth'
-import { updateOrgQuota } from '@lib/data/organizations'
+import { requireAuth, requireAdmin } from '@lib/auth'
+import { updateOrgQuota, updateOrgCurrency } from '@lib/data/organizations'
+import { CURRENCY_CODES } from '@/data/types'
 import {
   createLead as dbCreateLead,
   getLeadById,
@@ -716,6 +717,22 @@ export async function updateQuotaAction(input: { quarterlyQuota: number | null }
   }
 
   await updateOrgQuota(orgId, quota)
+  revalidatePath('/', 'layout')
+}
+
+/**
+ * Admin-only (requireAdmin throws "Admins only" for a Member — never trusts a client-supplied
+ * role). `orgId` comes from `requireAuth()`'s own resolved org, same as updateQuotaAction — there's
+ * no separate id to tenant-check, the org row itself is the boundary.
+ */
+export async function updateCurrencyAction(input: { currency: string }) {
+  const { orgId } = await requireAdmin()
+
+  if (!CURRENCY_CODES.includes(input.currency as (typeof CURRENCY_CODES)[number])) {
+    throw new Error('Unsupported currency')
+  }
+
+  await updateOrgCurrency(orgId, input.currency)
   revalidatePath('/', 'layout')
 }
 

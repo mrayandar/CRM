@@ -30,9 +30,13 @@ import {
 } from '@/lib/utils'
 
 export function Dashboard() {
-  const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById, quarterlyQuota } = useCrm()
+  const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById, quarterlyQuota, orgCurrency } = useCrm()
   const [newDealOpen, setNewDealOpen] = useState(false)
   const [taskScope, setTaskScope] = useState<'mine' | 'team'>('mine')
+  // Bound to this org's currency — see src/lib/utils.ts; every money display on this page goes
+  // through one of these two instead of the raw currency()/currencyCompact() exports.
+  const fmt = (v: number) => currency(v, orgCurrency)
+  const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
 
   const openDeals = deals.filter((d) => !stageById(d.stageId).isClosed)
@@ -139,9 +143,9 @@ export function Dashboard() {
               // No historical snapshots of open pipeline value are kept, so there's nothing
               // honest to compare against — no delta, rather than a fabricated one.
               label: 'Open pipeline value',
-              value: currencyCompact(openValue),
+              value: fmtCompact(openValue),
               emphasis: true,
-              footer: `${currencyCompact(weightedValue)} weighted · ${openDeals.length} open deals`,
+              footer: `${fmtCompact(weightedValue)} weighted · ${openDeals.length} open deals`,
             },
             {
               // Same reasoning: no time-series of the open-deal count exists to trend against.
@@ -151,7 +155,7 @@ export function Dashboard() {
             },
             {
               label: 'Won this month',
-              value: currencyCompact(wonThisMonthValue),
+              value: fmtCompact(wonThisMonthValue),
               ...(wonDelta !== null && { delta: wonDelta }),
               footer: (
                 <>
@@ -160,7 +164,7 @@ export function Dashboard() {
                   {quotaProgress !== null ? (
                     <>
                       {' · '}
-                      {currencyCompact(wonThisQuarterValue)} of {currencyCompact(quarterlyQuota!)} quota this
+                      {fmtCompact(wonThisQuarterValue)} of {fmtCompact(quarterlyQuota!)} quota this
                       quarter ({percent(quotaProgress)})
                     </>
                   ) : (
@@ -197,7 +201,7 @@ export function Dashboard() {
             <Card>
               <CardHeader
                 title="Pipeline snapshot"
-                subtitle={`${currency(openValue)} across ${openDeals.length} open deals`}
+                subtitle={`${fmt(openValue)} across ${openDeals.length} open deals`}
                 action={
                   <Link to="/pipeline">
                     <Button variant="ghost" size="xs" trailingIcon={<ChevronRight size={13} />}>
@@ -227,7 +231,7 @@ export function Dashboard() {
                         />
                       </span>
                       <span className="tabular w-[84px] shrink-0 text-right text-[13px] font-semibold text-ink-900">
-                        {currencyCompact(value)}
+                        {fmtCompact(value)}
                       </span>
                     </Link>
                   </li>
@@ -236,7 +240,7 @@ export function Dashboard() {
               <div className="flex items-center justify-between border-t border-line bg-subtler px-5 py-2.5">
                 <span className="text-[12px] text-ink-500">Weighted forecast</span>
                 <span className="tabular text-[13px] font-semibold text-ink-900">
-                  {currency(weightedValue)}
+                  {fmt(weightedValue)}
                 </span>
               </div>
             </Card>
@@ -250,7 +254,7 @@ export function Dashboard() {
                 <div className="px-5 pt-4 pb-4">
                   {hasRevenueHistory ? (
                     <>
-                      <BarChart data={chartData} valueFormat={currencyCompact} />
+                      <BarChart data={chartData} valueFormat={fmtCompact} />
                       <div className="mt-3 flex items-center gap-4 border-t border-line pt-3">
                         <span className="flex items-center gap-1.5 text-[11.5px] text-ink-500">
                           <span className="size-2 rounded-[2px] bg-brand-600" /> This month
@@ -269,7 +273,7 @@ export function Dashboard() {
               <Card>
                 <CardHeader
                   title="Closing in 30 days"
-                  subtitle={`${currencyCompact(sum(closingSoon.map((d) => d.value)))} committed`}
+                  subtitle={`${fmtCompact(sum(closingSoon.map((d) => d.value)))} committed`}
                 />
                 {closingSoon.length === 0 ? (
                   <EmptyState title="Nothing closing soon" description="No open deals have a close date in the next 30 days." />
@@ -294,7 +298,7 @@ export function Dashboard() {
                               </span>
                             </span>
                             <span className="tabular shrink-0 text-[12.5px] font-semibold text-ink-900">
-                              {currencyCompact(deal.value)}
+                              {fmtCompact(deal.value)}
                             </span>
                           </Link>
                         </li>

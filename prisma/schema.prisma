@@ -108,6 +108,11 @@ model Organization {
   /// zero-looking comparison when this is null.
   quarterlyQuota Int?
 
+  /// ISO 4217 code (e.g. "USD", "PKR"). Set from Settings -> Workspace, admin-only. Changing it
+  /// relabels every amount in the app — it never converts stored values, which stay the same
+  /// number regardless of currency (see the confirmation copy in the Settings UI).
+  currency String @default("USD")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

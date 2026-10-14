@@ -13,7 +13,8 @@ import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/ui/Display'
 import { StageManager } from '@/components/common/StageManager'
 import { useCrm } from '@/store/crm'
-import { cn, formatDate } from '@/lib/utils'
+import { cn, currencySymbol, formatDate } from '@/lib/utils'
+import { CURRENCY_CODES, CURRENCY_LABEL } from '@/data/types'
 import { useOrganization, useUser } from '@clerk/nextjs'
 import { inviteMemberAction } from '@lib/actions/crm'
 
@@ -29,15 +30,19 @@ const TIMEZONES = [
 const formatQuota = (quota: number | null) => (quota !== null ? quota.toLocaleString('en-US') : '')
 
 export function Settings() {
-  const { currentUser, updateProfile, quarterlyQuota, updateQuota } = useCrm()
+  const { currentUser, updateProfile, quarterlyQuota, updateQuota, orgCurrency, updateCurrency } = useCrm()
   const [section, setSection] = useState<Section>('profile')
   const [profileName, setProfileName] = useState(currentUser.name)
   const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? TIMEZONES[0]!.value)
   const [quotaInput, setQuotaInput] = useState(formatQuota(quarterlyQuota))
+  const [currencyInput, setCurrencyInput] = useState(orgCurrency)
+  const [confirmCurrencyOpen, setConfirmCurrencyOpen] = useState(false)
 
+  const isAdmin = currentUser.role === 'Admin'
   const profileDirty =
     profileName.trim() !== currentUser.name || profileTimezone !== (currentUser.timezone ?? TIMEZONES[0]!.value)
   const quotaDirty = quotaInput !== formatQuota(quarterlyQuota)
+  const currencyDirty = currencyInput !== orgCurrency
 
   const saveProfile = () => {
     const name = profileName.trim()
@@ -56,6 +61,12 @@ export function Settings() {
   }
 
   const cancelQuota = () => setQuotaInput(formatQuota(quarterlyQuota))
+
+  const cancelCurrency = () => setCurrencyInput(orgCurrency)
+  const confirmCurrency = () => {
+    updateCurrency(currencyInput)
+    setConfirmCurrencyOpen(false)
+  }
 
   const [notifications, setNotifications] = useState({
     dealStage: true,
@@ -151,11 +162,39 @@ export function Settings() {
                 </div>
                 <div>
                   <Label>Default currency</Label>
-                  <Select defaultValue="usd" className="h-9">
-                    <option value="usd">USD — US Dollar</option>
-                    <option value="eur">EUR — Euro</option>
-                    <option value="gbp">GBP — British Pound</option>
-                  </Select>
+                  <div className="flex items-center gap-1.5">
+                    <Select
+                      value={currencyInput}
+                      onChange={(e) => setCurrencyInput(e.target.value)}
+                      disabled={!isAdmin}
+                      className="h-9 flex-1"
+                    >
+                      {CURRENCY_CODES.map((code) => (
+                        <option key={code} value={code}>
+                          {CURRENCY_LABEL[code]}
+                        </option>
+                      ))}
+                    </Select>
+                    {currencyDirty && (
+                      <>
+                        <IconButton
+                          label="Save currency"
+                          variant="secondary"
+                          onClick={() => setConfirmCurrencyOpen(true)}
+                        >
+                          <Check size={13} />
+                        </IconButton>
+                        <IconButton label="Cancel" onClick={cancelCurrency}>
+                          <X size={13} />
+                        </IconButton>
+                      </>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[11px] text-ink-400">
+                    {isAdmin
+                      ? 'Relabels every amount in the app — it does not convert existing values.'
+                      : 'Only admins can change the workspace currency.'}
+                  </p>
                 </div>
                 <div>
                   <Label>Fiscal year starts</Label>
@@ -170,7 +209,7 @@ export function Settings() {
                   <div className="flex items-center gap-1.5">
                     <div className="relative flex-1">
                       <span className="absolute top-1/2 left-2.5 -translate-y-1/2 text-[13px] text-ink-400">
-                        $
+                        {currencySymbol(orgCurrency)}
                       </span>
                       <Input
                         value={quotaInput}
@@ -180,7 +219,7 @@ export function Settings() {
                           const digits = e.target.value.replace(/[^0-9]/g, '')
                           setQuotaInput(digits ? Number(digits).toLocaleString('en-US') : '')
                         }}
-                        className="tabular pl-6"
+                        className="tabular pl-10"
                       />
                     </div>
                     {quotaDirty && (
@@ -277,6 +316,32 @@ export function Settings() {
           </Card>
         )}
       </div>
+
+      {confirmCurrencyOpen && (
+        <Modal
+          open
+          onClose={() => setConfirmCurrencyOpen(false)}
+          width={440}
+          title="Change workspace currency?"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setConfirmCurrencyOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={confirmCurrency}>
+                Change currency
+              </Button>
+            </>
+          }
+        >
+          <p className="text-[13px] leading-5 text-ink-700">
+            Switching to {CURRENCY_LABEL[currencyInput as keyof typeof CURRENCY_LABEL] ?? currencyInput} relabels
+            every amount already in the app — it does <strong>not</strong> convert existing values. A deal worth{' '}
+            {quarterlyQuota ? quarterlyQuota.toLocaleString('en-US') : '50,000'} will still show the same number,
+            just under the new currency.
+          </p>
+        </Modal>
+      )}
     </PageShell>
   )
 }

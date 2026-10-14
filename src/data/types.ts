@@ -157,3 +157,21 @@ export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   lost: 'Lost',
 }
 
+/** The org-level currency setting (Settings -> Workspace, admin-only) is validated against this
+ *  fixed list, both client-side (the Select's options) and server-side (updateCurrencyAction) —
+ *  a curated list rather than any valid Intl code, consistent with how this app already treats
+ *  other org-wide enums (lead sources, task types) as closed sets rather than open strings. */
+export const CURRENCY_CODES = ['USD', 'PKR', 'EUR', 'GBP', 'AED', 'SAR', 'CAD', 'AUD'] as const
+export type CurrencyCode = (typeof CURRENCY_CODES)[number]
+
+export const CURRENCY_LABEL: Record<CurrencyCode, string> = {
+  USD: 'USD — US Dollar',
+  PKR: 'PKR — Pakistani Rupee',
+  EUR: 'EUR — Euro',
+  GBP: 'GBP — British Pound',
+  AED: 'AED — UAE Dirham',
+  SAR: 'SAR — Saudi Riyal',
+  CAD: 'CAD — Canadian Dollar',
+  AUD: 'AUD — Australian Dollar',
+}
+

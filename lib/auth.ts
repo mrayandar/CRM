@@ -75,5 +75,17 @@ export async function requireAuth() {
   const owner = await getOwnerByClerkUserId(org.id, userId)
   if (!owner) throw new Error('Owner record not found')
 
-  return { orgId: org.id, ownerId: owner.id }
+  return { orgId: org.id, ownerId: owner.id, role: owner.role }
+}
+
+/**
+ * Same as `requireAuth()`, plus rejects unless the caller's own `Owner.role` (never a
+ * client-supplied value) is "Admin". Use for actions that must stay admin-only — e.g. changing
+ * the org's currency. `role` comes from the same DB row `requireAuth()` already fetched, so this
+ * adds no extra query.
+ */
+export async function requireAdmin() {
+  const session = await requireAuth()
+  if (session.role !== 'Admin') throw new Error('Admins only')
+  return session
 }

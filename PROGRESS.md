@@ -2,6 +2,105 @@
 
 > Living context file. Updated at the end of every task.
 
+## Added an org-level currency setting, replacing hardcoded USD everywhere (Oct 15 2026)
+
+### Schema
+
+`Organization.currency String @default("USD")` — additive migration
+(`20261015120000_org_currency`), so every existing org keeps behaving exactly as today until an
+admin explicitly changes it.
+
+### Settings: a real field, not the decorative one that was already there
+
+Settings' Workspace section already had a "Default currency" `<Select>` — it was pure decoration
+(`defaultValue="usd"`, no `onChange`, never persisted; found by grep while locating every call
+site). Wired it up for real instead of adding a second field next to a fake one: 8 supported codes
+(`CURRENCY_CODES` in `src/data/types.ts` — USD, PKR, EUR, GBP, AED, SAR, CAD, AUD, a curated list
+rather than any valid Intl code, matching how this app already treats lead sources/task types as
+closed sets), admin-only (disabled for non-admins client-side, **and independently rejected
+server-side** — see below), persisted through the same dirty-state/Save-Cancel pattern
+`updateQuota` already uses. Changing it shows a confirmation modal first: "relabels every amount
+... does not convert existing values," with a concrete example, before the save actually fires.
+
+### Admin enforcement: a new `requireAdmin()`, not a UI-only check
+
+`requireAuth()` already fetched the full `Owner` row internally but only returned
+`{orgId, ownerId}` — it now also returns `role` (free, same query, no extra DB round-trip). Added
+`requireAdmin()` next to it: calls `requireAuth()`, throws `"Admins only"` unless `role === 'Admin'`.
+`updateCurrencyAction` uses it, plus validates the code against `CURRENCY_CODES` server-side — a
+non-admin or an invalid code is rejected before any write, never trusting client input for either
+check. This is the first admin-gated action in the app (`updateQuotaAction`, by contrast, has no
+role check at all today — left as-is, out of scope for this task).
+
+### Formatting: every call site found by search, not memory
+
+`currency()`/`currencyCompact()` (`src/lib/utils.ts`) now take a `currencyCode` parameter
+(`= 'USD'` default only for the rare caller with no org context) and format through
+`Intl.NumberFormat`'s own `style: 'currency'` — no more manually prefixing a hardcoded `$`.
+`currencyCompact` previously hand-built its "$148K" string; now Intl's `notation: 'compact'` does
+it natively per-currency (verified: `$66.5K` / `PKR 66.5K` / `€148K`, matching the exact compact
+format the task asked for). Added `currencySymbol(code)` (pulls just the symbol/prefix via
+`formatToParts`) for the three input fields that had a bare hardcoded `$` span: New Deal, Edit
+Deal, and the lead-conversion "Convert to deal" modal (all three found by grepping for a literal
+`$`, not recalled from memory — also widened their `pl-6` input padding to `pl-10` since 3-letter
+codes like "AED" need more room than "$").
+
+Every screen with a money display now pulls `orgCurrency` from `useCrm()` and formats through it:
+Dashboard, Pipeline (including the `DealCard` subcomponent, which has its own `useCrm()` call),
+Reports (both tables + the revenue chart's `valueFormat`), Contacts, Leads, RecordDetail (lead
+est. value, contact account value, deal value, and the convert-to-deal modal), CompanyDetail, and
+CommandPalette's deal search results. Confirmed via `grep -rn "currency(\|currencyCompact("` that
+zero call sites remained on the old no-currency-code signature after the pass.
+
+CSV exports (Leads, Pipeline, Contacts, both Reports tables) already wrote raw numbers with no `$`
+— added a `currency` column to each so the number's unit is still recorded in the file.
+
+### Overdue-no-code-change: `quarterlyQuota`
+
+Left `updateQuotaAction` without a role check and `Deal.value`/`Lead.estValue`/etc. as plain
+`Int` — out of scope for this task (the user asked about currency *formatting*, not quota
+permissions or a value-precision change).
+
+### Whole-unit Int: still fine, not currency-specific
+
+`Deal.value` and friends stay plain `Int` (whole units — dollars, rupees, euros, whichever).
+`currency()` already hardcoded `maximumFractionDigits: 0` for every currency before this change,
+so the app has never stored or displayed sub-unit precision for *any* currency — this isn't a
+currency-specific limitation, it was already the uniform convention. If fractional amounts (cents)
+are ever needed, every supported currency would need it added consistently — minor-unit integers
+(cents) or a real decimal type — which is a value-precision change orthogonal to currency
+selection, not something picking a different `currency` code triggers on its own.
+
+### Verified against real Neon data, live
+
+Switched **Nexo Verified Org** (real org, real data) to PKR through the actual Settings UI:
+confirmed the relabel-not-convert confirmation modal's copy, confirmed persistence to Neon,
+then confirmed PKR actually renders on Dashboard ("PKR 285K"), Pipeline, Reports, the Settings
+quota field, and the New Deal modal's value-field prefix — and confirmed the old bare `$` is gone
+from all of them. Switched back to USD through the same UI and confirmed Dashboard shows `$`
+again. Throughout, confirmed **Muhammad Rayan's Organization** (a second, real, unrelated org)
+stayed on USD at the database level the entire time — zero leakage between orgs.
+
+Cross-tenant suite grown from 75 to **78** tests: `updateCurrencyAction` only ever changes the
+caller's own org (org A's admin changing currency never touches org B's row, even though both
+calls go through the same org-resolved-from-session code path with no explicit target id to
+mix up); a Member-role caller is rejected with "Admins only" before any write; an unsupported
+currency code is rejected even for an admin.
+
+Full `vitest run` (78/78) and `npm run build` both clean.
+
+### Files changed
+
+`prisma/schema.prisma`, `prisma/migrations/20261015120000_org_currency/` (new), `lib/auth.ts`
+(`requireAdmin`), `lib/actions/crm.ts` (`updateCurrencyAction`), `lib/data/organizations.ts`
+(`updateOrgCurrency`), `lib/data-loader.ts`, `src/data/types.ts` (`CURRENCY_CODES`/`CURRENCY_LABEL`),
+`src/lib/utils.ts` (`currency`/`currencyCompact`/`currencySymbol`), `src/store/crm.tsx`
+(`orgCurrency`/`updateCurrency`), `src/screens/Settings.tsx`, `src/screens/Dashboard.tsx`,
+`src/screens/Pipeline.tsx`, `src/screens/Reports.tsx`, `src/screens/Contacts.tsx`,
+`src/screens/Leads.tsx`, `src/screens/RecordDetail.tsx`, `src/screens/CompanyDetail.tsx`,
+`src/components/common/NewDealModal.tsx`, `src/components/common/EditDealModal.tsx`,
+`src/components/layout/CommandPalette.tsx`, `tests/integration/cross-tenant.test.ts`.
+
 ## Refined the Dashboard's task widget into a real workload view (Oct 15 2026)
 
 ### Starting point (reported before changing anything)

@@ -42,6 +42,7 @@ import {
 import {
   cn,
   currency,
+  currencySymbol,
   formatDate,
   sortBy,
 } from '@/lib/utils'
@@ -89,6 +90,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     updateLead,
     updateContact,
     logActivity,
+    orgCurrency,
   } = useCrm()
 
   const record = (lead ?? contact)!
@@ -365,7 +367,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                 <div className="mt-3 flex items-center justify-between">
                   <span className="text-[12px] text-ink-500">Estimated value</span>
                   <span className="tabular text-[13px] font-semibold text-ink-900">
-                    {currency(lead.estValue)}
+                    {currency(lead.estValue, orgCurrency)}
                   </span>
                 </div>
               </div>
@@ -388,7 +390,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                 <div className="mt-4 flex items-center justify-between">
                   <span className="text-[12px] text-ink-500">Account value</span>
                   <span className="tabular text-[13px] font-semibold text-ink-900">
-                    {contact.accountValue > 0 ? currency(contact.accountValue) : '—'}
+                    {contact.accountValue > 0 ? currency(contact.accountValue, orgCurrency) : '—'}
                   </span>
                 </div>
               </div>
@@ -597,7 +599,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                             {stageById(deal.stageId).label}
                           </Badge>
                           <span className="tabular w-[92px] shrink-0 text-right text-[13px] font-semibold text-ink-900">
-                            {currency(deal.value)}
+                            {currency(deal.value, orgCurrency)}
                           </span>
                         </Link>
                       </li>
@@ -889,7 +891,7 @@ function ConvertModal({
   onClose: () => void
   onConverted: (result: { dealId: string | null; contactId: string }) => void
 }) {
-  const { convertLead, owners, stages } = useCrm()
+  const { convertLead, owners, stages, orgCurrency } = useCrm()
   const openStages = useMemo(() => sortBy(stages.filter((s) => !s.isClosed), (s) => s.order), [stages])
   const [mode, setMode] = useState<'contact' | 'deal'>('deal')
   const [name, setName] = useState(`${lead.company} — New opportunity`)
@@ -983,7 +985,7 @@ function ConvertModal({
               <Field label="Deal value">
                 <div className="relative">
                   <span className="absolute top-1/2 left-2.5 -translate-y-1/2 text-[13px] text-ink-400">
-                    $
+                    {currencySymbol(orgCurrency)}
                   </span>
                   <Input
                     value={value}
@@ -992,7 +994,7 @@ function ConvertModal({
                       const digits = e.target.value.replace(/[^0-9]/g, '')
                       setValue(digits ? Number(digits).toLocaleString('en-US') : '')
                     }}
-                    className="tabular pl-6"
+                    className="tabular pl-10"
                   />
                 </div>
               </Field>

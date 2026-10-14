@@ -7,10 +7,10 @@ import { Modal } from '@/components/ui/Modal'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
 import { useCrm } from '@/store/crm'
 import type { Deal } from '@/data/types'
-import { sortBy } from '@/lib/utils'
+import { currencySymbol, sortBy } from '@/lib/utils'
 
 export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
-  const { updateDeal, owners, contacts, stages, stageById } = useCrm()
+  const { updateDeal, owners, contacts, stages, stageById, orgCurrency } = useCrm()
 
   const sortedContacts = useMemo(() => sortBy(contacts, (c) => c.name.toLowerCase()), [contacts])
   const sortedStages = useMemo(() => sortBy(stages, (s) => s.order), [stages])
@@ -93,7 +93,7 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
           <Field label="Deal value">
             <div className="relative">
               <span className="absolute top-1/2 left-2.5 -translate-y-1/2 text-[13px] text-ink-400">
-                $
+                {currencySymbol(orgCurrency)}
               </span>
               <Input
                 value={value}
@@ -102,7 +102,7 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
                   const digits = e.target.value.replace(/[^0-9]/g, '')
                   setValue(digits ? Number(digits).toLocaleString('en-US') : '')
                 }}
-                className="tabular pl-6"
+                className="tabular pl-10"
               />
             </div>
           </Field>

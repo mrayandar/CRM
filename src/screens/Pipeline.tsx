@@ -26,7 +26,9 @@ import type { Deal, PipelineStage } from '@/data/types'
 import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, sortBy, sum } from '@/lib/utils'
 
 export function Pipeline() {
-  const { deals, owners, ownerById, moveDeal, currentUser, stages } = useCrm()
+  const { deals, owners, ownerById, moveDeal, currentUser, stages, orgCurrency } = useCrm()
+  const fmt = (v: number) => currency(v, orgCurrency)
+  const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [query, setQuery] = useState('')
   const [owner, setOwner] = useState('all')
   const [scope, setScope] = useState<'all' | 'mine'>('all')
@@ -77,6 +79,7 @@ export function Pipeline() {
         name: deal.name,
         company: deal.company,
         value: deal.value,
+        currency: orgCurrency,
         stage: columns.find((s) => s.id === deal.stageId)?.label ?? '',
         probability: deal.probability,
         closeDate: deal.closeDate,
@@ -97,7 +100,7 @@ export function Pipeline() {
   return (
     <PageShell
       title="Pipeline"
-      subtitle={`${currency(openValue)} open · ${currency(weighted)} weighted · ${
+      subtitle={`${fmt(openValue)} open · ${fmt(weighted)} weighted · ${
         visible.filter((d) => openStageIds.has(d.stageId)).length
       } active deals`}
       actions={
@@ -200,7 +203,7 @@ export function Pipeline() {
                   </IconButton>
                 </div>
                 <p className="tabular mt-1.5 text-[15px] leading-5 font-semibold tracking-[-0.02em] text-ink-900">
-                  {currencyCompact(value)}
+                  {fmtCompact(value)}
                 </p>
                 <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-[#ececef]">
                   <div
@@ -304,7 +307,7 @@ function DealCard({
   onMove: (stageId: string) => void
   onEdit: () => void
 }) {
-  const { logActivity } = useCrm()
+  const { logActivity, orgCurrency } = useCrm()
   const days = dayDelta(deal.closeDate)
   const closed = stage.isClosed
   const overdue = !closed && days < 0
@@ -417,7 +420,7 @@ function DealCard({
 
       <div className="mt-2.5 flex items-end justify-between gap-2">
         <span className="tabular text-[16px] leading-5 font-semibold tracking-[-0.02em] text-ink-900">
-          {currency(deal.value)}
+          {currency(deal.value, orgCurrency)}
         </span>
         {deal.priority === 'high' && !closed && (
           <span title="High priority" className="flex items-center gap-1 text-[11px] font-medium text-warning">

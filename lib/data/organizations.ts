@@ -74,3 +74,16 @@ export function updateOrgQuota(orgId: string, quarterlyQuota: number | null) {
     data: { quarterlyQuota },
   })
 }
+
+/**
+ * Sets the org's display currency (relabels amounts, never converts them — see the model doc
+ * comment). Same `orgId`-from-`requireAuth()` reasoning as `updateOrgQuota`: there's no separate
+ * tenant id to double-check here, the org row itself is the tenant boundary. The admin-only check
+ * happens one layer up, in the action (`requireAdmin()`), not here.
+ */
+export function updateOrgCurrency(orgId: string, currency: string) {
+  return prisma.organization.update({
+    where: { id: orgId },
+    data: { currency },
+  })
+}

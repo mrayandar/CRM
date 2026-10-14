@@ -786,3 +786,48 @@ describe('server actions: every action requires a real, session-derived orgId', 
     await expect(actions.moveDealAction(A.deal.id, A.otherStage.id)).rejects.toThrow()
   })
 })
+
+describe('org currency: tenant isolation and admin-only enforcement', () => {
+  it('updateCurrencyAction only ever changes the caller\'s own org, never leaks into another org', async () => {
+    loginAs(A) // A.owner is an Admin — see makeFixture
+    const before = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(before?.currency).toBe('USD')
+
+    await actions.updateCurrencyAction({ currency: 'PKR' })
+
+    const afterA = await prisma.organization.findUnique({ where: { id: A.org.id } })
+    const afterB = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(afterA?.currency).toBe('PKR')
+    expect(afterB?.currency).toBe('USD') // untouched — org A has no way to address org B's row
+
+    // Revert so this fixture org doesn't confuse any other test in this file.
+    await prisma.organization.update({ where: { id: A.org.id }, data: { currency: 'USD' } })
+  })
+
+  it('updateCurrencyAction rejects a non-admin (Member) caller', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-member-${RUN}`,
+        name: 'Member Owner',
+        email: `member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+
+    await expect(actions.updateCurrencyAction({ currency: 'PKR' })).rejects.toThrow(/Admins only/)
+
+    const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(org?.currency).toBe('USD') // rejected before any write
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it('updateCurrencyAction rejects an unsupported currency code even for an admin', async () => {
+    loginAs(B)
+    await expect(actions.updateCurrencyAction({ currency: 'XXX' })).rejects.toThrow(/Unsupported currency/)
+    const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(org?.currency).toBe('USD')
+  })
+})

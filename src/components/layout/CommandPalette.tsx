@@ -48,7 +48,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const navigate = useNavigate()
-  const { leads, contacts, deals, companies, tasks, owners, stageById } = useCrm()
+  const { leads, contacts, deals, companies, tasks, owners, stageById, orgCurrency } = useCrm()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -95,7 +95,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     const dealRows: Row[] = deals.map((d) => ({
       id: d.id,
       title: d.name,
-      meta: `${currencyCompact(d.value)} · ${stageById(d.stageId).label}`,
+      meta: `${currencyCompact(d.value, orgCurrency)} · ${stageById(d.stageId).label}`,
       group: 'Deals',
       to: '/pipeline',
     }))
@@ -132,7 +132,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     return all
       .filter((r) => `${r.title} ${r.meta}`.toLowerCase().includes(q))
       .slice(0, 24)
-  }, [query, leads, contacts, deals, companies, tasks, owners, stageById])
+  }, [query, leads, contacts, deals, companies, tasks, owners, stageById, orgCurrency])
 
   const go = (row?: Row) => {
     if (!row) return

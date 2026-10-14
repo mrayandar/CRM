@@ -6,7 +6,7 @@ import { Input, Label, Select } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
 import { useCrm } from '@/store/crm'
-import { sortBy } from '@/lib/utils'
+import { currencySymbol, sortBy } from '@/lib/utils'
 
 export function NewDealModal({
   onClose,
@@ -18,7 +18,7 @@ export function NewDealModal({
   /** Pre-selects this stage (e.g. from a Pipeline column's "+"); defaults to the first open stage. */
   defaultStageId?: string
 }) {
-  const { addDeal, owners, contacts, currentUser, stages, stageById } = useCrm()
+  const { addDeal, owners, contacts, currentUser, stages, stageById, orgCurrency } = useCrm()
 
   const sortedContacts = useMemo(() => sortBy(contacts, (c) => c.name.toLowerCase()), [contacts])
   const initialContact = contacts.find((c) => c.id === defaultContactId)
@@ -103,7 +103,7 @@ export function NewDealModal({
           <Field label="Deal value">
             <div className="relative">
               <span className="absolute top-1/2 left-2.5 -translate-y-1/2 text-[13px] text-ink-400">
-                $
+                {currencySymbol(orgCurrency)}
               </span>
               <Input
                 value={value}
@@ -113,7 +113,7 @@ export function NewDealModal({
                   const digits = e.target.value.replace(/[^0-9]/g, '')
                   setValue(digits ? Number(digits).toLocaleString('en-US') : '')
                 }}
-                className="tabular pl-6"
+                className="tabular pl-10"
               />
             </div>
           </Field>

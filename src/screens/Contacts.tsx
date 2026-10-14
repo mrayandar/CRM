@@ -39,7 +39,9 @@ type View = 'company' | 'flat'
 
 export function Contacts() {
   const navigate = useNavigate()
-  const { contacts, owners, ownerById } = useCrm()
+  const { contacts, owners, ownerById, orgCurrency } = useCrm()
+  const fmt = (v: number) => currency(v, orgCurrency)
+  const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [params, setParams] = useSearchParams()
 
   const tagFilter = params.get('tag')
@@ -101,6 +103,7 @@ export function Contacts() {
         owner: ownerById(c.ownerId).name,
         openDeals: c.openDeals,
         accountValue: c.accountValue,
+        currency: orgCurrency,
         lastInteractionAt: c.lastInteractionAt,
       })),
     )
@@ -239,7 +242,7 @@ export function Contacts() {
                               </span>
                             )}
                             <span className="tabular text-[11.5px] text-ink-500">
-                              {accountValue > 0 ? `${currencyCompact(accountValue)} account` : 'No revenue yet'}
+                              {accountValue > 0 ? `${fmtCompact(accountValue)} account` : 'No revenue yet'}
                             </span>
                             <span className="tabular w-[100px] text-right text-[11.5px] text-ink-400">
                               <RelativeTime iso={lastInteractionAt} />
@@ -287,7 +290,7 @@ export function Contacts() {
               <span className="tabular text-[12px] text-ink-500">
                 Total account value{' '}
                 <span className="font-semibold text-ink-900">
-                  {currency(sum(companies.map((c) => c.accountValue)))}
+                  {fmt(sum(companies.map((c) => c.accountValue)))}
                 </span>
               </span>
             </div>

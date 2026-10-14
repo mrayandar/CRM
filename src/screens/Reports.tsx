@@ -27,7 +27,9 @@ import {
 const SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 
 export function Reports() {
-  const { deals, leads, owners, stages, stageById } = useCrm()
+  const { deals, leads, owners, stages, stageById, orgCurrency } = useCrm()
+  const fmt = (v: number) => currency(v, orgCurrency)
+  const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
 
   const won = deals.filter((d) => stageById(d.stageId).isWon)
@@ -144,6 +146,7 @@ export function Reports() {
         openPipeline: row.pipeline,
         closedWon: row.wonValue,
         winRate: row.winRate === null ? '' : Math.round(row.winRate),
+        currency: orgCurrency,
       })),
     )
     exportCsv(
@@ -155,6 +158,7 @@ export function Reports() {
         dealsWon: row.wonCount,
         openPipeline: row.pipeline,
         openDeals: row.openCount,
+        currency: orgCurrency,
       })),
     )
   }
@@ -187,7 +191,7 @@ export function Reports() {
           items={[
             {
               label: 'Closed-won revenue',
-              value: currencyCompact(sum(won.map((d) => d.value))),
+              value: fmtCompact(sum(won.map((d) => d.value))),
               ...(revenueDelta !== null && { delta: revenueDelta }),
               emphasis: true,
               footer: `${won.length} deals closed-won · all time`,
@@ -200,7 +204,7 @@ export function Reports() {
             },
             {
               label: 'Average deal size',
-              value: currencyCompact(avgDealSize),
+              value: fmtCompact(avgDealSize),
               ...(avgDealSizeDelta !== null && { delta: avgDealSizeDelta }),
               footer: 'Across all closed-won deals',
             },
@@ -221,7 +225,7 @@ export function Reports() {
             <CardHeader title="Closed-won revenue" subtitle="By month, last 6 months" />
             <div className="px-5 py-4">
               {hasRevenueHistory ? (
-                <BarChart height={180} valueFormat={currencyCompact} data={chartData} />
+                <BarChart height={180} valueFormat={fmtCompact} data={chartData} />
               ) : (
                 <EmptyState
                   title="No closed-won deals yet"
@@ -245,7 +249,7 @@ export function Reports() {
                         {stage.label}
                       </span>
                       <span className="tabular text-[12.5px] font-semibold text-ink-900">
-                        {currencyCompact(value)}
+                        {fmtCompact(value)}
                       </span>
                     </div>
                     <div className="mt-2 flex items-center gap-3">
@@ -300,10 +304,10 @@ export function Reports() {
                     {row.leads ? percent((row.qualified / row.leads) * 100) : '—'}
                   </Td>
                   <Td align="right" className="tabular font-medium text-ink-900">
-                    {currency(row.pipeline)}
+                    {fmt(row.pipeline)}
                   </Td>
                   <Td align="right" className="tabular font-medium text-ink-900">
-                    {row.wonValue > 0 ? currency(row.wonValue) : '—'}
+                    {row.wonValue > 0 ? fmt(row.wonValue) : '—'}
                   </Td>
                   <Td align="right">
                     <span
@@ -358,13 +362,13 @@ export function Reports() {
                     />
                   </Td>
                   <Td align="right" className="tabular font-medium text-ink-900">
-                    {row.wonValue > 0 ? currency(row.wonValue) : '—'}
+                    {row.wonValue > 0 ? fmt(row.wonValue) : '—'}
                   </Td>
                   <Td align="right" className="tabular">
                     {row.wonCount}
                   </Td>
                   <Td align="right" className="tabular font-medium text-ink-900">
-                    {currency(row.pipeline)}
+                    {fmt(row.pipeline)}
                   </Td>
                   <Td align="right" className="tabular">
                     {row.openCount}

@@ -43,6 +43,7 @@ export interface CrmInitialData {
   stages: PipelineStage[]
   companies: Company[]
   quarterlyQuota: number | null
+  orgCurrency: string
 }
 
 /**
@@ -89,5 +90,6 @@ export async function loadCrmData(
     stages: rawStages.map(mapStage),
     companies: rawCompanies.map(mapCompany),
     quarterlyQuota: org?.quarterlyQuota ?? null,
+    orgCurrency: org?.currency ?? 'USD',
   }
 }
