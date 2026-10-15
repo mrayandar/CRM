@@ -2,6 +2,48 @@
 
 > Living context file. Updated at the end of every task.
 
+## Three checks on the installments work: no bug found, plus a real idempotency fix (Oct 16 2026)
+
+Three requested checks on the previous entry's installments work:
+
+**1. The reported "[7400, 5550, 5550]" was not a bug — it was a misleading test, in my own
+verification script, not the app.** `splitAmounts(18500, [30, 40, 30])` is, and was, correct:
+`[5550, 7400, 5550]`, order-preserving (index 0 ↔ percent 0). The live UI preview showed the
+correct per-row amounts ($5,550 / $7,400 / $5,550 next to Advance/Milestone/Final) before
+submission, and the real rows read back from Neon in creation order were exactly
+`{Advance: 5550}, {Milestone: 7400}, {Final: 5550}` — correct. What actually happened: my earlier
+verification script compared `rows.map(r => r.amount).sort((a,b) => b-a)` against a hardcoded
+sorted array — a check that can't tell "right amounts in the right order" apart from "right
+amounts, scrambled across labels," and I then reported that sorted array in prose as if it
+reflected real order. It was my own test's weakness, not the feature's. Re-verified live against
+real Neon data, reading label+amount+creation-order directly this time (no sorting) — correct.
+Added order-sensitive tests that would have caught a real version of this: a unit test for
+`splitAmounts(18500, [30,40,30])` against the exact reported value, two remainder-producing cases
+(`10001` split `50/50` → `[5000, 5001]`; `10001` split `33/33/34` → `[3300, 3300, 3401]`), and an
+integration test asserting label-to-amount correspondence (`Advance: 300`, `Milestone: 400`,
+`Final: 300` for a 30/40/30 split of a real $1,000 deal) read fresh from Neon rather than through
+the action's own in-memory return value.
+
+**2.** Yes — `72bb057` was committed and pushed before this check, tree was clean, and
+PROGRESS.md's entry above this one was part of that commit.
+
+**3. Fixed a real gap**: `splitPaymentAction` had no guard against running twice on the same deal.
+`createPaymentsSplit` (`lib/data/payments.ts`) now refuses to run if the deal already has *any*
+Payment row (from an earlier split or a single manually-created payment) — and does so safely
+under concurrency: inside the same transaction as the creates, it first takes a
+`SELECT ... FOR UPDATE` row lock on the deal, *then* checks for existing payments. A plain
+count-then-create without that lock would let two concurrent transactions both pass the check
+under Postgres's default READ COMMITTED isolation (neither sees the other's uncommitted rows) and
+both create a set; the lock serializes them — the second transaction blocks until the first
+commits, then re-checks and correctly finds the first split's rows already there. Tests: a second
+split attempt on an already-split deal is rejected and leaves the first split untouched; splitting
+a deal that has only a single manually-created payment is also refused; two concurrent
+`splitPaymentAction` calls on the same deal (`Promise.allSettled`) produce exactly one fulfilled
+result and one rejection, with exactly one set (not two, not four) ending up in the database.
+Live-verified against real Neon data: split a real deal, attempted a second split on it through
+the real UI, got the exact "This deal already has payments..." error in the modal, confirmed the
+deal still had only the original 2 rows.
+
 ## Added installments/milestones and admin-only Dashboard + Pipeline payment surfaces (Oct 16 2026)
 
 **Report, before building (as requested):** `Payment.dueDate` was a required, non-nullable

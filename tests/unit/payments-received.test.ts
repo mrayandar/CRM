@@ -89,4 +89,24 @@ describe('splitAmounts', () => {
   it('returns an empty array for no percentages', () => {
     expect(splitAmounts(1000, [])).toEqual([])
   })
+
+  // Regression guard for a real reporting mistake: an earlier live-verification script sorted
+  // the resulting amounts descending before comparing them, which can't tell "right amounts in
+  // the right order" apart from "right amounts, scrambled order" — it was reported as proof of
+  // correct output when it wasn't. Every test below compares the exact, unsorted, ordered array.
+  it('30/40/30 of $18,500 (the real deal value this was reported against) — exact order', () => {
+    // floor(18500*0.3)=5550, floor(18500*0.4)=7400, last = 18500-5550-7400=5550.
+    // Order-sensitive: index 0 is Advance (30%), index 1 is Milestone (40%), index 2 is Final (30%).
+    expect(splitAmounts(18500, [30, 40, 30])).toEqual([5550, 7400, 5550])
+  })
+
+  it('a value that leaves a remainder on 50/50 — the last (second) part absorbs it', () => {
+    // floor(10001*0.5)=5000, last = 10001-5000=5001.
+    expect(splitAmounts(10001, [50, 50])).toEqual([5000, 5001])
+  })
+
+  it('a value that leaves a remainder on 33/33/34 — the last (third) part absorbs it', () => {
+    // floor(10001*0.33)=3300, floor(10001*0.33)=3300, last = 10001-3300-3300=3401.
+    expect(splitAmounts(10001, [33, 33, 34])).toEqual([3300, 3300, 3401])
+  })
 })

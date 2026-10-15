@@ -85,6 +85,17 @@ export interface SplitPaymentRow {
  * any row fails, none of them are created, rather than leaving a partial split behind. Logs a
  * single activity for the whole split, not one per row, same no-amount-in-title policy as every
  * other payment activity.
+ *
+ * Refuses to run at all if this deal already has any Payment row (from an earlier split or a
+ * single manual "New payment") — a deal is split once; mixing a second split into an
+ * already-populated deal would double it up with no way to tell which rows belong to which
+ * attempt. Enforced with a row lock, not a plain count-then-create: `SELECT ... FOR UPDATE` on
+ * the deal row serializes concurrent split attempts on the *same* deal (a double click, or two
+ * requests racing each other) — the second transaction blocks until the first commits, then
+ * re-checks and finds the first split's rows already there, so it's rejected instead of creating
+ * a second set. A plain `count()` before `create()` without this lock would let both transactions
+ * pass the check simultaneously under READ COMMITTED (Postgres's default), since neither would
+ * see the other's uncommitted rows.
  */
 export function createPaymentsSplit(
   orgId: string,
@@ -94,6 +105,13 @@ export function createPaymentsSplit(
   dealLabel: string,
 ) {
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "deals" WHERE id = ${dealId} FOR UPDATE`
+
+    const existingCount = await tx.payment.count({ where: { orgId, dealId } })
+    if (existingCount > 0) {
+      throw new Error('This deal already has payments — split into installments is only for a deal with none yet.')
+    }
+
     const created = []
     for (const row of rows) {
       created.push(

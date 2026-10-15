@@ -1325,12 +1325,27 @@ describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
   })
 
   it('30/40/30 of a real deal value: amounts sum exactly, last part absorbs the rounding remainder', async () => {
-    // A.deal.value is 1000 (see makeFixture) — not evenly divisible by 3 at 30/40/30-ish splits in
-    // general, but exercising the exact fixture value here is still the real end-to-end path:
-    // deal.value comes from a real Prisma read, not a hand-fed number.
+    // A dedicated deal, not A.deal — A.deal can carry a permanent paid-then-cancelled payment
+    // left behind by an earlier test (see "a payment that was ever paid can never be deleted"),
+    // and the new "refuses to split a deal that already has payments" guard would (correctly)
+    // reject a split against it. deal.value still comes from a real Prisma read either way.
+    const deal = await prisma.deal.create({
+      data: {
+        orgId: A.org.id,
+        name: 'Rounding test deal',
+        companyId: A.company.id,
+        value: 1000,
+        source: 'Inbound',
+        probability: A.stage.probability,
+        stageId: A.stage.id,
+        closeDate: new Date(),
+        ownerId: A.owner.id,
+      },
+    })
+
     const ids: string[] = [randomUUID(), randomUUID(), randomUUID()]
     const result = await paymentActions.splitPaymentAction({
-      dealId: A.deal.id,
+      dealId: deal.id,
       parts: [
         { id: ids[0]!, percent: 30, label: 'Advance' },
         { id: ids[1]!, percent: 40, label: 'Milestone' },
@@ -1339,26 +1354,34 @@ describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
     })
     expect(result.payments).toHaveLength(3)
     const total = result.payments.reduce((s, p) => s + p.amount, 0)
-    expect(total).toBe(A.deal.value)
+    expect(total).toBe(deal.value)
     expect(result.payments.map((p) => p.amount)).toEqual([300, 400, 300])
 
-    const rows = await listPayments(A.org.id, { dealId: A.deal.id })
+    const rows = await listPayments(A.org.id, { dealId: deal.id })
     const created = rows.filter((r) => ids.includes(r.id))
     expect(created).toHaveLength(3)
     expect(created.every((r) => r.status === 'pending')).toBe(true)
     expect(created.map((r) => r.label).sort()).toEqual(['Advance', 'Final', 'Milestone'])
 
+    // Label-to-amount correspondence, read fresh from Neon (not the action's own in-memory
+    // return value) — the exact thing a prior sorted-array comparison failed to actually check.
+    const byLabel = Object.fromEntries(created.map((r) => [r.label, r.amount]))
+    expect(byLabel.Advance).toBe(300) // 30% of 1000
+    expect(byLabel.Milestone).toBe(400) // 40% of 1000
+    expect(byLabel.Final).toBe(300) // 30% of 1000, from the remainder absorption
+
     // One activity for the whole split, not one per row — the installment count (not a dollar
     // amount) is fine in the title; no amount ever is.
     const activity = await prisma.activity.findFirst({
-      where: { orgId: A.org.id, kind: 'payment', dealId: A.deal.id, title: { contains: 'split' } },
+      where: { orgId: A.org.id, kind: 'payment', dealId: deal.id, title: { contains: 'split' } },
       orderBy: { at: 'desc' },
     })
-    expect(activity?.title).toBe('split Deal a into 3 installments')
+    expect(activity?.title).toBe('split Rounding test deal into 3 installments')
     expect(activity?.title).not.toMatch(/300|400|1000|1,000/)
 
-    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: A.deal.id, kind: 'payment', title: { contains: 'split' } } })
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: deal.id, kind: 'payment' } })
     await prisma.payment.deleteMany({ where: { id: { in: ids } } })
+    await prisma.deal.delete({ where: { id: deal.id } })
   })
 
   it('rejects a per-installment percentage of 0 or 100 (not a real split)', async () => {
@@ -1371,6 +1394,116 @@ describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
         ],
       }),
     ).rejects.toThrow(/between 1 and 99/)
+  })
+})
+
+describe('splitPaymentAction: refuses a second split (or any split) on a deal that already has payments', () => {
+  beforeEach(() => {
+    loginAs(A)
+    mockClerkAdminFor(A)
+  })
+  afterEach(() => mockClerkClient.mockReset())
+
+  async function makeOwnDeal(value: number) {
+    return prisma.deal.create({
+      data: {
+        orgId: A.org.id,
+        name: `Idempotency test deal ${randomUUID()}`,
+        companyId: A.company.id,
+        value,
+        source: 'Inbound',
+        probability: A.stage.probability,
+        stageId: A.stage.id,
+        closeDate: new Date(),
+        ownerId: A.owner.id,
+      },
+    })
+  }
+
+  async function cleanupDeal(dealId: string) {
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId, kind: 'payment' } })
+    await prisma.payment.deleteMany({ where: { dealId } })
+    await prisma.deal.delete({ where: { id: dealId } })
+  }
+
+  it('a second split attempt on the same deal is rejected, and the first split is untouched', async () => {
+    const deal = await makeOwnDeal(1000)
+    const first = await paymentActions.splitPaymentAction({
+      dealId: deal.id,
+      parts: [
+        { id: randomUUID(), percent: 50, label: 'Advance' },
+        { id: randomUUID(), percent: 50, label: 'Final' },
+      ],
+    })
+    expect(first.payments).toHaveLength(2)
+
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: deal.id,
+        parts: [
+          { id: randomUUID(), percent: 30, label: 'Advance' },
+          { id: randomUUID(), percent: 70, label: 'Final' },
+        ],
+      }),
+    ).rejects.toThrow(/already has payments/)
+
+    const rows = await listPayments(A.org.id, { dealId: deal.id })
+    expect(rows).toHaveLength(2) // still just the first split — nothing added
+    expect(rows.map((r) => r.amount).sort((a, b) => a - b)).toEqual([500, 500])
+
+    await cleanupDeal(deal.id)
+  })
+
+  it('also refuses to split a deal that already has a single manually-created payment', async () => {
+    const deal = await makeOwnDeal(1000)
+    await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: deal.id,
+      amount: 100,
+      label: 'Other',
+      dueDate: new Date().toISOString(),
+    })
+
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: deal.id,
+        parts: [
+          { id: randomUUID(), percent: 50, label: 'Advance' },
+          { id: randomUUID(), percent: 50, label: 'Final' },
+        ],
+      }),
+    ).rejects.toThrow(/already has payments/)
+
+    const rows = await listPayments(A.org.id, { dealId: deal.id })
+    expect(rows).toHaveLength(1) // only the original manual payment
+
+    await cleanupDeal(deal.id)
+  })
+
+  it('two concurrent split requests on the same deal create exactly one set, never two', async () => {
+    const deal = await makeOwnDeal(1000)
+
+    const attempt = () =>
+      paymentActions.splitPaymentAction({
+        dealId: deal.id,
+        parts: [
+          { id: randomUUID(), percent: 50, label: 'Advance' },
+          { id: randomUUID(), percent: 50, label: 'Final' },
+        ],
+      })
+
+    const results = await Promise.allSettled([attempt(), attempt()])
+    const fulfilled = results.filter((r) => r.status === 'fulfilled')
+    const rejected = results.filter((r) => r.status === 'rejected')
+    expect(fulfilled).toHaveLength(1) // exactly one of the two actually created a set
+    expect(rejected).toHaveLength(1)
+    expect((rejected[0] as PromiseRejectedResult).reason.message).toMatch(/already has payments/)
+
+    const rows = await listPayments(A.org.id, { dealId: deal.id })
+    expect(rows).toHaveLength(2) // one set — not four from both succeeding
+    expect(rows.reduce((s, r) => s + r.amount, 0)).toBe(1000)
+
+    await cleanupDeal(deal.id)
   })
 })
 
