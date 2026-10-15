@@ -4,7 +4,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
   type ReactNode,
@@ -54,7 +56,9 @@ import {
   renameStageAction,
   reorderStageAction,
   deleteStageAction,
+  refetchCrmDataAction,
 } from '@lib/actions/crm'
+import { isRefetchStale, startLivePoll } from '@/store/livePoll'
 import {
   createPaymentAction,
   updatePaymentAction,
@@ -365,12 +369,33 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [stages, setStages] = useState<PipelineStage[]>(initialData.stages)
   const [companies, setCompanies] = useState<Company[]>(initialData.companies)
   const [payments, setPayments] = useState<Payment[]>(initialData.payments)
-  const canAccessPayments = initialData.canAccessPayments
+  // Stateful (not a plain const off initialData) so a live refetch can reflect a role change
+  // (e.g. this user was demoted to Member in another tab) without a full page reload.
+  const [canAccessPayments, setCanAccessPayments] = useState<boolean>(initialData.canAccessPayments)
   const [wonPaymentSetupDealId, setWonPaymentSetupDealId] = useState<string | null>(null)
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
-  const orgName = initialData.orgName
+  const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [toasts, setToasts] = useState<ToastItem[]>([])
+
+  // --- Live-update refetch bookkeeping (see src/store/livePoll.ts for the scheduling logic) ---
+  // pendingCountRef: how many of THIS tab's own mutations are currently in flight. A refetch tick
+  // skips entirely while > 0 ("skip ... while any persist() mutation is pending").
+  // generationRef: bumped every time a mutation starts. If it changes between when a refetch
+  // request was sent and when its response arrives, that response is discarded as stale — it
+  // could otherwise revert the very change that started mid-fetch, or resurrect a row that change
+  // just deleted. Neither counter is React state: nothing should ever re-render because of them.
+  const pendingCountRef = useRef(0)
+  const generationRef = useRef(0)
+  const disposedRef = useRef(false)
+
+  const beginMutation = useCallback(() => {
+    pendingCountRef.current += 1
+    generationRef.current += 1
+  }, [])
+  const endMutation = useCallback(() => {
+    pendingCountRef.current = Math.max(0, pendingCountRef.current - 1)
+  }, [])
 
   const dismissToast = useCallback(
     (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)),
@@ -444,29 +469,34 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       failureMessage = SAVE_FAILED,
       onSuccess?: () => void,
     ) => {
+      beginMutation()
       startTransition(async () => {
-        const ok = await runPersist({
-          run,
-          rollback,
-          onSuccess,
-          onFailure: () => {
-            if (activity) removeActivity(activity.id)
-            notifyError(failureMessage)
-          },
-        })
-        if (!ok) return
-        if (activity) {
-          try {
-            await logActivityAction(activity.kind, activity.title, activity.subject, activity.body)
-          } catch {
-            removeActivity(activity.id)
-            // Only the activity-log write failed; the change itself was saved.
-            notifyError(run ? LOG_FAILED : failureMessage)
+        try {
+          const ok = await runPersist({
+            run,
+            rollback,
+            onSuccess,
+            onFailure: () => {
+              if (activity) removeActivity(activity.id)
+              notifyError(failureMessage)
+            },
+          })
+          if (!ok) return
+          if (activity) {
+            try {
+              await logActivityAction(activity.kind, activity.title, activity.subject, activity.body)
+            } catch {
+              removeActivity(activity.id)
+              // Only the activity-log write failed; the change itself was saved.
+              notifyError(run ? LOG_FAILED : failureMessage)
+            }
           }
+        } finally {
+          endMutation()
         }
       })
     },
-    [removeActivity, notifyError],
+    [removeActivity, notifyError, beginMutation, endMutation],
   )
 
   const pushActivity = useCallback(
@@ -572,6 +602,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       setLeads((prev) => [lead, ...prev])
       setActivities((prev) => [...optimisticActivities, ...prev])
 
+      beginMutation()
       try {
         // The server stores the row under this same id, so the optimistic lead is already the real one.
         await createLeadAction({ ...input, id, name, notes })
@@ -580,9 +611,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         setLeads((prev) => prev.filter((l) => l.id !== id))
         setActivities((prev) => prev.filter((a) => !activityIds.has(a.id)))
         throw err
+      } finally {
+        endMutation()
       }
     },
-    [currentUser.id, companyById],
+    [currentUser.id, companyById, beginMutation, endMutation],
   )
 
   const addContact = useCallback(
@@ -630,6 +663,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         setActivities((prev) => prev.filter((a) => a.id !== activity.id))
       }
 
+      beginMutation()
       try {
         const result = await createContactAction({
           id,
@@ -648,9 +682,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       } catch {
         rollback()
         return { ok: false, error: "Couldn't create the contact, please try again." }
+      } finally {
+        endMutation()
       }
     },
-    [contacts, currentUser.id, companyById],
+    [contacts, currentUser.id, companyById, beginMutation, endMutation],
   )
 
   const addDeal = useCallback(
@@ -1018,6 +1054,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         dealCount: 0,
       }
       setCompanies((prev) => [...prev, optimistic])
+      beginMutation()
       try {
         const result = await createCompanyAction({ id, ...input })
         if (result.existing) {
@@ -1031,9 +1068,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       } catch (err) {
         setCompanies((prev) => prev.filter((c) => c.id !== id))
         throw err
+      } finally {
+        endMutation()
       }
     },
-    [companies],
+    [companies, beginMutation, endMutation],
   )
 
   const updateCompany = useCallback(
@@ -1089,15 +1128,18 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   // same {ok, error} shape as addContact's duplicate-email case / deleteStage.
   const deleteCompany = useCallback(
     async (companyId: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      beginMutation()
       try {
         await deleteCompanyAction(companyId)
         setCompanies((prev) => prev.filter((c) => c.id !== companyId))
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : "Couldn't delete the company" }
+      } finally {
+        endMutation()
       }
     },
-    [],
+    [beginMutation, endMutation],
   )
 
   const addStage = useCallback(
@@ -1171,15 +1213,18 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   // generic toast — same {ok, error} shape as addContact's duplicate-email case.
   const deleteStage = useCallback(
     async (stageId: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      beginMutation()
       try {
         await deleteStageAction(stageId)
         setStages((prev) => prev.filter((s) => s.id !== stageId))
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : "Couldn't delete the stage" }
+      } finally {
+        endMutation()
       }
     },
-    [],
+    [beginMutation, endMutation],
   )
 
   const setLeadStatus = useCallback(
@@ -1524,26 +1569,31 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   const splitPayment = useCallback(
     async (dealId: string, parts: SplitPaymentPart[]): Promise<void> => {
-      const ids = parts.map(() => newEntityId())
-      const now = new Date().toISOString()
-      const result = await splitPaymentAction({
-        dealId,
-        parts: parts.map((p, i) => ({ id: ids[i]!, percent: p.percent, label: p.label, dueDate: p.dueDate })),
-      })
-      const created: Payment[] = parts.map((p, i) => ({
-        id: ids[i]!,
-        dealId,
-        amount: result.payments[i]!.amount,
-        status: 'pending',
-        label: p.label,
-        dueDate: p.dueDate,
-        createdById: currentUser.id,
-        createdAt: now,
-        updatedAt: now,
-      }))
-      setPayments((prev) => [...created, ...prev])
+      beginMutation()
+      try {
+        const ids = parts.map(() => newEntityId())
+        const now = new Date().toISOString()
+        const result = await splitPaymentAction({
+          dealId,
+          parts: parts.map((p, i) => ({ id: ids[i]!, percent: p.percent, label: p.label, dueDate: p.dueDate })),
+        })
+        const created: Payment[] = parts.map((p, i) => ({
+          id: ids[i]!,
+          dealId,
+          amount: result.payments[i]!.amount,
+          status: 'pending',
+          label: p.label,
+          dueDate: p.dueDate,
+          createdById: currentUser.id,
+          createdAt: now,
+          updatedAt: now,
+        }))
+        setPayments((prev) => [...created, ...prev])
+      } finally {
+        endMutation()
+      }
     },
-    [currentUser.id],
+    [currentUser.id, beginMutation, endMutation],
   )
 
   const markPaymentPaid = useCallback(
@@ -1586,11 +1636,16 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   // {ok, error} shape as deleteCompany/deleteStage.
   const deletePayment = useCallback(
     async (paymentId: string): Promise<DeletePaymentResult> => {
-      const result = await deletePaymentAction(paymentId)
-      if (result.ok) setPayments((prev) => prev.filter((p) => p.id !== paymentId))
-      return result
+      beginMutation()
+      try {
+        const result = await deletePaymentAction(paymentId)
+        if (result.ok) setPayments((prev) => prev.filter((p) => p.id !== paymentId))
+        return result
+      } finally {
+        endMutation()
+      }
     },
-    [],
+    [beginMutation, endMutation],
   )
 
   const addNote = useCallback(
@@ -1633,6 +1688,71 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     },
     [contacts, leads, addLocalActivity, persist, removeActivity],
   )
+
+  /**
+   * Replaces every server-sourced field with a fresh loadCrmData() result (see
+   * refetchCrmDataAction). A plain wholesale replace, not a field-level merge — safe specifically
+   * because refetchTick only ever calls this once it's confirmed no mutation is in flight and
+   * none started since the fetch was issued (see generationRef/pendingCountRef there). Pure local
+   * UI state (toasts, wonPaymentSetupDealId) is untouched.
+   */
+  const applyFreshData = useCallback((fresh: CrmInitialData) => {
+    setOwners(fresh.owners)
+    setCurrentUser(fresh.currentUser)
+    setLeads(fresh.leads)
+    setContacts(fresh.contacts)
+    setDeals(fresh.deals)
+    setTasks(fresh.tasks)
+    setActivities(fresh.activities)
+    setStages(fresh.stages)
+    setCompanies(fresh.companies)
+    setPayments(fresh.payments)
+    setCanAccessPayments(fresh.canAccessPayments)
+    setQuarterlyQuota(fresh.quarterlyQuota)
+    setOrgCurrency(fresh.orgCurrency)
+    setOrgName(fresh.orgName)
+  }, [])
+
+  /**
+   * One refetch attempt: fetch, then decide whether it's still safe to apply. `generationRef`
+   * bumps on every mutation start (see beginMutation) — if it moved while this fetch was in
+   * flight, a mutation started mid-fetch and this response can't be trusted to be at least as
+   * fresh as what's already on screen, so it's discarded (not applied, not treated as an error —
+   * src/store/livePoll.ts retries soon after, no backoff). Also discarded if a mutation happens
+   * to be in flight at the exact moment the response lands, for the same reason.
+   */
+  const refetchTick = useCallback(async (): Promise<'applied' | 'discarded'> => {
+    const generationAtStart = generationRef.current
+    const fresh = await refetchCrmDataAction()
+    if (disposedRef.current) return 'discarded'
+    if (
+      isRefetchStale({
+        generationAtStart,
+        generationNow: generationRef.current,
+        pendingCount: pendingCountRef.current,
+      })
+    ) {
+      return 'discarded'
+    }
+    applyFreshData(fresh)
+    return 'applied'
+  }, [applyFreshData])
+
+  // Poll every ~60s while the tab is visible, refetch immediately on focus/visibility-regained,
+  // pause while hidden, back off on repeated failures — see src/store/livePoll.ts. Never redirects
+  // or surfaces anything on failure: refetchCrmDataAction only ever throws (requireAuth(), never a
+  // redirect), and that rejection just means "try again later," silently.
+  useEffect(() => {
+    disposedRef.current = false
+    const stop = startLivePoll({
+      isMutationPending: () => pendingCountRef.current > 0,
+      refetch: refetchTick,
+    })
+    return () => {
+      disposedRef.current = true
+      stop()
+    }
+  }, [refetchTick])
 
   const value = useMemo<CrmState>(
     () => ({

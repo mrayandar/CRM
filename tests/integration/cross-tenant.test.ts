@@ -1570,3 +1570,46 @@ describe('Dashboard Payments card math: a paid-then-cancelled payment is exclude
     expect(data.canAccessPayments).toBe(false)
   })
 })
+
+describe('refetchCrmDataAction: live-update refetch is scoped and role-gated exactly like first load', () => {
+  it("is scoped by the caller's own session — never returns another org's rows", async () => {
+    loginAs(A)
+    const data = await actions.refetchCrmDataAction()
+    expect(data.deals.some((d) => d.id === B.deal.id)).toBe(false)
+    expect(data.leads.some((l) => l.id === B.lead.id)).toBe(false)
+    expect(data.contacts.some((c) => c.id === B.contact.id)).toBe(false)
+    expect(data.companies.some((c) => c.id === B.company.id)).toBe(false)
+    expect(data.deals.some((d) => d.id === A.deal.id)).toBe(true) // sanity: it's not just empty
+  })
+
+  it('rejects when there is no valid session (never redirects — just throws)', async () => {
+    mockAuth.mockResolvedValue({ userId: null, orgId: null })
+    await expect(actions.refetchCrmDataAction()).rejects.toThrow()
+  })
+
+  it("a non-privileged member's refetch carries no Payment rows and no payment-kind activities, same as first load", async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-refetch-member-${RUN}`,
+        name: 'Refetch Member',
+        email: `refetch-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' })
+
+    const data = await actions.refetchCrmDataAction()
+    expect(data.canAccessPayments).toBe(false)
+    expect(data.payments).toEqual([])
+    expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it("an admin's refetch does include payment access, mirroring first load", async () => {
+    loginAs(A) // A.owner is an active Admin with a matching org:admin session — see makeFixture
+    const data = await actions.refetchCrmDataAction()
+    expect(data.canAccessPayments).toBe(true)
+  })
+})

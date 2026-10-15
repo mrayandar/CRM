@@ -2,6 +2,109 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fixed the live-update gap: poll + focus/visibility refetch, safe against races (Oct 16 2026)
+
+**Report, before building (as requested):**
+
+*How CrmProvider holds data.* `src/store/crm.tsx`'s `CrmProvider` receives one `initialData:
+CrmInitialData` prop from the `(app)` layout's server-side `loadCrmData()` call, and seeds a
+separate `useState` for every field off it (`leads`, `contacts`, `deals`, `tasks`, `activities`,
+`owners`, `currentUser`, `stages`, `companies`, `payments`, `quarterlyQuota`, `orgCurrency` — plus,
+as of this entry, `canAccessPayments` and `orgName`, which used to be plain `const`s off
+`initialData` and are now stateful too, for the same reason). Critically: **nothing re-reads
+`initialData` after mount.** `useState(initialData.x)` only uses that value on the very first
+render; if the parent Server Component re-renders and hands `CrmProvider` a fresh `initialData`
+prop later, React does not re-initialize the state from it. So a refetch has to replace each of
+those fields explicitly — there's no way to "just refresh the props."
+
+*The `router.refresh()` history, and whether it's safe now.* Per `PROGRESS.md`'s own record, all
+seven `router.refresh()` calls were removed Sep 26 2026 as a stopgap: calling it after a mutation
+re-ran the `(app)` layout's server render, and at the time, the org picked in `<OrganizationList>`
+hadn't reliably propagated to the session the next server request would see, so `resolveAuth()`
+bounced the user to `/create-org`. The underlying trigger for *that* bug (`force_organization_
+selection` plus a routing-mode mismatch during the sign-in/org-selection flow itself) was fixed
+separately and later (see "Fixed: Clerk org-selection redirect loop"). Checked whether it's safe
+to reintroduce `router.refresh()` today: confirmed via `grep` that no `router.refresh()` call
+exists anywhere in the current codebase (the stopgap was never reverted), and every mutation
+already calls `revalidatePath('/', 'layout')` after writing — and across this entire session's
+very extensive live Playwright verification (hundreds of real page reloads via `page.goto()`,
+many fired within seconds of a mutation), the active org has never once failed to resolve on a
+fresh server request. That's reasonably strong evidence the steady-state (post sign-in) propagation
+is solid now.
+
+**It doesn't matter for this feature, though** — `router.refresh()` was never going to work here
+regardless of that bug's status, for the architectural reason above (`useState` won't re-seed from
+new props), so this build uses a different mechanism entirely: a plain server action
+(`refetchCrmDataAction`) that the client calls directly, with no Next.js routing/middleware
+involved at all, and therefore no bounce risk to inherit either way.
+
+### Built
+
+1. **`refetchCrmDataAction`** (`lib/actions/crm.ts`) — `requireAuth()` + `canAccessPayments()` +
+   the exact same `loadCrmData()` the `(app)` layout calls on first load. No new data-access code;
+   a refetch gets identical role/tenant gating to first load by construction, not by a second,
+   separately-maintained check. `requireAuth()` only ever throws (never redirects, unlike
+   `resolveAuth()`), so a refetch failure can only ever be a rejected promise.
+
+2. **`src/store/livePoll.ts`** — the scheduling logic (poll every ~60s while visible, refetch
+   immediately on focus/visibility-regained, pause while hidden, exponential backoff on repeated
+   failures capped at 5 minutes), extracted into a pure module driven entirely through an injected
+   `env` (timers, visibility, focus) so it's unit-testable without a real browser — this repo has
+   no DOM/jsdom harness. Also exports `isRefetchStale()`, the small pure predicate the race-safety
+   below is built on.
+
+3. **Race safety, in `CrmProvider`**: `pendingCountRef` (how many of *this tab's own* mutations
+   are in flight) and `generationRef` (bumped every time one starts) are threaded through `persist()`
+   (now accepting an `onSuccess` callback — reused from the Won-payment-setup feature's
+   `runPersist()`) and the 7 mutators that don't go through `persist()` (`addLead`, `addContact`,
+   `addCompany`, `deleteCompany`, `deleteStage`, `splitPayment`, `deletePayment`). A poll tick
+   skips the fetch entirely while `pendingCountRef.current > 0` ("skip ... while any persist()
+   mutation is pending"). If a mutation starts *during* an already-in-flight fetch, the response is
+   caught by `isRefetchStale()` (generation moved, or a mutation is pending again by the time the
+   response lands) and discarded — not applied, not treated as an error, retried again shortly.
+   Only once neither condition holds does `applyFreshData()` wholesale-replace every field — safe
+   specifically because of that guard, which is what keeps a refetch from reverting a change still
+   saving or resurrecting a row a concurrent delete just removed.
+
+4. **Fail quietly**: `refetchCrmDataAction`'s rejection is caught inside `livePoll`'s tick and only
+   ever triggers backoff + another timer — no toast, no redirect, no UI flash of any kind.
+
+### Tests (164 total, up from 153)
+
+- `tests/unit/live-poll.test.ts` (11 tests): the full scheduler against a fake `env` — starts
+  polling at the steady interval, pauses with zero timers while hidden and resumes on visibility
+  change, skips the fetch outright while a mutation is pending, discards-and-retries-soon (no
+  backoff) on a stale/discarded result, backs off exponentially on real failures and caps it,
+  resets to the steady interval after a success, focus triggers an immediate refetch, and `stop()`
+  fully disposes (no further ticks).
+- `isRefetchStale` (3 tests): false when nothing changed; true when the generation moved during
+  the fetch; true when a mutation is in flight at apply time even with no generation change.
+- `tests/integration/cross-tenant.test.ts` (+4): `refetchCrmDataAction` is scoped to the caller's
+  own org (never returns another org's rows — the actual tenant check "on whatever the refetch
+  uses," which is `loadCrmData`, already exhaustively covered elsewhere in this suite); rejects
+  (never redirects) with no valid session; a non-privileged member's refetch carries zero Payment
+  rows and zero payment-kind activities, exactly like first load; an admin's refetch does include
+  payment access.
+
+### Live-verified with two real sessions (real admin + real Jordan Ellis member, "Nexo Verified
+Org"), against real Neon data
+
+- Admin assigned a new task to the Member from one real browser session; the Member's already-open
+  `/tasks` tab (never manually reloaded) showed it after 58.4s — within the ~60s poll window.
+- A second task, assigned the same way: simulating the Member's tab regaining
+  focus/visibility made it appear in 4.0s — the focus path firing immediately rather than waiting
+  for the next poll tick.
+- **Mutation-during-refetch, the hard case**: delayed the Member's natural poll-triggered refetch
+  response by 3.5s via route interception (no synthetic visibility tricks for this one — a real
+  ~60s poll tick, genuinely held in flight), and while it was held, the Member toggled a task.
+  Confirmed, in order: the optimistic UI flipped immediately; the toggle's own write landed in
+  Neon; and *after* the delayed, now-stale refetch resolved, both the UI and Neon still showed the
+  Member's toggle — the stale response never overwrote it. (Two earlier attempts at this specific
+  check gave confusing results purely from test-harness artifacts — my own request-queuing and a
+  hardcoded wrong toggle-direction assumption, not an app bug; documented here in case the pattern
+  resurfaces: constructing this exact race deterministically via Playwright is fiddly, and the
+  corrected version above is what actually ran clean.)
+
 ## Settings + notification bell audit: one real fix, three honest "needs a decision" findings (Oct 16 2026)
 
 Scope: every Settings control and the top-bar bell, excluding what was asked to be skipped as
