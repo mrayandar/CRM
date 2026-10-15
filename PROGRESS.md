@@ -2,6 +2,82 @@
 
 > Living context file. Updated at the end of every task.
 
+## Added installments/milestones and admin-only Dashboard + Pipeline payment surfaces (Oct 16 2026)
+
+**Report, before building (as requested):** `Payment.dueDate` was a required, non-nullable
+`DateTime` — a payment could not have no due date. There was no label/type field on `Payment` at
+all. There was no split/installment action — creating an advance + completion split meant opening
+"New payment" twice by hand, with no validation that the parts summed to the deal's value and no
+transaction (a crash partway through left it inconsistent).
+
+**Schema** (`prisma/migrations/20261016150000_payment_label_optional_due/`): additive — a new
+`PaymentLabel` enum (`Advance`/`Milestone`/`Final`/`Other`), a `label` column defaulting every
+existing row to `Other`, and `dueDate` made nullable (`ALTER COLUMN ... DROP NOT NULL`, safe —
+widens the constraint, no backfill needed). Null `dueDate` means "awaiting milestone": pending,
+never overdue, its own bucket.
+
+**Installments**: `lib/data/payments.ts` gained `createPaymentsSplit` — creates every installment
+row in one transaction (all-or-nothing) and logs a single activity for the whole split (not one
+per row). `lib/actions/payments.ts`'s new `splitPaymentAction` validates percentages are integers
+1-99 that total exactly 100, fetches the deal's real value server-side, and computes amounts via
+a new shared `splitAmounts()` (`src/lib/utils.ts`) — every part but the last is
+`floor(total * percent / 100)`, and the last absorbs whatever rounding remainder is left so the
+parts always sum to exactly the deal's value. The UI (`src/screens/Payments.tsx`, "Split into
+installments" — only shown in the per-deal `?dealId=` view, where "the deal" is unambiguous) has
+50/50 and 30/40/30 presets plus a custom row editor, with a live preview using the same
+`splitAmounts()` the server uses — the server never trusts the client's preview numbers, it
+recomputes from the real deal value.
+
+**Awaiting milestone**: a payment can now be created/edited with no due date at all (an "Awaiting
+milestone" checkbox in both New/Edit payment modals). `isPaymentOverdue()`/`isAwaitingMilestone()`
+(`src/lib/utils.ts`) are the one place these rules live — a payment with no `dueDate` can never be
+overdue by definition. The Payments screen gained summary tiles (Collected / Pending / Overdue /
+Awaiting milestone) and a filter (All / Overdue / Awaiting milestone / Paid / Cancelled), plus a
+Label column (Tag) and a "Due date" column that reads "Awaiting milestone" instead of blank.
+Setting the date later, once the milestone completes, works through the normal edit flow — no
+special-casing needed.
+
+**Reversed the earlier "no Dashboard/Reports widgets, no deal-card badges" decision, for
+payment-privileged users only** (Members still get nothing — this is a per-session instruction
+from the person running this build, reversing that specific line of the originally-approved
+design):
+- **Dashboard** (`PaymentsSummaryCard` in `src/screens/Dashboard.tsx`): collected this month,
+  overdue amount + count, awaiting-milestone count, and a link to `/payments`. Computed from the
+  `payments` array only via `receivedTotal()`/`isPaymentOverdue()`/`isAwaitingMilestone()` — never
+  from `Deal.value`. Rendered only when `canAccessPayments` is true.
+- **Pipeline deal card** (`src/screens/Pipeline.tsx`): a "View payments" menu item (links to
+  `/payments?dealId=`) for every deal, and, on Won deals only, a received-vs-value progress bar
+  (via `receivedTotal()` on that deal's payments). Both gated on `canAccessPayments`; the
+  component itself does no gating of its own filtering — `Pipeline()` passes it `[]` for a
+  non-privileged caller, same "gate the data once, trust every consumer" architecture as
+  everywhere else in this feature.
+- **No lead link** — agreed, unchanged. Payments are deal-scoped (`Payment.dealId` is required;
+  there's no `leadId`), and a lead isn't yet a revenue-bearing record, so a lead-level payments
+  link wouldn't correspond to anything real.
+- **Gating**: both surfaces read `payments`/`canAccessPayments` from the same `loadCrmData` gate
+  the rest of this feature already relies on — there's nothing new to gate at the component level,
+  because a Member's `payments` is already `[]` and `canAccessPayments` is already `false` before
+  either component ever renders.
+
+New tests (124 total, up from 108): a unit suite for `splitAmounts` (even splits, 30/40/30
+rounding, exact-sum invariant on values that don't divide cleanly) and `isPaymentOverdue`/
+`isAwaitingMilestone`; integration tests for `splitPaymentAction` covering cross-org `dealId`
+rejection, non-privileged-member rejection, non-100%-total rejection (nothing written), fewer than
+two installments, a 0%/100% installment, and a real 30/40/30 split against a real deal's value
+proving the exact rounding behavior end to end; a test proving a paid-then-cancelled payment is
+excluded from the exact "collected this month" computation the Dashboard card uses, with real
+`paidAt` still set; and a re-assertion (in the Dashboard-card framing) that a Member's loaded data
+has no payments for the card to compute anything from.
+
+**Live-verified** against real Neon data, both as a real Admin and a real Member in "Nexo Verified
+Org": split a real $18,500 Won deal 30/40/30 (confirmed the exact [7400, 5550, 5550] rounding),
+marked the 40% installment paid, confirmed the Pipeline deal card's progress bar read "$7.4K /
+$18.5K" and the "View payments" menu item navigated correctly, confirmed the Dashboard Payments
+card appeared with the right labels, created a real awaiting-milestone payment and confirmed it
+filtered correctly and was never shown as overdue. Then as the real Member: confirmed no Payments
+card on the Dashboard, no received-vs-value line and no "View payments" item on the same Calloway
+deal card.
+
 ## Audited every "received" total after the paidAt-retention fix; added the missing display (Oct 16 2026)
 
 Follow-up to the previous entry: once `cancelPayment` stopped clearing `paidAt`, every place that

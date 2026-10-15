@@ -144,6 +144,36 @@ export function receivedTotal(payments: Array<{ status: string; amount: number }
   return sum(payments.filter((p) => p.status === 'paid').map((p) => p.amount))
 }
 
+/**
+ * The one correct definition of "overdue" for a Payment: `pending`, has a `dueDate` at all, and
+ * that date is in the past (day-level, same comparison dayDelta/dueLabel use for tasks). A
+ * payment with no `dueDate` — "awaiting milestone", tied to work completing rather than a
+ * calendar date — can never be overdue by definition; this function is the only place that rule
+ * needs to be correct, rather than every caller re-deriving it.
+ */
+export function isPaymentOverdue(payment: { status: string; dueDate?: string | null }): boolean {
+  return payment.status === 'pending' && !!payment.dueDate && dayDelta(payment.dueDate) < 0
+}
+
+/** A pending payment with no `dueDate` yet — waiting on a milestone, not a date. */
+export function isAwaitingMilestone(payment: { status: string; dueDate?: string | null }): boolean {
+  return payment.status === 'pending' && !payment.dueDate
+}
+
+/**
+ * Splits `total` into `percents.length` whole-unit integer parts that always sum to exactly
+ * `total`: every part but the last is `floor(total * percent / 100)`, and the last absorbs
+ * whatever rounding remainder is left over (positive or, with heavily-skewed percentages,
+ * occasionally negative-but-still-reconciling) — so a "Split into installments" action never
+ * leaves the parts a cent short of (or over) the deal's actual value.
+ */
+export function splitAmounts(total: number, percents: number[]): number[] {
+  if (percents.length === 0) return []
+  const parts = percents.slice(0, -1).map((p) => Math.floor((total * p) / 100))
+  const remainder = total - sum(parts)
+  return [...parts, remainder]
+}
+
 export function sortBy<T>(items: T[], value: (item: T) => number | string, dir: 'asc' | 'desc' = 'asc'): T[] {
   const factor = dir === 'asc' ? 1 : -1
   return [...items].sort((a, b) => {

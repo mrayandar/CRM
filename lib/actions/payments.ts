@@ -29,7 +29,11 @@ import {
   markPaymentPaid as dbMarkPaymentPaid,
   cancelPayment as dbCancelPayment,
   deletePayment as dbDeletePayment,
+  createPaymentsSplit as dbCreatePaymentsSplit,
+  type PaymentLabel,
 } from '@lib/data/payments'
+import { splitAmounts } from '@/lib/utils'
+import { PAYMENT_LABELS } from '@/data/types'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -43,19 +47,33 @@ function assertValidAmount(amount: number) {
   }
 }
 
+function assertValidLabel(label: unknown): asserts label is PaymentLabel {
+  if (!PAYMENT_LABELS.includes(label as PaymentLabel)) throw new Error('Invalid label')
+}
+
+/** Parses an optional due-date string. Empty/undefined means "awaiting milestone" (null) — a
+ *  deliberate, valid state, not a validation failure. */
+function parseOptionalDueDate(input: string | undefined): Date | null {
+  if (!input) return null
+  const dueDate = new Date(input)
+  if (Number.isNaN(dueDate.getTime())) throw new Error('Invalid due date')
+  return dueDate
+}
+
 export async function createPaymentAction(input: {
   id: string
   dealId: string
   amount: number
-  dueDate: string
+  label: PaymentLabel
+  dueDate?: string
   note?: string
 }) {
   const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
   assertClientId(input.id)
   assertValidAmount(input.amount)
+  assertValidLabel(input.label)
 
-  const dueDate = new Date(input.dueDate)
-  if (Number.isNaN(dueDate.getTime())) throw new Error('Invalid due date')
+  const dueDate = parseOptionalDueDate(input.dueDate)
   const note = input.note?.trim() || null
   if (note && note.length > 2000) throw new Error('Note is too long')
 
@@ -65,7 +83,7 @@ export async function createPaymentAction(input: {
 
   const payment = await dbCreatePayment(
     orgId,
-    { id: input.id, dealId: deal.id, amount: input.amount, dueDate, note, createdById: actorId },
+    { id: input.id, dealId: deal.id, amount: input.amount, label: input.label, dueDate, note, createdById: actorId },
     deal.name,
   )
   revalidatePath('/', 'layout')
@@ -75,14 +93,15 @@ export async function createPaymentAction(input: {
 export async function updatePaymentAction(input: {
   id: string
   amount: number
-  dueDate: string
+  label: PaymentLabel
+  dueDate?: string
   note?: string
 }) {
   const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
   assertValidAmount(input.amount)
+  assertValidLabel(input.label)
 
-  const dueDate = new Date(input.dueDate)
-  if (Number.isNaN(dueDate.getTime())) throw new Error('Invalid due date')
+  const dueDate = parseOptionalDueDate(input.dueDate)
   const note = input.note?.trim() || null
   if (note && note.length > 2000) throw new Error('Note is too long')
 
@@ -91,8 +110,53 @@ export async function updatePaymentAction(input: {
   const deal = await getDealById(orgId, payment.dealId)
   if (!deal) throw new Error('Deal not found')
 
-  await dbUpdatePayment(orgId, input.id, { amount: input.amount, dueDate, note }, actorId, deal.name)
+  await dbUpdatePayment(orgId, input.id, { amount: input.amount, label: input.label, dueDate, note }, actorId, deal.name)
   revalidatePath('/', 'layout')
+}
+
+/**
+ * Creates every installment for a deal in one go. Percentages (integers, each 1-99) must total
+ * exactly 100 — rejected otherwise, before anything is written. Amounts are computed server-side
+ * via splitAmounts(), never trusted from the client: the last installment absorbs whatever
+ * rounding remainder is left so the parts always sum to exactly the deal's current value.
+ */
+export async function splitPaymentAction(input: {
+  dealId: string
+  parts: Array<{ id: string; percent: number; label: PaymentLabel; dueDate?: string }>
+}) {
+  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+
+  if (!Array.isArray(input.parts) || input.parts.length < 2) {
+    throw new Error('Need at least two installments to split a payment')
+  }
+  const dueDates: Array<Date | null> = []
+  for (const part of input.parts) {
+    assertClientId(part.id)
+    assertValidLabel(part.label)
+    if (!Number.isInteger(part.percent) || part.percent <= 0 || part.percent >= 100) {
+      throw new Error('Each installment must be a whole percentage between 1 and 99')
+    }
+    dueDates.push(parseOptionalDueDate(part.dueDate))
+  }
+  const totalPercent = input.parts.reduce((sum, p) => sum + p.percent, 0)
+  if (totalPercent !== 100) throw new Error('Percentages must total exactly 100%')
+
+  // dealId comes from the client — must belong to this org before anything is linked to it.
+  const deal = await getDealById(orgId, input.dealId)
+  if (!deal) throw new Error('Deal not found')
+
+  const amounts = splitAmounts(deal.value, input.parts.map((p) => p.percent))
+  const rows = input.parts.map((part, i) => ({
+    id: part.id,
+    amount: amounts[i]!,
+    label: part.label,
+    dueDate: dueDates[i]!,
+    note: null,
+  }))
+
+  const created = await dbCreatePaymentsSplit(orgId, deal.id, rows, actorId, deal.name)
+  revalidatePath('/', 'layout')
+  return { payments: created.map((p) => ({ id: p.id, amount: p.amount })) }
 }
 
 export async function markPaymentPaidAction(paymentId: string) {

@@ -21,12 +21,13 @@ import { MenuDivider, MenuItem, MenuLabel, Popover } from '@/components/ui/Menu'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { EditDealModal } from '@/components/common/EditDealModal'
 import { StageManager } from '@/components/common/StageManager'
+import { useNavigate } from '@/lib/router-compat'
 import { useCrm } from '@/store/crm'
-import type { Deal, PipelineStage } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, sortBy, sum } from '@/lib/utils'
+import type { Deal, Payment, PipelineStage } from '@/data/types'
+import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, receivedTotal, sortBy, sum } from '@/lib/utils'
 
 export function Pipeline() {
-  const { deals, owners, ownerById, moveDeal, currentUser, stages, orgCurrency } = useCrm()
+  const { deals, owners, ownerById, moveDeal, currentUser, stages, orgCurrency, payments, canAccessPayments } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [query, setQuery] = useState('')
@@ -241,6 +242,8 @@ export function Pipeline() {
                     }}
                     onMove={(next) => moveDeal(deal.id, next)}
                     onEdit={() => setEditDealId(deal.id)}
+                    canAccessPayments={canAccessPayments}
+                    dealPayments={canAccessPayments ? payments.filter((p) => p.dealId === deal.id) : []}
                   />
                 ))}
 
@@ -295,6 +298,8 @@ function DealCard({
   onDragEnd,
   onMove,
   onEdit,
+  canAccessPayments,
+  dealPayments,
 }: {
   deal: Deal
   stage: PipelineStage
@@ -306,12 +311,20 @@ function DealCard({
   onDragEnd: () => void
   onMove: (stageId: string) => void
   onEdit: () => void
+  /** Privileged users only — see canAccessPayments in lib/auth.ts. Gates both the "View payments"
+   *  menu item and the received-vs-value progress bar below. */
+  canAccessPayments: boolean
+  /** Already filtered to this deal and already [] for a non-privileged caller (see Pipeline()) —
+   *  this component does no gating of its own, it just renders what it's given. */
+  dealPayments: Payment[]
 }) {
   const { logActivity, orgCurrency } = useCrm()
+  const navigate = useNavigate()
   const days = dayDelta(deal.closeDate)
   const closed = stage.isClosed
   const overdue = !closed && days < 0
   const urgent = !closed && days >= 0 && days <= 7
+  const received = receivedTotal(dealPayments)
 
   const ACTIVITY_VERB = { call: 'called', email: 'emailed', meeting: 'met with' } as const
   const logDealActivity = (kind: keyof typeof ACTIVITY_VERB) =>
@@ -412,6 +425,19 @@ function DealCard({
                 >
                   Edit deal
                 </MenuItem>
+                {canAccessPayments && (
+                  <>
+                    <MenuDivider />
+                    <MenuItem
+                      onClick={() => {
+                        navigate(`/payments?dealId=${deal.id}`)
+                        close()
+                      }}
+                    >
+                      View payments
+                    </MenuItem>
+                  </>
+                )}
               </>
             )}
           </Popover>
@@ -463,6 +489,25 @@ function DealCard({
           )}
         </span>
       </div>
+
+      {/* Privileged users only; never reconciled against the deal — see the Payments screen's own
+          received-vs-value banner for the same informational-only reasoning. */}
+      {canAccessPayments && stage.isWon && (
+        <div className="mt-2 border-t border-line pt-2">
+          <div className="flex items-center justify-between text-[10.5px] text-ink-500">
+            <span>Received</span>
+            <span className="tabular font-medium text-ink-700">
+              {currencyCompact(received, orgCurrency)} / {currencyCompact(deal.value, orgCurrency)}
+            </span>
+          </div>
+          <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-subtle">
+            <div
+              className={cn('h-full rounded-full', received >= deal.value ? 'bg-positive' : 'bg-ink-700/70')}
+              style={{ width: `${Math.min((received / Math.max(deal.value, 1)) * 100, 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
     </article>
   )
 }

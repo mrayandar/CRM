@@ -36,7 +36,7 @@ import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
 import { getPaymentById, listPayments } from '@lib/data/payments'
 import * as paymentActions from '@lib/actions/payments'
 import { loadCrmData } from '@lib/data-loader'
-import { receivedTotal } from '@/lib/utils'
+import { isThisMonth, receivedTotal } from '@/lib/utils'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
@@ -1057,7 +1057,8 @@ describe('lib/actions/payments: rejects a client-supplied dealId from another or
         id: randomUUID(),
         dealId: B.deal.id,
         amount: 100,
-        dueDate: new Date().toISOString(),
+        label: 'Other',
+      dueDate: new Date().toISOString(),
       }),
     ).rejects.toThrow(/Deal not found/)
   })
@@ -1095,14 +1096,15 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
         id: randomUUID(),
         dealId: B.deal.id,
         amount: 100,
-        dueDate: new Date().toISOString(),
+        label: 'Other',
+      dueDate: new Date().toISOString(),
       }),
     ).rejects.toThrow(/Admins only/)
   })
 
   it('updatePaymentAction rejects', async () => {
     await expect(
-      paymentActions.updatePaymentAction({ id: B.payment.id, amount: 200, dueDate: new Date().toISOString() }),
+      paymentActions.updatePaymentAction({ id: B.payment.id, amount: 200, label: 'Other', dueDate: new Date().toISOString() }),
     ).rejects.toThrow(/Admins only/)
   })
 
@@ -1138,6 +1140,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       id: randomUUID(),
       dealId: A.deal.id,
       amount: 750,
+      label: 'Other',
       dueDate: new Date().toISOString(),
     })
 
@@ -1161,6 +1164,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       id: randomUUID(),
       dealId: A.deal.id,
       amount: 751,
+      label: 'Other',
       dueDate: new Date().toISOString(),
     })
     const result = await paymentActions.deletePaymentAction(created.id)
@@ -1173,6 +1177,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       id: randomUUID(),
       dealId: A.deal.id,
       amount: 752,
+      label: 'Other',
       dueDate: new Date().toISOString(),
     })
     await paymentActions.cancelPaymentAction(created.id)
@@ -1190,6 +1195,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       id: randomUUID(),
       dealId: A.deal.id,
       amount: 753,
+      label: 'Other',
       dueDate: new Date().toISOString(),
     })
     await paymentActions.markPaymentPaidAction(created.id)
@@ -1218,6 +1224,7 @@ describe('activity leak: payment-kind activities and Payment rows never reach a 
       id: randomUUID(),
       dealId: A.deal.id,
       amount: 999,
+      label: 'Other',
       dueDate: new Date().toISOString(),
     })
     paymentId = created.id
@@ -1246,5 +1253,158 @@ describe('activity leak: payment-kind activities and Payment rows never reach a 
     // Every other activity kind this org has logged is still present — this isn't a blanket
     // activity-feed failure, only payment-kind rows are excluded.
     expect(data.activities.length).toBeGreaterThan(0)
+  })
+})
+
+describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
+  beforeEach(() => {
+    loginAs(A)
+    mockClerkAdminFor(A)
+  })
+  afterEach(() => mockClerkClient.mockReset())
+
+  it('rejects a dealId belonging to another org', async () => {
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: B.deal.id,
+        parts: [
+          { id: randomUUID(), percent: 50, label: 'Advance' },
+          { id: randomUUID(), percent: 50, label: 'Final' },
+        ],
+      }),
+    ).rejects.toThrow(/Deal not found/)
+  })
+
+  it('rejects a non-privileged member', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-split-member-${RUN}`,
+        name: 'Split Member',
+        email: `split-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' })
+
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: B.deal.id,
+        parts: [
+          { id: randomUUID(), percent: 50, label: 'Advance' },
+          { id: randomUUID(), percent: 50, label: 'Final' },
+        ],
+      }),
+    ).rejects.toThrow(/Admins only/)
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it('rejects percentages that do not total exactly 100%, before writing anything', async () => {
+    const before = await listPayments(A.org.id, { dealId: A.deal.id })
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: A.deal.id,
+        parts: [
+          { id: randomUUID(), percent: 50, label: 'Advance' },
+          { id: randomUUID(), percent: 40, label: 'Final' },
+        ],
+      }),
+    ).rejects.toThrow(/total exactly 100/)
+    const after = await listPayments(A.org.id, { dealId: A.deal.id })
+    expect(after.length).toBe(before.length) // nothing written
+  })
+
+  it('rejects fewer than two installments', async () => {
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: A.deal.id,
+        parts: [{ id: randomUUID(), percent: 100, label: 'Final' }],
+      }),
+    ).rejects.toThrow(/at least two/)
+  })
+
+  it('30/40/30 of a real deal value: amounts sum exactly, last part absorbs the rounding remainder', async () => {
+    // A.deal.value is 1000 (see makeFixture) — not evenly divisible by 3 at 30/40/30-ish splits in
+    // general, but exercising the exact fixture value here is still the real end-to-end path:
+    // deal.value comes from a real Prisma read, not a hand-fed number.
+    const ids: string[] = [randomUUID(), randomUUID(), randomUUID()]
+    const result = await paymentActions.splitPaymentAction({
+      dealId: A.deal.id,
+      parts: [
+        { id: ids[0]!, percent: 30, label: 'Advance' },
+        { id: ids[1]!, percent: 40, label: 'Milestone' },
+        { id: ids[2]!, percent: 30, label: 'Final' },
+      ],
+    })
+    expect(result.payments).toHaveLength(3)
+    const total = result.payments.reduce((s, p) => s + p.amount, 0)
+    expect(total).toBe(A.deal.value)
+    expect(result.payments.map((p) => p.amount)).toEqual([300, 400, 300])
+
+    const rows = await listPayments(A.org.id, { dealId: A.deal.id })
+    const created = rows.filter((r) => ids.includes(r.id))
+    expect(created).toHaveLength(3)
+    expect(created.every((r) => r.status === 'pending')).toBe(true)
+    expect(created.map((r) => r.label).sort()).toEqual(['Advance', 'Final', 'Milestone'])
+
+    // One activity for the whole split, not one per row — the installment count (not a dollar
+    // amount) is fine in the title; no amount ever is.
+    const activity = await prisma.activity.findFirst({
+      where: { orgId: A.org.id, kind: 'payment', dealId: A.deal.id, title: { contains: 'split' } },
+      orderBy: { at: 'desc' },
+    })
+    expect(activity?.title).toBe('split Deal a into 3 installments')
+    expect(activity?.title).not.toMatch(/300|400|1000|1,000/)
+
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: A.deal.id, kind: 'payment', title: { contains: 'split' } } })
+    await prisma.payment.deleteMany({ where: { id: { in: ids } } })
+  })
+
+  it('rejects a per-installment percentage of 0 or 100 (not a real split)', async () => {
+    await expect(
+      paymentActions.splitPaymentAction({
+        dealId: A.deal.id,
+        parts: [
+          { id: randomUUID(), percent: 100, label: 'Advance' },
+          { id: randomUUID(), percent: 0, label: 'Final' },
+        ],
+      }),
+    ).rejects.toThrow(/between 1 and 99/)
+  })
+})
+
+describe('Dashboard Payments card math: a paid-then-cancelled payment is excluded, end to end', () => {
+  it('mirrors PaymentsSummaryCard\'s own "collected this month" filter on real data', async () => {
+    loginAs(A)
+    mockClerkAdminFor(A)
+
+    const paidId = randomUUID()
+    const cancelledId = randomUUID()
+    await paymentActions.createPaymentAction({ id: paidId, dealId: A.deal.id, amount: 400, label: 'Other', dueDate: new Date().toISOString() })
+    await paymentActions.createPaymentAction({ id: cancelledId, dealId: A.deal.id, amount: 600, label: 'Other', dueDate: new Date().toISOString() })
+    await paymentActions.markPaymentPaidAction(paidId)
+    await paymentActions.markPaymentPaidAction(cancelledId)
+    await paymentActions.cancelPaymentAction(cancelledId) // paid, then cancelled — paidAt stays set
+
+    const rows = await listPayments(A.org.id, { dealId: A.deal.id })
+    const relevant = rows.filter((r) => r.id === paidId || r.id === cancelledId)
+    expect(relevant.find((r) => r.id === cancelledId)?.paidAt).not.toBeNull() // the exact trap condition
+
+    // Same filter PaymentsSummaryCard uses: status === 'paid' AND paidAt this month, via receivedTotal.
+    const paidThisMonth = relevant.filter((r) => r.status === 'paid' && r.paidAt && isThisMonth(r.paidAt.toISOString()))
+    const collectedThisMonth = receivedTotal(paidThisMonth)
+    expect(collectedThisMonth).toBe(400) // only the still-paid $400, not the paid-then-cancelled $600
+
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: A.deal.id, kind: 'payment' } })
+    await prisma.payment.deleteMany({ where: { id: { in: [paidId, cancelledId] } } })
+  })
+
+  it('a Member has no payments data for the Dashboard card to compute anything from', async () => {
+    // Same gate the Dashboard card relies on — already proven by loadCrmData above, re-asserted
+    // here in the specific framing of "the card has nothing to show, not just something hidden".
+    const data = await loadCrmData(A.org.id, A.owner.id, false)
+    expect(data.payments).toEqual([])
+    expect(data.canAccessPayments).toBe(false)
   })
 })

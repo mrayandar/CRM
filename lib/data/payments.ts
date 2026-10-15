@@ -9,7 +9,7 @@
 // requirePaymentAccess() (reads) or requirePaymentWriteAccess() (writes) in
 // lib/actions/payments.ts or the data loader — this module itself does no role
 // checking, same division of responsibility as every other lib/data/*.ts file.
-import type { PaymentStatus } from '@prisma/client'
+import type { PaymentLabel, PaymentStatus } from '@prisma/client'
 import { prisma } from '@lib/prisma'
 
 export interface ListPaymentsOptions {
@@ -33,7 +33,9 @@ export interface CreatePaymentInput {
   id: string
   dealId: string
   amount: number
-  dueDate: Date
+  label: PaymentLabel
+  /** Null means "awaiting milestone" — see the doc comment on Payment.dueDate in schema.prisma. */
+  dueDate: Date | null
   note: string | null
   createdById: string
 }
@@ -46,6 +48,7 @@ export function createPayment(orgId: string, data: CreatePaymentInput, dealLabel
         orgId,
         dealId: data.dealId,
         amount: data.amount,
+        label: data.label,
         dueDate: data.dueDate,
         note: data.note,
         createdById: data.createdById,
@@ -69,15 +72,72 @@ export function createPayment(orgId: string, data: CreatePaymentInput, dealLabel
   })
 }
 
+export interface SplitPaymentRow {
+  id: string
+  amount: number
+  label: PaymentLabel
+  dueDate: Date | null
+  note: string | null
+}
+
+/**
+ * Creates every installment row from a "Split into installments" action in one transaction — if
+ * any row fails, none of them are created, rather than leaving a partial split behind. Logs a
+ * single activity for the whole split, not one per row, same no-amount-in-title policy as every
+ * other payment activity.
+ */
+export function createPaymentsSplit(
+  orgId: string,
+  dealId: string,
+  rows: SplitPaymentRow[],
+  createdById: string,
+  dealLabel: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    const created = []
+    for (const row of rows) {
+      created.push(
+        await tx.payment.create({
+          data: {
+            id: row.id,
+            orgId,
+            dealId,
+            amount: row.amount,
+            label: row.label,
+            dueDate: row.dueDate,
+            note: row.note,
+            createdById,
+          },
+        }),
+      )
+    }
+    await tx.activity.create({
+      data: {
+        orgId,
+        kind: 'payment',
+        title: `split ${dealLabel} into ${rows.length} installments`,
+        actorId: createdById,
+        subjectType: 'deal',
+        subjectLabel: dealLabel,
+        dealId,
+      },
+    })
+    return created
+  })
+}
+
 export interface UpdatePaymentInput {
   amount: number
-  dueDate: Date
+  label: PaymentLabel
+  /** Null means "awaiting milestone". Editing lets a milestone's date be set later, once known —
+   *  going from null to a real date (or back) is just another field change. */
+  dueDate: Date | null
   note: string | null
 }
 
 /** No-op save (nothing actually differs) skips the write and the activity, same convention as
  *  updateTask/updateDeal/updateLead. Editing is allowed regardless of status (pending/paid/
- *  cancelled) — only *deleting* is restricted to pending (see deletePayment). */
+ *  cancelled) — only *deleting* is restricted (see deletePayment). */
 export async function updatePayment(
   orgId: string,
   id: string,
@@ -89,15 +149,18 @@ export async function updatePayment(
     const existing = await tx.payment.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Payment ${id} not found in org ${orgId}`)
 
+    const existingDueDateMs = existing.dueDate ? +existing.dueDate : null
+    const nextDueDateMs = data.dueDate ? +data.dueDate : null
     const changed =
       existing.amount !== data.amount ||
-      +existing.dueDate !== +data.dueDate ||
+      existing.label !== data.label ||
+      existingDueDateMs !== nextDueDateMs ||
       (existing.note ?? '') !== (data.note ?? '')
     if (!changed) return existing
 
     const updated = await tx.payment.update({
       where: { id },
-      data: { amount: data.amount, dueDate: data.dueDate, note: data.note },
+      data: { amount: data.amount, label: data.label, dueDate: data.dueDate, note: data.note },
     })
 
     await tx.activity.create({
@@ -210,4 +273,4 @@ export async function deletePayment(orgId: string, id: string, actorId: string, 
   })
 }
 
-export type { PaymentStatus }
+export type { PaymentStatus, PaymentLabel }

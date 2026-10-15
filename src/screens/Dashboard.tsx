@@ -15,22 +15,39 @@ import { ActivityFeed } from '@/components/common/ActivityStream'
 import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { useCrm } from '@/store/crm'
+import type { Payment } from '@/data/types'
 import {
   currency,
   currencyCompact,
   dayDelta,
   formatDate,
+  isAwaitingMilestone,
   isMonthsAgo,
+  isPaymentOverdue,
   isThisMonth,
   momDelta,
   monthlyWonRevenue,
   percent,
+  receivedTotal,
   sortBy,
   sum,
 } from '@/lib/utils'
 
 export function Dashboard() {
-  const { deals, leads, tasks, activities, currentUser, ownerById, stages, stageById, quarterlyQuota, orgCurrency } = useCrm()
+  const {
+    deals,
+    leads,
+    tasks,
+    activities,
+    currentUser,
+    ownerById,
+    stages,
+    stageById,
+    quarterlyQuota,
+    orgCurrency,
+    payments,
+    canAccessPayments,
+  } = useCrm()
   const [newDealOpen, setNewDealOpen] = useState(false)
   const [taskScope, setTaskScope] = useState<'mine' | 'team'>('mine')
   // Bound to this org's currency — see src/lib/utils.ts; every money display on this page goes
@@ -408,6 +425,13 @@ export function Dashboard() {
               )}
             </Card>
 
+            {/* Admin-only — see canAccessPayments in lib/auth.ts. Computed from `payments` only,
+                never from Deal values, same as the Payments screen's own totals. For a Member,
+                `canAccessPayments` is false and `payments` is already [] (loadCrmData never
+                queries Payment rows for them), so this renders nothing and has nothing to render
+                from even if the gate were somehow bypassed client-side. */}
+            {canAccessPayments && <PaymentsSummaryCard payments={payments} orgCurrency={orgCurrency} />}
+
             <Card>
               <CardHeader
                 title="Recent activity"
@@ -429,6 +453,57 @@ export function Dashboard() {
 
       {newDealOpen && <NewDealModal onClose={() => setNewDealOpen(false)} />}
     </PageShell>
+  )
+}
+
+function PaymentsSummaryCard({ payments, orgCurrency }: { payments: Payment[]; orgCurrency: string }) {
+  const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
+  // Collected this month: status === 'paid' (via receivedTotal, never paidAt alone) AND paidAt
+  // falls in the current calendar month. A payment paid and then cancelled fails the status
+  // check and is correctly excluded even though its paidAt is still set.
+  const paidThisMonth = payments.filter((p) => p.status === 'paid' && p.paidAt && isThisMonth(p.paidAt))
+  const collectedThisMonth = receivedTotal(paidThisMonth)
+  const overduePayments = payments.filter(isPaymentOverdue)
+  const overdueAmount = sum(overduePayments.map((p) => p.amount))
+  const awaitingCount = payments.filter(isAwaitingMilestone).length
+
+  return (
+    <Card>
+      <CardHeader
+        title="Payments"
+        subtitle="Admin-only"
+        action={
+          <Link to="/payments">
+            <Button variant="ghost" size="xs" trailingIcon={<ChevronRight size={13} />}>
+              Open
+            </Button>
+          </Link>
+        }
+      />
+      <div className="grid grid-cols-3 divide-x divide-line">
+        <div className="px-4 py-4">
+          <p className="text-[11px] leading-4 text-ink-500">Collected this month</p>
+          <p className="tabular mt-1.5 text-[17px] leading-5 font-semibold text-ink-900">
+            {fmtCompact(collectedThisMonth)}
+          </p>
+        </div>
+        <div className="px-4 py-4">
+          <p className="text-[11px] leading-4 text-ink-500">Overdue</p>
+          <p
+            className={`tabular mt-1.5 text-[17px] leading-5 font-semibold ${
+              overduePayments.length > 0 ? 'text-negative' : 'text-ink-900'
+            }`}
+          >
+            {fmtCompact(overdueAmount)}
+            <span className="ml-1 text-[11px] font-normal text-ink-400">· {overduePayments.length}</span>
+          </p>
+        </div>
+        <div className="px-4 py-4">
+          <p className="text-[11px] leading-4 text-ink-500">Awaiting milestone</p>
+          <p className="tabular mt-1.5 text-[17px] leading-5 font-semibold text-ink-900">{awaitingCount}</p>
+        </div>
+      </div>
+    </Card>
   )
 }
 

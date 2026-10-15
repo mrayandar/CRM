@@ -20,6 +20,7 @@ import type {
   LeadStatus,
   Owner,
   Payment,
+  PaymentLabel,
   PipelineStage,
   Priority,
   Task,
@@ -59,6 +60,7 @@ import {
   markPaymentPaidAction,
   cancelPaymentAction,
   deletePaymentAction,
+  splitPaymentAction,
 } from '@lib/actions/payments'
 import type { CrmInitialData } from '@lib/data-loader'
 
@@ -169,19 +171,28 @@ export interface UpdateTaskInput {
 export interface NewPaymentInput {
   dealId: string
   amount: number
-  /** ISO timestamp */
-  dueDate: string
+  label: PaymentLabel
+  /** ISO timestamp, or omit for "awaiting milestone" (no due date yet). */
+  dueDate?: string
   note?: string
 }
 
 export interface UpdatePaymentInput {
   amount: number
-  /** ISO timestamp */
-  dueDate: string
+  label: PaymentLabel
+  /** ISO timestamp, or omit for "awaiting milestone". */
+  dueDate?: string
   note?: string
 }
 
 export type DeletePaymentResult = { ok: true } | { ok: false; error: string }
+
+export interface SplitPaymentPart {
+  percent: number
+  label: PaymentLabel
+  /** ISO timestamp, or omit for "awaiting milestone". */
+  dueDate?: string
+}
 
 interface CrmState {
   owners: Owner[]
@@ -275,6 +286,15 @@ interface CrmState {
   cancelPayment: (paymentId: string) => void
   /** Deletes a payment outright; blocked server-side (returns {ok:false, error}) once it's marked paid — cancel it instead. */
   deletePayment: (paymentId: string) => Promise<DeletePaymentResult>
+  /**
+   * Splits a deal's value into installments in one server round-trip. `parts`' percentages must
+   * total exactly 100 (enforced server-side; amounts are computed there too, never trusted from
+   * the client). Not routed through persist()'s optimistic-then-rollback pattern — awaits the
+   * server response and uses its computed amounts directly, since reinventing the rounding
+   * client-side just to show an optimistic row risks it disagreeing with what's actually written.
+   * Throws on failure (validation or role rejection); the caller shows the message.
+   */
+  splitPayment: (dealId: string, parts: SplitPaymentPart[]) => Promise<void>
   addNote: (subject: SubjectRef, body: string) => void
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
   /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
@@ -1397,6 +1417,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         dealId: input.dealId,
         amount: input.amount,
         status: 'pending',
+        label: input.label,
         dueDate: input.dueDate,
         note: input.note?.trim() || undefined,
         createdById: currentUser.id,
@@ -1405,7 +1426,15 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
       setPayments((prev) => [payment, ...prev])
       persist(
-        () => createPaymentAction({ id, dealId: input.dealId, amount: input.amount, dueDate: input.dueDate, note: input.note }),
+        () =>
+          createPaymentAction({
+            id,
+            dealId: input.dealId,
+            amount: input.amount,
+            label: input.label,
+            dueDate: input.dueDate,
+            note: input.note,
+          }),
         () => setPayments((prev) => prev.filter((p) => p.id !== id)),
         undefined,
         "Couldn't save the payment, please try again.",
@@ -1419,22 +1448,61 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       const payment = payments.find((p) => p.id === paymentId)
       if (!payment) return
 
-      const trimmed = { amount: input.amount, dueDate: input.dueDate, note: input.note?.trim() || undefined }
+      const trimmed = {
+        amount: input.amount,
+        label: input.label,
+        dueDate: input.dueDate,
+        note: input.note?.trim() || undefined,
+      }
       const changed =
-        payment.amount !== trimmed.amount || payment.dueDate !== trimmed.dueDate || payment.note !== trimmed.note
+        payment.amount !== trimmed.amount ||
+        payment.label !== trimmed.label ||
+        payment.dueDate !== trimmed.dueDate ||
+        payment.note !== trimmed.note
       if (!changed) return
 
       const next: Payment = { ...payment, ...trimmed, updatedAt: new Date().toISOString() }
       setPayments((prev) => prev.map((p) => (p.id === paymentId ? next : p)))
 
       persist(
-        () => updatePaymentAction({ id: paymentId, amount: input.amount, dueDate: input.dueDate, note: input.note }),
+        () =>
+          updatePaymentAction({
+            id: paymentId,
+            amount: input.amount,
+            label: input.label,
+            dueDate: input.dueDate,
+            note: input.note,
+          }),
         () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
         undefined,
         "Couldn't save the changes, please try again.",
       )
     },
     [payments, persist],
+  )
+
+  const splitPayment = useCallback(
+    async (dealId: string, parts: SplitPaymentPart[]): Promise<void> => {
+      const ids = parts.map(() => newEntityId())
+      const now = new Date().toISOString()
+      const result = await splitPaymentAction({
+        dealId,
+        parts: parts.map((p, i) => ({ id: ids[i]!, percent: p.percent, label: p.label, dueDate: p.dueDate })),
+      })
+      const created: Payment[] = parts.map((p, i) => ({
+        id: ids[i]!,
+        dealId,
+        amount: result.payments[i]!.amount,
+        status: 'pending',
+        label: p.label,
+        dueDate: p.dueDate,
+        createdById: currentUser.id,
+        createdAt: now,
+        updatedAt: now,
+      }))
+      setPayments((prev) => [...created, ...prev])
+    },
+    [currentUser.id],
   )
 
   const markPaymentPaid = useCallback(
@@ -1568,6 +1636,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       markPaymentPaid,
       cancelPayment,
       deletePayment,
+      splitPayment,
       addNote,
       logActivity: pushActivity,
       updateProfile,
@@ -1617,6 +1686,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       markPaymentPaid,
       cancelPayment,
       deletePayment,
+      splitPayment,
       addNote,
       pushActivity,
       updateProfile,

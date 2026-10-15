@@ -134,6 +134,9 @@ export type ActivityKind =
 
 export type PaymentStatus = 'pending' | 'paid' | 'cancelled'
 
+export const PAYMENT_LABELS = ['Advance', 'Milestone', 'Final', 'Other'] as const
+export type PaymentLabel = (typeof PAYMENT_LABELS)[number]
+
 /** Admin-only (requirePaymentAccess/requirePaymentWriteAccess, see lib/auth.ts). Tracks a single
  *  expected/received amount against a Deal (treated as the "project" — no separate Project
  *  entity). Never changes automatically when the parent Deal's value changes — purely
@@ -144,8 +147,13 @@ export interface Payment {
   dealId: string
   amount: number
   status: PaymentStatus
-  dueDate: string
-  /** Set only while status is 'paid'. */
+  label: PaymentLabel
+  /** Undefined means "awaiting milestone" — tied to work completing, not a calendar date. Never
+   *  counts as overdue (see isPaymentOverdue in src/lib/utils.ts). Can be set later through the
+   *  normal edit flow once the milestone date is known. */
+  dueDate?: string
+  /** Set only while status is 'paid', and kept even if later cancelled — see cancelPayment in
+   *  lib/data/payments.ts for why. */
   paidAt?: string
   note?: string
   createdById: string

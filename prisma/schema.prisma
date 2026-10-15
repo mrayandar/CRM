@@ -81,6 +81,15 @@ enum PaymentStatus {
   cancelled
 }
 
+/// What a Payment represents within a deal paid in parts. Purely descriptive — nothing in the
+/// app branches logic on this besides display and the default assigned by the split action.
+enum PaymentLabel {
+  Advance
+  Milestone
+  Final
+  Other
+}
+
 /** What a Task or Activity is attached to — a lightweight polymorphic reference. */
 enum SubjectType {
   lead
@@ -328,9 +337,15 @@ model Payment {
   orgId   String
   amount  Int
   status  PaymentStatus @default(pending)
-  dueDate DateTime
-  /// Set only when status transitions to `paid`; cleared if later cancelled (see
-  /// lib/actions/payments.ts) — a cancelled payment was never actually received.
+  label   PaymentLabel  @default(Other)
+  /// Null means "awaiting milestone" — an installment tied to work completing rather than a
+  /// calendar date (e.g. "on delivery"). Never counts as overdue, and gets its own bucket in the
+  /// Payments screen. Set later through the normal edit flow once the milestone date is known.
+  dueDate DateTime?
+  /// Set only when status transitions to `paid`. Deliberately NOT cleared if later cancelled (see
+  /// cancelPayment in lib/data/payments.ts) — a payment that was paid and then cancelled must stay
+  /// permanently undeletable and keep reading as "paid on X, then cancelled". Received-total math
+  /// (receivedTotal in src/lib/utils.ts) excludes it by `status`, never by this field.
   paidAt  DateTime?
   note    String?
 

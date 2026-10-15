@@ -1,19 +1,32 @@
 'use client'
 
 import { useMemo, useState, type ReactNode } from 'react'
-import { Download, Plus, Wallet, X } from 'lucide-react'
+import { Download, Plus, SplitSquareHorizontal, Wallet, X } from 'lucide-react'
 import { useSearchParams } from '@/lib/router-compat'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
-import { Input, Label, Select, Textarea } from '@/components/ui/Field'
+import { Input, Label, Segmented, Select, Textarea } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/ui/Display'
+import { Tag } from '@/components/ui/Badge'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
-import type { Payment, PaymentStatus } from '@/data/types'
-import { currency, currencySymbol, dayDelta, exportCsv, formatDate, receivedTotal, sortBy } from '@/lib/utils'
+import type { Payment, PaymentLabel, PaymentStatus } from '@/data/types'
+import { PAYMENT_LABELS } from '@/data/types'
+import {
+  currency,
+  currencySymbol,
+  exportCsv,
+  formatDate,
+  isAwaitingMilestone,
+  isPaymentOverdue,
+  receivedTotal,
+  sortBy,
+  splitAmounts,
+  sum,
+} from '@/lib/utils'
 
 const STATUS_TONE: Record<PaymentStatus, 'neutral' | 'positive' | 'negative' | 'warning'> = {
   pending: 'neutral',
@@ -27,12 +40,7 @@ const STATUS_LABEL: Record<PaymentStatus, string> = {
   cancelled: 'Cancelled',
 }
 
-/** A pending payment past its due date — same day-level comparison dayDelta/dueLabel use for
- *  tasks, applied here instead of inventing a second definition of "overdue". Computed on read,
- *  never stored. */
-function isOverdue(payment: Payment): boolean {
-  return payment.status === 'pending' && dayDelta(payment.dueDate) < 0
-}
+type Filter = 'all' | 'overdue' | 'awaiting' | 'paid' | 'cancelled'
 
 /** The "Paid" column's text. A payment that was paid and then cancelled keeps its `paidAt` (see
  *  cancelPayment in lib/data/payments.ts) specifically so this history stays visible, rather than
@@ -44,17 +52,48 @@ function paidColumnText(payment: Payment): string {
     : formatDate(payment.paidAt)
 }
 
+function dueColumnText(payment: Payment): string {
+  if (isAwaitingMilestone(payment)) return 'Awaiting milestone'
+  if (!payment.dueDate) return '—'
+  return formatDate(payment.dueDate)
+}
+
 export function Payments() {
   const { payments, deals, orgCurrency } = useCrm()
   const [searchParams] = useSearchParams()
   const dealId = searchParams.get('dealId') || undefined
+  const [filter, setFilter] = useState<Filter>('all')
   const [newOpen, setNewOpen] = useState(false)
+  const [splitOpen, setSplitOpen] = useState(false)
   const [editing, setEditing] = useState<Payment | null>(null)
   const [deleting, setDeleting] = useState<Payment | null>(null)
 
   const deal = dealId ? deals.find((d) => d.id === dealId) : undefined
   const scoped = dealId ? payments.filter((p) => p.dealId === dealId) : payments
-  const rows = sortBy(scoped, (p) => (isOverdue(p) ? 0 : 1), 'asc')
+
+  const overdue = scoped.filter(isPaymentOverdue)
+  const awaiting = scoped.filter(isAwaitingMilestone)
+  const paid = scoped.filter((p) => p.status === 'paid')
+  const cancelled = scoped.filter((p) => p.status === 'cancelled')
+  const pendingWithDate = scoped.filter((p) => p.status === 'pending' && !isAwaitingMilestone(p) && !isPaymentOverdue(p))
+
+  const filtered = useMemo(() => {
+    switch (filter) {
+      case 'overdue':
+        return overdue
+      case 'awaiting':
+        return awaiting
+      case 'paid':
+        return paid
+      case 'cancelled':
+        return cancelled
+      default:
+        return scoped
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, scoped, overdue, awaiting, paid, cancelled])
+
+  const rows = sortBy(filtered, (p) => (isPaymentOverdue(p) ? 0 : 1), 'asc')
 
   const dealName = (id: string) => deals.find((d) => d.id === id)?.name ?? 'Unknown deal'
 
@@ -72,8 +111,9 @@ export function Payments() {
         deal: dealName(p.dealId),
         amount: p.amount,
         currency: orgCurrency,
+        label: p.label,
         status: p.status,
-        dueDate: p.dueDate,
+        dueDate: p.dueDate ?? '',
         paidAt: p.paidAt ?? '',
         note: p.note ?? '',
       })),
@@ -84,9 +124,19 @@ export function Payments() {
     <PageShell
       back={dealId ? '/payments' : undefined}
       title={deal ? `Payments · ${deal.name}` : 'Payments'}
-      subtitle={`${rows.length} ${rows.length === 1 ? 'payment' : 'payments'}${dealId ? ' for this deal' : ''}`}
+      subtitle={`${scoped.length} ${scoped.length === 1 ? 'payment' : 'payments'}${dealId ? ' for this deal' : ''}`}
       actions={
         <>
+          {deal && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<SplitSquareHorizontal size={14} />}
+              onClick={() => setSplitOpen(true)}
+            >
+              Split into installments
+            </Button>
+          )}
           <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportPayments}>
             Export
           </Button>
@@ -105,17 +155,46 @@ export function Payments() {
           </div>
         )}
 
+        <SummaryTiles
+          collected={receivedTotal(scoped)}
+          pendingAmount={sum(pendingWithDate.map((p) => p.amount))}
+          pendingCount={pendingWithDate.length}
+          overdueAmount={sum(overdue.map((p) => p.amount))}
+          overdueCount={overdue.length}
+          awaitingCount={awaiting.length}
+          currencyCode={orgCurrency}
+        />
+
+        <div className="flex items-center">
+          <Segmented
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: 'all', label: 'All', count: scoped.length },
+              { value: 'overdue', label: 'Overdue', count: overdue.length },
+              { value: 'awaiting', label: 'Awaiting milestone', count: awaiting.length },
+              { value: 'paid', label: 'Paid', count: paid.length },
+              { value: 'cancelled', label: 'Cancelled', count: cancelled.length },
+            ]}
+          />
+        </div>
+
         <Card className="overflow-hidden">
           {rows.length === 0 ? (
             <EmptyState
               icon={<Wallet size={16} />}
-              title={dealId ? 'No payments on this deal yet' : 'No payments yet'}
-              description="Log an expected or received amount against a deal to start tracking it here."
+              title={scoped.length === 0 ? (dealId ? 'No payments on this deal yet' : 'No payments yet') : 'No payments match this filter'}
+              description={
+                scoped.length === 0
+                  ? 'Log an expected or received amount against a deal to start tracking it here.'
+                  : 'Try a different filter.'
+              }
             />
           ) : (
             <TableShell>
               <Thead>
                 {!dealId && <Th>Deal</Th>}
+                <Th>Label</Th>
                 <Th align="right">Amount</Th>
                 <Th>Status</Th>
                 <Th>Due date</Th>
@@ -133,15 +212,20 @@ export function Payments() {
                         </span>
                       </Td>
                     )}
+                    <Td>
+                      <Tag>{payment.label}</Tag>
+                    </Td>
                     <Td align="right" className="tabular font-medium text-ink-900">
                       {currency(payment.amount, orgCurrency)}
                     </Td>
                     <Td>
-                      <Badge tone={isOverdue(payment) ? 'negative' : STATUS_TONE[payment.status]}>
-                        {isOverdue(payment) ? 'Overdue' : STATUS_LABEL[payment.status]}
+                      <Badge tone={isPaymentOverdue(payment) ? 'negative' : STATUS_TONE[payment.status]}>
+                        {isPaymentOverdue(payment) ? 'Overdue' : STATUS_LABEL[payment.status]}
                       </Badge>
                     </Td>
-                    <Td className="text-ink-600">{formatDate(payment.dueDate)}</Td>
+                    <Td className={isAwaitingMilestone(payment) ? 'text-ink-400 italic' : 'text-ink-600'}>
+                      {dueColumnText(payment)}
+                    </Td>
                     <Td className="text-ink-600">{paidColumnText(payment)}</Td>
                     <Td className="max-w-[220px] truncate text-ink-500">{payment.note || '—'}</Td>
                     <Td align="right">
@@ -160,9 +244,52 @@ export function Payments() {
       </div>
 
       {newOpen && <NewPaymentModal defaultDealId={dealId} onClose={() => setNewOpen(false)} />}
+      {splitOpen && deal && <SplitPaymentModal deal={deal} onClose={() => setSplitOpen(false)} />}
       {editing && <EditPaymentModal payment={editing} onClose={() => setEditing(null)} />}
       {deleting && <DeletePaymentModal payment={deleting} onClose={() => setDeleting(null)} />}
     </PageShell>
+  )
+}
+
+function SummaryTiles({
+  collected,
+  pendingAmount,
+  pendingCount,
+  overdueAmount,
+  overdueCount,
+  awaitingCount,
+  currencyCode,
+}: {
+  collected: number
+  pendingAmount: number
+  pendingCount: number
+  overdueAmount: number
+  overdueCount: number
+  awaitingCount: number
+  currencyCode: string
+}) {
+  const fmt = (v: number) => currency(v, currencyCode)
+  const tiles: Array<{ label: string; value: string; footer: string; tone?: 'negative' }> = [
+    { label: 'Collected', value: fmt(collected), footer: 'Sum of paid payments' },
+    { label: 'Pending', value: fmt(pendingAmount), footer: `${pendingCount} with a due date, not yet overdue` },
+    { label: 'Overdue', value: fmt(overdueAmount), footer: `${overdueCount} ${overdueCount === 1 ? 'payment' : 'payments'}`, tone: 'negative' },
+    { label: 'Awaiting milestone', value: String(awaitingCount), footer: 'No due date set yet' },
+  ]
+  return (
+    <div className="grid grid-cols-1 overflow-hidden rounded-card border border-line bg-surface shadow-hairline sm:grid-cols-2 lg:grid-cols-4">
+      {tiles.map((tile, i) => (
+        <div
+          key={tile.label}
+          className={`border-line px-5 py-4 ${i > 0 ? 'border-t sm:border-t-0' : ''} ${i % 2 === 1 ? 'sm:border-l' : ''} ${i >= 2 ? 'sm:border-t lg:border-t-0' : ''} ${i > 0 ? 'lg:border-l' : ''}`}
+        >
+          <p className="text-[12px] leading-4 font-medium text-ink-500">{tile.label}</p>
+          <p className={`mt-2 tabular text-[22px] leading-7 font-semibold tracking-[-0.02em] ${tile.tone === 'negative' && (overdueCount > 0) ? 'text-negative' : 'text-ink-900'}`}>
+            {tile.value}
+          </p>
+          <p className="mt-1 text-[11.5px] leading-4 text-ink-400">{tile.footer}</p>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -202,11 +329,15 @@ function PaymentActions({
   )
 }
 
+const LABEL_OPTIONS: PaymentLabel[] = [...PAYMENT_LABELS]
+
 function NewPaymentModal({ defaultDealId, onClose }: { defaultDealId?: string; onClose: () => void }) {
   const { addPayment, deals, orgCurrency } = useCrm()
   const sortedDeals = useMemo(() => sortBy(deals, (d) => d.name.toLowerCase()), [deals])
   const [dealId, setDealId] = useState(defaultDealId ?? sortedDeals[0]?.id ?? '')
   const [amount, setAmount] = useState('')
+  const [label, setLabel] = useState<PaymentLabel>('Other')
+  const [awaitingMilestone, setAwaitingMilestone] = useState(false)
   const [dueDate, setDueDate] = useState(() => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -214,14 +345,15 @@ function NewPaymentModal({ defaultDealId, onClose }: { defaultDealId?: string; o
   const [note, setNote] = useState('')
 
   const numericAmount = Number(amount.replace(/[^0-9]/g, '')) || 0
-  const canSubmit = dealId !== '' && numericAmount > 0 && dueDate !== ''
+  const canSubmit = dealId !== '' && numericAmount > 0 && (awaitingMilestone || dueDate !== '')
 
   const submit = () => {
     if (!canSubmit) return
     addPayment({
       dealId,
       amount: numericAmount,
-      dueDate: new Date(`${dueDate}T12:00:00`).toISOString(),
+      label,
+      dueDate: awaitingMilestone ? undefined : new Date(`${dueDate}T12:00:00`).toISOString(),
       note: note.trim() || undefined,
     })
     onClose()
@@ -275,10 +407,36 @@ function NewPaymentModal({ defaultDealId, onClose }: { defaultDealId?: string; o
               />
             </div>
           </Field>
-          <Field label="Due date">
-            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          <Field label="Label">
+            <Select value={label} onChange={(e) => setLabel(e.target.value as PaymentLabel)} className="h-9">
+              {LABEL_OPTIONS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </Select>
           </Field>
         </div>
+        <Field label="Due date">
+          <div className="space-y-2">
+            <Input
+              type="date"
+              value={dueDate}
+              disabled={awaitingMilestone}
+              onChange={(e) => setDueDate(e.target.value)}
+              className={awaitingMilestone ? 'opacity-50' : undefined}
+            />
+            <label className="flex items-center gap-2 text-[12px] text-ink-600">
+              <input
+                type="checkbox"
+                checked={awaitingMilestone}
+                onChange={(e) => setAwaitingMilestone(e.target.checked)}
+                className="size-3.5"
+              />
+              Awaiting milestone — no due date yet; set it later once the work completes
+            </label>
+          </div>
+        </Field>
         <Field label="Note">
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional…" />
         </Field>
@@ -290,18 +448,31 @@ function NewPaymentModal({ defaultDealId, onClose }: { defaultDealId?: string; o
 function EditPaymentModal({ payment, onClose }: { payment: Payment; onClose: () => void }) {
   const { updatePayment, orgCurrency } = useCrm()
   const [amount, setAmount] = useState(payment.amount.toLocaleString('en-US'))
-  const [dueDate, setDueDate] = useState(payment.dueDate.slice(0, 10))
+  const [label, setLabel] = useState<PaymentLabel>(payment.label)
+  const [awaitingMilestone, setAwaitingMilestone] = useState(!payment.dueDate)
+  const [dueDate, setDueDate] = useState(() => {
+    if (payment.dueDate) return payment.dueDate.slice(0, 10)
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
   const [note, setNote] = useState(payment.note ?? '')
 
   const numericAmount = Number(amount.replace(/[^0-9]/g, '')) || 0
-  const canSubmit = numericAmount > 0 && dueDate !== ''
+  const canSubmit = numericAmount > 0 && (awaitingMilestone || dueDate !== '')
 
   const submit = () => {
     if (!canSubmit) return
-    const dateTouched = dueDate !== payment.dueDate.slice(0, 10)
+    const originalDateOnly = payment.dueDate?.slice(0, 10)
+    const dateTouched = dueDate !== originalDateOnly
+    const nextDueDate = awaitingMilestone
+      ? undefined
+      : dateTouched || !payment.dueDate
+        ? new Date(`${dueDate}T12:00:00`).toISOString()
+        : payment.dueDate
     updatePayment(payment.id, {
       amount: numericAmount,
-      dueDate: dateTouched ? new Date(`${dueDate}T12:00:00`).toISOString() : payment.dueDate,
+      label,
+      dueDate: nextDueDate,
       note: note.trim() || undefined,
     })
     onClose()
@@ -343,10 +514,36 @@ function EditPaymentModal({ payment, onClose }: { payment: Payment; onClose: () 
               />
             </div>
           </Field>
-          <Field label="Due date">
-            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          <Field label="Label">
+            <Select value={label} onChange={(e) => setLabel(e.target.value as PaymentLabel)} className="h-9">
+              {LABEL_OPTIONS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </Select>
           </Field>
         </div>
+        <Field label="Due date">
+          <div className="space-y-2">
+            <Input
+              type="date"
+              value={dueDate}
+              disabled={awaitingMilestone}
+              onChange={(e) => setDueDate(e.target.value)}
+              className={awaitingMilestone ? 'opacity-50' : undefined}
+            />
+            <label className="flex items-center gap-2 text-[12px] text-ink-600">
+              <input
+                type="checkbox"
+                checked={awaitingMilestone}
+                onChange={(e) => setAwaitingMilestone(e.target.checked)}
+                className="size-3.5"
+              />
+              Awaiting milestone — no due date yet; set it later once the work completes
+            </label>
+          </div>
+        </Field>
         <Field label="Note">
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional…" />
         </Field>
@@ -392,6 +589,163 @@ function DeletePaymentModal({ payment, onClose }: { payment: Payment; onClose: (
         Delete this {currency(payment.amount, orgCurrency)} payment? This can&apos;t be undone.
       </p>
       {error && <p className="mt-2 text-[12px] leading-5 text-negative">{error}</p>}
+    </Modal>
+  )
+}
+
+type Preset = '50-50' | '30-40-30' | 'custom'
+
+interface SplitRow {
+  percent: number
+  label: PaymentLabel
+  dueDate: string
+}
+
+function presetRows(preset: Preset): SplitRow[] {
+  if (preset === '50-50') {
+    return [
+      { percent: 50, label: 'Advance', dueDate: '' },
+      { percent: 50, label: 'Final', dueDate: '' },
+    ]
+  }
+  if (preset === '30-40-30') {
+    return [
+      { percent: 30, label: 'Advance', dueDate: '' },
+      { percent: 40, label: 'Milestone', dueDate: '' },
+      { percent: 30, label: 'Final', dueDate: '' },
+    ]
+  }
+  return [
+    { percent: 50, label: 'Other', dueDate: '' },
+    { percent: 50, label: 'Other', dueDate: '' },
+  ]
+}
+
+function SplitPaymentModal({ deal, onClose }: { deal: { id: string; name: string; value: number }; onClose: () => void }) {
+  const { splitPayment, orgCurrency } = useCrm()
+  const [preset, setPreset] = useState<Preset>('50-50')
+  const [rows, setRows] = useState<SplitRow[]>(presetRows('50-50'))
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const totalPercent = sum(rows.map((r) => r.percent))
+  const amounts = useMemo(() => splitAmounts(deal.value, rows.map((r) => r.percent)), [deal.value, rows])
+  const canSubmit = totalPercent === 100 && rows.length >= 2 && !submitting
+
+  const applyPreset = (next: Preset) => {
+    setPreset(next)
+    setRows(presetRows(next))
+  }
+
+  const updateRow = (index: number, patch: Partial<SplitRow>) => {
+    setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)))
+  }
+
+  const addRow = () => setRows((prev) => [...prev, { percent: 0, label: 'Other', dueDate: '' }])
+  const removeRow = (index: number) => setRows((prev) => prev.filter((_, i) => i !== index))
+
+  const submit = async () => {
+    if (!canSubmit) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await splitPayment(
+        deal.id,
+        rows.map((r) => ({
+          percent: r.percent,
+          label: r.label,
+          dueDate: r.dueDate ? new Date(`${r.dueDate}T12:00:00`).toISOString() : undefined,
+        })),
+      )
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't split the payment, please try again.")
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      width={560}
+      title="Split into installments"
+      description={`From ${deal.name}'s value of ${currency(deal.value, orgCurrency)}. Changing the deal's value later does not change these amounts.`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            {submitting ? 'Splitting…' : `Create ${rows.length} payments`}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Segmented
+          value={preset}
+          onChange={(v) => applyPreset(v as Preset)}
+          options={[
+            { value: '50-50', label: '50 / 50' },
+            { value: '30-40-30', label: '30 / 40 / 30' },
+            { value: 'custom', label: 'Custom' },
+          ]}
+        />
+
+        <div className="space-y-2.5">
+          {rows.map((row, i) => (
+            <div key={i} className="grid grid-cols-[72px_1fr_1fr_auto] items-end gap-2">
+              <Field label="%">
+                <Input
+                  value={row.percent || ''}
+                  inputMode="numeric"
+                  disabled={preset !== 'custom'}
+                  onChange={(e) => updateRow(i, { percent: Number(e.target.value.replace(/[^0-9]/g, '')) || 0 })}
+                  className="tabular"
+                />
+              </Field>
+              <Field label="Label">
+                <Select value={row.label} onChange={(e) => updateRow(i, { label: e.target.value as PaymentLabel })} className="h-9">
+                  {LABEL_OPTIONS.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Due date (optional)">
+                <Input type="date" value={row.dueDate} onChange={(e) => updateRow(i, { dueDate: e.target.value })} />
+              </Field>
+              {preset === 'custom' && rows.length > 2 ? (
+                <IconButton label="Remove installment" onClick={() => removeRow(i)} className="mb-0.5">
+                  <X size={14} />
+                </IconButton>
+              ) : (
+                <span />
+              )}
+              <p className="col-span-4 -mt-1.5 text-[11.5px] text-ink-400">
+                {amounts[i] !== undefined ? currency(amounts[i]!, orgCurrency) : '—'}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {preset === 'custom' && (
+          <Button variant="ghost" size="sm" onClick={addRow}>
+            Add installment
+          </Button>
+        )}
+
+        <div className="flex items-center justify-between rounded-panel bg-subtler px-3 py-2 text-[12.5px]">
+          <span className="text-ink-500">Total</span>
+          <span className={`tabular font-semibold ${totalPercent === 100 ? 'text-positive' : 'text-negative'}`}>
+            {totalPercent}%{totalPercent !== 100 && ' — must total exactly 100%'}
+          </span>
+        </div>
+
+        {error && <p className="text-[12px] leading-5 text-negative">{error}</p>}
+      </div>
     </Modal>
   )
 }
