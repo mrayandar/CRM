@@ -22,8 +22,9 @@ import {
   Settings,
   UserPlus,
   Users,
+  Wallet,
 } from 'lucide-react'
-import { cn, currencyCompact } from '@/lib/utils'
+import { cn, currency, currencyCompact } from '@/lib/utils'
 import { useCrm } from '@/store/crm'
 import { LEAD_STATUS_LABEL } from '@/data/types'
 
@@ -48,7 +49,8 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const navigate = useNavigate()
-  const { leads, contacts, deals, companies, tasks, owners, stageById, orgCurrency } = useCrm()
+  const { leads, contacts, deals, companies, tasks, owners, stageById, orgCurrency, payments, canAccessPayments } =
+    useCrm()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -73,6 +75,9 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       { id: 'n4', title: 'Pipeline', meta: 'Go to', group: 'Navigate', to: '/pipeline' },
       { id: 'n5', title: 'Tasks', meta: 'Go to', group: 'Navigate', to: '/tasks' },
       { id: 'n6', title: 'Reports', meta: 'Go to', group: 'Navigate', to: '/reports' },
+      ...(canAccessPayments
+        ? [{ id: 'n6b', title: 'Payments', meta: 'Go to', group: 'Navigate', to: '/payments' }]
+        : []),
       { id: 'n7', title: 'Settings', meta: 'Go to', group: 'Navigate', to: '/settings' },
     ]
 
@@ -126,13 +131,35 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       to: '/settings',
     }))
 
-    const all = [...navRows, ...leadRows, ...contactRows, ...dealRows, ...companyRows, ...taskRows, ...ownerRows]
+    // `payments` is empty for anyone without payment access (see loadCrmData) — no separate role
+    // check needed here, same reasoning as the CSV export on the Payments screen.
+    const paymentRows: Row[] = payments.map((p) => {
+      const d = deals.find((deal) => deal.id === p.dealId)
+      return {
+        id: p.id,
+        title: d ? `${d.name} · ${currency(p.amount, orgCurrency)}` : currency(p.amount, orgCurrency),
+        meta: p.status === 'pending' ? 'Pending' : p.status === 'paid' ? 'Paid' : 'Cancelled',
+        group: 'Payments',
+        to: `/payments?dealId=${p.dealId}`,
+      }
+    })
+
+    const all = [
+      ...navRows,
+      ...leadRows,
+      ...contactRows,
+      ...dealRows,
+      ...companyRows,
+      ...taskRows,
+      ...ownerRows,
+      ...paymentRows,
+    ]
     const q = query.trim().toLowerCase()
     if (!q) return all.filter((r) => r.group === 'Navigate')
     return all
       .filter((r) => `${r.title} ${r.meta}`.toLowerCase().includes(q))
       .slice(0, 24)
-  }, [query, leads, contacts, deals, companies, tasks, owners, stageById, orgCurrency])
+  }, [query, leads, contacts, deals, companies, tasks, owners, stageById, orgCurrency, payments])
 
   const go = (row?: Row) => {
     if (!row) return
@@ -166,6 +193,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         Pipeline: Columns3,
         Tasks: CheckSquare,
         Reports: BarChart3,
+        Payments: Wallet,
         Settings: Settings,
       }
       const Icon = map[title] ?? ArrowRight

@@ -19,6 +19,7 @@ import type {
   LeadSource,
   LeadStatus,
   Owner,
+  Payment,
   PipelineStage,
   Priority,
   Task,
@@ -52,6 +53,13 @@ import {
   reorderStageAction,
   deleteStageAction,
 } from '@lib/actions/crm'
+import {
+  createPaymentAction,
+  updatePaymentAction,
+  markPaymentPaidAction,
+  cancelPaymentAction,
+  deletePaymentAction,
+} from '@lib/actions/payments'
 import type { CrmInitialData } from '@lib/data-loader'
 
 type SubjectRef = NonNullable<Activity['subject']>
@@ -158,6 +166,23 @@ export interface UpdateTaskInput {
   ownerId: string
 }
 
+export interface NewPaymentInput {
+  dealId: string
+  amount: number
+  /** ISO timestamp */
+  dueDate: string
+  note?: string
+}
+
+export interface UpdatePaymentInput {
+  amount: number
+  /** ISO timestamp */
+  dueDate: string
+  note?: string
+}
+
+export type DeletePaymentResult = { ok: true } | { ok: false; error: string }
+
 interface CrmState {
   owners: Owner[]
   currentUser: Owner
@@ -168,6 +193,12 @@ interface CrmState {
   activities: Activity[]
   stages: PipelineStage[]
   companies: Company[]
+  /** Empty for a caller without payment access — populated server-side only, see loadCrmData. */
+  payments: Payment[]
+  /** Whether the current session has payment access (requirePaymentAccess, computed server-side
+   *  once per request) — drives whether the Payments nav item, command palette rows, and the
+   *  per-deal payments link show up. Never re-derived client-side. */
+  canAccessPayments: boolean
   /** Team-wide quarterly revenue target set from Settings -> Workspace; null until an admin sets one. */
   quarterlyQuota: number | null
   /** Org-level display currency (ISO 4217, e.g. "USD"), set from Settings -> Workspace, admin-only.
@@ -234,6 +265,16 @@ interface CrmState {
   updateTask: (taskId: string, input: UpdateTaskInput) => void
   /** Deletes a task outright; rolls back (re-inserts it) and shows a toast if the delete fails. */
   deleteTask: (taskId: string) => void
+  /** Adds a payment to local state immediately; rolls back and shows a toast if the save fails. */
+  addPayment: (input: NewPaymentInput) => void
+  /** Updates a payment's own fields; rolls back and shows a toast if the save fails. A no-op (nothing changed) does nothing. */
+  updatePayment: (paymentId: string, input: UpdatePaymentInput) => void
+  /** Marks a payment paid; rolls back and shows a toast if the save fails. */
+  markPaymentPaid: (paymentId: string) => void
+  /** Cancels a payment (the only way to undo one already marked paid); rolls back and shows a toast if the save fails. */
+  cancelPayment: (paymentId: string) => void
+  /** Deletes a payment outright; blocked server-side (returns {ok:false, error}) once it's marked paid — cancel it instead. */
+  deletePayment: (paymentId: string) => Promise<DeletePaymentResult>
   addNote: (subject: SubjectRef, body: string) => void
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
   /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
@@ -288,6 +329,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [currentUser, setCurrentUser] = useState<Owner>(initialData.currentUser)
   const [stages, setStages] = useState<PipelineStage[]>(initialData.stages)
   const [companies, setCompanies] = useState<Company[]>(initialData.companies)
+  const [payments, setPayments] = useState<Payment[]>(initialData.payments)
+  const canAccessPayments = initialData.canAccessPayments
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -1345,6 +1388,102 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     [tasks, persist],
   )
 
+  const addPayment = useCallback(
+    (input: NewPaymentInput) => {
+      const id = newEntityId()
+      const now = new Date().toISOString()
+      const payment: Payment = {
+        id,
+        dealId: input.dealId,
+        amount: input.amount,
+        status: 'pending',
+        dueDate: input.dueDate,
+        note: input.note?.trim() || undefined,
+        createdById: currentUser.id,
+        createdAt: now,
+        updatedAt: now,
+      }
+      setPayments((prev) => [payment, ...prev])
+      persist(
+        () => createPaymentAction({ id, dealId: input.dealId, amount: input.amount, dueDate: input.dueDate, note: input.note }),
+        () => setPayments((prev) => prev.filter((p) => p.id !== id)),
+        undefined,
+        "Couldn't save the payment, please try again.",
+      )
+    },
+    [currentUser.id, persist],
+  )
+
+  const updatePayment = useCallback(
+    (paymentId: string, input: UpdatePaymentInput) => {
+      const payment = payments.find((p) => p.id === paymentId)
+      if (!payment) return
+
+      const trimmed = { amount: input.amount, dueDate: input.dueDate, note: input.note?.trim() || undefined }
+      const changed =
+        payment.amount !== trimmed.amount || payment.dueDate !== trimmed.dueDate || payment.note !== trimmed.note
+      if (!changed) return
+
+      const next: Payment = { ...payment, ...trimmed, updatedAt: new Date().toISOString() }
+      setPayments((prev) => prev.map((p) => (p.id === paymentId ? next : p)))
+
+      persist(
+        () => updatePaymentAction({ id: paymentId, amount: input.amount, dueDate: input.dueDate, note: input.note }),
+        () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
+        undefined,
+        "Couldn't save the changes, please try again.",
+      )
+    },
+    [payments, persist],
+  )
+
+  const markPaymentPaid = useCallback(
+    (paymentId: string) => {
+      const payment = payments.find((p) => p.id === paymentId)
+      if (!payment || payment.status === 'paid') return
+      const now = new Date().toISOString()
+      setPayments((prev) => prev.map((p) => (p.id === paymentId ? { ...p, status: 'paid', paidAt: now } : p)))
+
+      persist(
+        () => markPaymentPaidAction(paymentId),
+        () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
+        undefined,
+        "Couldn't mark the payment as paid, please try again.",
+      )
+    },
+    [payments, persist],
+  )
+
+  const cancelPayment = useCallback(
+    (paymentId: string) => {
+      const payment = payments.find((p) => p.id === paymentId)
+      if (!payment || payment.status === 'cancelled') return
+      setPayments((prev) =>
+        prev.map((p) => (p.id === paymentId ? { ...p, status: 'cancelled', paidAt: undefined } : p)),
+      )
+
+      persist(
+        () => cancelPaymentAction(paymentId),
+        () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
+        undefined,
+        "Couldn't cancel the payment, please try again.",
+      )
+    },
+    [payments, persist],
+  )
+
+  // Not routed through persist(): deletion can be legitimately blocked server-side (already
+  // marked paid) and the caller needs that specific message, not a generic toast — same
+  // {ok, error} shape as deleteCompany/deleteStage.
+  const deletePayment = useCallback(
+    async (paymentId: string): Promise<DeletePaymentResult> => {
+      const result = await deletePaymentAction(paymentId)
+      if (result.ok) setPayments((prev) => prev.filter((p) => p.id !== paymentId))
+      return result
+    },
+    [],
+  )
+
   const addNote = useCallback(
     (subject: SubjectRef, body: string) => {
       // addNoteAction logs the note activity itself; don't also call logActivityAction (that saved every note twice).
@@ -1397,6 +1536,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       activities,
       stages,
       companies,
+      payments,
+      canAccessPayments,
       quarterlyQuota,
       orgCurrency,
       ownerById,
@@ -1422,6 +1563,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addTask,
       updateTask,
       deleteTask,
+      addPayment,
+      updatePayment,
+      markPaymentPaid,
+      cancelPayment,
+      deletePayment,
       addNote,
       logActivity: pushActivity,
       updateProfile,
@@ -1439,6 +1585,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       activities,
       stages,
       companies,
+      payments,
+      canAccessPayments,
       quarterlyQuota,
       orgCurrency,
       ownerById,
@@ -1464,6 +1612,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       addTask,
       updateTask,
       deleteTask,
+      addPayment,
+      updatePayment,
+      markPaymentPaid,
+      cancelPayment,
+      deletePayment,
       addNote,
       pushActivity,
       updateProfile,

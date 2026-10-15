@@ -130,6 +130,28 @@ export type ActivityKind =
   | 'task'
   | 'won'
   | 'lost'
+  | 'payment'
+
+export type PaymentStatus = 'pending' | 'paid' | 'cancelled'
+
+/** Admin-only (requirePaymentAccess/requirePaymentWriteAccess, see lib/auth.ts). Tracks a single
+ *  expected/received amount against a Deal (treated as the "project" — no separate Project
+ *  entity). Never changes automatically when the parent Deal's value changes — purely
+ *  informational against whatever that value is when viewed; the UI flags when the sum of `paid`
+ *  payments on a deal exceeds its value instead of reconciling anything. */
+export interface Payment {
+  id: string
+  dealId: string
+  amount: number
+  status: PaymentStatus
+  dueDate: string
+  /** Set only while status is 'paid'. */
+  paidAt?: string
+  note?: string
+  createdById: string
+  createdAt: string
+  updatedAt: string
+}
 
 export interface Activity {
   id: string

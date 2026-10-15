@@ -1,16 +1,18 @@
 'use client'
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Wallet } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input, Label, Select } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
+import { Link } from '@/lib/router-compat'
 import { useCrm } from '@/store/crm'
 import type { Deal } from '@/data/types'
 import { currencySymbol, sortBy } from '@/lib/utils'
 
 export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
-  const { updateDeal, owners, contacts, stages, stageById, orgCurrency } = useCrm()
+  const { updateDeal, owners, contacts, stages, stageById, orgCurrency, canAccessPayments } = useCrm()
 
   const sortedContacts = useMemo(() => sortBy(contacts, (c) => c.name.toLowerCase()), [contacts])
   const sortedStages = useMemo(() => sortBy(stages, (s) => s.order), [stages])
@@ -68,14 +70,27 @@ export function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => vo
       title="Edit deal"
       description="Update this opportunity's details."
       footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-            Save changes
-          </Button>
-        </>
+        <div className="flex w-full items-center justify-between">
+          {canAccessPayments ? (
+            <Link
+              to={`/payments?dealId=${deal.id}`}
+              className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink-500 hover:text-ink-900"
+            >
+              <Wallet size={13} />
+              Payments
+            </Link>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+              Save changes
+            </Button>
+          </div>
+        </div>
       }
     >
       <form

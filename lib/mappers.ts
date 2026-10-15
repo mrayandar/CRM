@@ -17,6 +17,7 @@ import type {
   Activity as PrismaActivity,
   PipelineStage as PrismaPipelineStage,
   Company as PrismaCompany,
+  Payment as PrismaPayment,
 } from '@prisma/client'
 import type {
   Owner,
@@ -27,6 +28,7 @@ import type {
   Activity,
   PipelineStage,
   Company,
+  Payment,
 } from '@/data/types'
 
 function initialsOf(name: string): string {
@@ -168,6 +170,21 @@ export function mapTask(t: PrismaTask): Task {
     ownerId: t.ownerId,
     relatedTo,
     type: t.type,
+  }
+}
+
+export function mapPayment(p: PrismaPayment): Payment {
+  return {
+    id: p.id,
+    dealId: p.dealId,
+    amount: p.amount,
+    status: p.status,
+    dueDate: p.dueDate.toISOString(),
+    paidAt: p.paidAt?.toISOString(),
+    note: p.note ?? undefined,
+    createdById: p.createdById,
+    createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
   }
 }
 

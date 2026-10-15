@@ -9,6 +9,7 @@ import {
   listActivities,
   listStages,
   listCompanies,
+  listPayments,
   getOrgById,
 } from '@lib/data'
 import {
@@ -20,6 +21,7 @@ import {
   mapActivity,
   mapStage,
   mapCompany,
+  mapPayment,
 } from '@lib/mappers'
 import type {
   Owner,
@@ -30,6 +32,7 @@ import type {
   Activity,
   PipelineStage,
   Company,
+  Payment,
 } from '@/data/types'
 
 export interface CrmInitialData {
@@ -42,6 +45,12 @@ export interface CrmInitialData {
   activities: Activity[]
   stages: PipelineStage[]
   companies: Company[]
+  /** Empty for a caller without payment access — see `includePayments` below. */
+  payments: Payment[]
+  /** Server-computed once per request (requirePaymentAccess's two-source check); the client never
+   *  re-derives this — it only ever sees `payments` already filtered to match. Drives whether the
+   *  Payments nav item, command palette rows, and the per-deal link show up at all. */
+  canAccessPayments: boolean
   quarterlyQuota: number | null
   orgCurrency: string
 }
@@ -50,23 +59,41 @@ export interface CrmInitialData {
  * Loads all CRM data for an organization and maps to frontend types.
  * Called once per request in the (app) layout — the data hydrates the
  * CrmProvider that every client screen reads from.
+ *
+ * `includePayments` must be the caller's own `canAccessPayments()` result (computed once, in the
+ * layout, from the real session) — never assume access here. When false, Payment rows are never
+ * queried and payment-kind activities are excluded from the activity feed at the query level, so a
+ * non-privileged member's hydrated client state contains no payment data at all, not just data
+ * that's hidden by the UI.
  */
 export async function loadCrmData(
   orgId: string,
   currentOwnerId: string,
+  includePayments: boolean,
 ): Promise<CrmInitialData> {
-  const [rawOwners, rawLeads, rawContacts, rawDeals, rawTasks, rawActivities, rawStages, rawCompanies, org] =
-    await Promise.all([
-      listOwners(orgId),
-      listLeads(orgId),
-      listContacts(orgId),
-      listDeals(orgId),
-      listTasks(orgId),
-      listActivities(orgId),
-      listStages(orgId),
-      listCompanies(orgId),
-      getOrgById(orgId),
-    ])
+  const [
+    rawOwners,
+    rawLeads,
+    rawContacts,
+    rawDeals,
+    rawTasks,
+    rawActivities,
+    rawStages,
+    rawCompanies,
+    rawPayments,
+    org,
+  ] = await Promise.all([
+    listOwners(orgId),
+    listLeads(orgId),
+    listContacts(orgId),
+    listDeals(orgId),
+    listTasks(orgId),
+    listActivities(orgId, { excludeKinds: includePayments ? [] : ['payment'] }),
+    listStages(orgId),
+    listCompanies(orgId),
+    includePayments ? listPayments(orgId) : Promise.resolve([]),
+    getOrgById(orgId),
+  ])
 
   const owners = rawOwners.map(mapOwner)
   const currentUser =
@@ -89,6 +116,8 @@ export async function loadCrmData(
     activities: rawActivities.map(mapActivity),
     stages: rawStages.map(mapStage),
     companies: rawCompanies.map(mapCompany),
+    payments: rawPayments.map(mapPayment),
+    canAccessPayments: includePayments,
     quarterlyQuota: org?.quarterlyQuota ?? null,
     orgCurrency: org?.currency ?? 'USD',
   }

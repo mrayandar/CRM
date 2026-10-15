@@ -2,6 +2,92 @@
 
 > Living context file. Updated at the end of every task.
 
+## Built Payments, admin-only, with a two-source auth gate enforced at the data loader (Oct 16 2026)
+
+Full build of the previously-approved Payments design: a `Payment` tracks a single
+expected/received amount against a Deal (the "project" — there's no separate Project entity).
+Admin-only for now, per the approved design: no Dashboard/Reports widgets, no deal-card badge,
+no `PaymentPlan`/installment model — a flat list of rows, each independently created, edited,
+marked paid, cancelled, or (while still pending) deleted.
+
+**Schema** (`prisma/migrations/20261016090000_payments/`): new `Payment` model (`amount` as a
+whole-unit `Int`, matching `Deal.value`'s existing whole-unit convention — see the Oct 15
+currency entry's "whole-unit-Int discussion"), `PaymentStatus` enum (`pending`/`paid`/
+`cancelled`), and a new `payment` value on the existing `ActivityKind` enum. Additive only.
+
+**The auth groundwork this sits on** (`lib/auth.ts`, committed separately as checkpoints
+`3303b71` and `d4e7e4f` before this feature started): `requirePaymentAccess()` — stricter than
+`requireAdmin()` — fails closed unless two independent sources agree the caller is an active
+admin: our DB's `Owner.role` (webhook-synced, unbounded staleness after a Clerk-side demotion)
+*and* the live session's `orgRole` claim from `auth()` (Clerk refreshes this ~1/minute, so it
+self-corrects quickly). `requirePaymentWriteAccess()` goes further for mutations: it confirms the
+caller's role *live* against Clerk's Backend API, with no session-refresh window at all, so a
+demotion blocks a write immediately rather than within that ~1-minute gap.
+
+**Fixed as part of this build**: `requirePaymentWriteAccess()` only fetched the first 100 Clerk
+organization memberships for the caller and did a plain `.find()` — an admin belonging to more
+than 100 Clerk orgs could have their own org's membership missing from page one and be wrongly
+rejected. It now pages through every membership (using the API's `totalCount`) until it either
+finds the match or exhausts the list. Covered by a new test with a mocked 101-membership, 2-page
+response where the real match only appears on page two.
+
+**The activity-leak risk, and how it's actually closed** — not with a second role check
+sprinkled at every read site, but with one gate at the single place all client state originates:
+- `loadCrmData` (`lib/data-loader.ts`) now takes an `includePayments: boolean` — the caller's own
+  `canAccessPayments()` result (a new non-throwing wrapper around `requirePaymentAccess()`,
+  computed once in the `(app)` layout from the real session). When false, `listPayments` is never
+  called at all, and `listActivities` is called with `excludeKinds: ['payment']` — a query-level
+  filter (`lib/data/activities.ts`), not a client-side hide.
+- Every activity `lib/actions/payments.ts`/`lib/data/payments.ts` logs uses `kind: 'payment'`,
+  with no exceptions (create, edit, mark-paid, cancel, delete all log this same kind) — that one
+  filter is what has to hold for all of them to stay excluded.
+- No dollar amounts ever appear in an activity *title*, for anyone, by policy — titles are plain
+  strings and the Payments table itself is the place amounts belong.
+- Everything downstream (the Payments route, the command palette's rows, the CSV export, the
+  per-deal `?dealId=` view) reads only from this already-gated `payments` array — none of them
+  re-check access, because none of them can ever receive data they shouldn't have had in the
+  first place. `requirePaymentAccess()` additionally gates the `/payments` route itself
+  server-side (redirects home on failure) and `requirePaymentWriteAccess()` gates every create/
+  edit/mark-paid/cancel/delete action directly.
+
+**Deletion**: only a `pending` payment can be deleted outright (`deletePayment` in
+`lib/data/payments.ts` throws otherwise); the way to undo a `paid` one is to mark it `Cancelled`
+(which also clears `paidAt` — a cancelled payment was never actually received). The Payments
+screen's delete button is hidden once a payment is paid and shows a confirmation dialog.
+
+**No reconciliation, ever**: Payments never change when the parent Deal changes, and nothing
+here changes the Deal either. The per-deal view (`/payments?dealId=...`, linked from a new
+"Payments" line in `EditDealModal`'s footer, admin-only) shows a purely informational warning
+banner when total `paid` payments exceed the deal's current value — never auto-adjusts anything.
+
+**New tests** (`tests/integration/cross-tenant.test.ts`, 102 total, up from 87): tenant isolation
+on `getPaymentById`/`listPayments`; a client-supplied cross-org `dealId` rejected by
+`createPaymentAction`; a non-privileged Member rejected on every one of create/update/mark-paid/
+cancel/delete plus the read gate itself; `loadCrmData` for that same org, loaded as non-privileged,
+proven to carry zero `Payment` rows and zero `payment`-kind activities while every other activity
+kind is still present (the activity-leak regression guard); delete-blocked-while-paid → cancel →
+delete-now-allowed; the 101-membership pagination case above.
+
+**Live-verified against real Neon data**, not just the test suite: signed in as the real admin in
+"Nexo Verified Org" via a minted Clerk sign-in ticket — Payments nav item visible, created a real
+$4,200 payment (persisted `pending`, activity logged as "logged a payment on &lt;deal&gt;" with no
+digits in the title, nothing leaked onto the Dashboard), marked it paid (delete control
+correctly disappeared), cancelled it, deleted it. Then signed in as a real Member in the same
+org: no Payments nav item, and hitting `/payments` directly redirected away — confirmed
+unreachable, not just hidden.
+
+**Deferred**: `resolveAuth()`'s on-demand path still only sets `Owner.role` the first time a row
+is *created* — it never re-syncs an existing row's role from the session's live `orgRole` claim,
+even though that claim is available on every request (see `requireAuth()`'s `sessionOrgRole`).
+`requirePaymentAccess()` works around this for payments specifically by checking both sources
+independently, but every *other* `requireAdmin()`-gated action (currency, stage management) still
+trusts `Owner.role` alone and can lag a real-time Clerk promotion/demotion for however long the
+`organizationMembership.updated` webhook takes to land. A general fix — having `resolveAuth()`
+opportunistically self-heal `Owner.role` from `sessionOrgRole` on every request when they disagree
+— would close that gap everywhere at once instead of one-off two-source checks per feature. Not
+built here: it's a broader behavior change to the primary auth path that touches every request,
+not a payments-scoped fix, and deserves its own sign-off rather than riding in on this feature.
+
 ## Added an org-level currency setting, replacing hardcoded USD everywhere (Oct 15 2026)
 
 ### Schema

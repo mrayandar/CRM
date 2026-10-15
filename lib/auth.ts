@@ -129,21 +129,57 @@ export async function requirePaymentAccess() {
 }
 
 /**
+ * Non-throwing version of `requirePaymentAccess()`, for call sites that serve every caller
+ * regardless of role (the (app) layout, which loads CRM data for Admins and Members alike) and
+ * need a boolean rather than a thrown error. Same two-source check, same session — just reports
+ * the result instead of rejecting the request. Used to decide whether `loadCrmData` includes
+ * Payment rows and payment-kind activities at all; nothing downstream (command palette, CSV
+ * export, the per-deal view) re-checks this, because none of them ever receive the data to begin
+ * with when this is false. See the "Activity leak" fix in PROGRESS.md for why that one check,
+ * here, is enough.
+ */
+export async function canAccessPayments(): Promise<boolean> {
+  try {
+    await requirePaymentAccess()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * For payment WRITES (create, edit, mark paid, cancel, delete) — stricter still than
  * `requirePaymentAccess()`. The session-JWT check above bounds staleness to Clerk's refresh
  * interval (~1 minute), which is an acceptable read-path tradeoff but too slow for a mutation: a
  * demotion should block a write *immediately*, not after up to a minute. Confirms the caller's
  * role live against Clerk's Backend API — the same "current state, not the webhook payload"
  * pattern already used by the webhook route's `handleMemberCreated` — which has no such window.
+ *
+ * Pages through *every* membership the Backend API has for this user rather than trusting a
+ * single 100-row page: a real admin who belongs to more than 100 Clerk organizations would
+ * otherwise have their own org's membership silently missing from page one, and get wrongly
+ * rejected as "not found" even though they really are org:admin here. `totalCount` (returned by
+ * every page) tells us when to stop.
  */
 export async function requirePaymentWriteAccess() {
   const session = await requirePaymentAccess()
   const clerk = await clerkClient()
-  const memberships = await clerk.users.getOrganizationMembershipList({
-    userId: session.clerkUserId,
-    limit: 100,
-  })
-  const current = memberships.data.find((m) => m.organization.id === session.clerkOrgId)
-  if (!current || current.role !== 'org:admin') throw new Error('Forbidden')
-  return session
+
+  const pageSize = 100
+  let offset = 0
+  for (;;) {
+    const page = await clerk.users.getOrganizationMembershipList({
+      userId: session.clerkUserId,
+      limit: pageSize,
+      offset,
+    })
+    const current = page.data.find((m) => m.organization.id === session.clerkOrgId)
+    if (current) {
+      if (current.role !== 'org:admin') throw new Error('Forbidden')
+      return session
+    }
+    offset += page.data.length
+    if (page.data.length < pageSize || offset >= page.totalCount) break
+  }
+  throw new Error('Forbidden')
 }

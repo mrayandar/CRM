@@ -15,7 +15,8 @@
  * every org/tenant boundary check under test is real application code
  * running against the real database.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'crypto'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { mockAuth, mockClerkClient } = vi.hoisted(() => ({ mockAuth: vi.fn(), mockClerkClient: vi.fn() }))
 
@@ -32,6 +33,9 @@ import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/d
 import { getCompanyById, getCompanyDetail, deleteCompany } from '@lib/data/companies'
 import { getOwnerById, listOwners, deactivateOwner } from '@lib/data/owners'
 import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
+import { getPaymentById, listPayments } from '@lib/data/payments'
+import * as paymentActions from '@lib/actions/payments'
+import { loadCrmData } from '@lib/data-loader'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
@@ -48,6 +52,7 @@ interface Fixture {
   contact: Awaited<ReturnType<typeof prisma.contact.create>>
   deal: Awaited<ReturnType<typeof prisma.deal.create>>
   task: Awaited<ReturnType<typeof prisma.task.create>>
+  payment: Awaited<ReturnType<typeof prisma.payment.create>>
   stages: PipelineStage[]
   /** This org's "discovery"-equivalent open stage — what the deal fixture sits in. */
   stage: PipelineStage
@@ -118,12 +123,16 @@ async function makeFixture(tag: 'a' | 'b'): Promise<Fixture> {
   const task = await prisma.task.create({
     data: { orgId: org.id, title: `Task ${tag}`, dueDate: new Date(), ownerId: owner.id },
   })
-  return { org, owner, company, lead, contact, deal, task, stages, stage, otherStage }
+  const payment = await prisma.payment.create({
+    data: { orgId: org.id, dealId: deal.id, amount: 500, dueDate: new Date(), createdById: owner.id },
+  })
+  return { org, owner, company, lead, contact, deal, task, payment, stages, stage, otherStage }
 }
 
 async function destroyFixture(f: Fixture) {
   const orgId = f.org.id
   await prisma.activity.deleteMany({ where: { orgId } })
+  await prisma.payment.deleteMany({ where: { orgId } })
   await prisma.task.deleteMany({ where: { orgId } })
   await prisma.deal.deleteMany({ where: { orgId } })
   await prisma.contact.deleteMany({ where: { orgId } })
@@ -138,6 +147,19 @@ function loginAs(f: Fixture) {
   // Fixture owners are always created with role: 'Admin' (see makeFixture) — orgRole mirrors that,
   // same as a real Clerk session would for this person.
   mockAuth.mockResolvedValue({ userId: f.owner.clerkUserId, orgId: f.org.clerkOrgId, orgRole: 'org:admin' })
+}
+
+/** Single-page live Clerk mock reporting `f.owner` as org:admin in `f.org` — for tests that need
+ *  requirePaymentWriteAccess() to actually succeed, not just reach it. */
+function mockClerkAdminFor(f: Fixture) {
+  mockClerkClient.mockResolvedValue({
+    users: {
+      getOrganizationMembershipList: async () => ({
+        data: [{ organization: { id: f.org.clerkOrgId }, role: 'org:admin' }],
+        totalCount: 1,
+      }),
+    },
+  })
 }
 
 let A: Fixture
@@ -965,5 +987,208 @@ describe('requirePaymentWriteAccess: live Clerk check, no session-refresh window
       users: { getOrganizationMembershipList: async () => ({ data: [] }) },
     })
     await expect(requirePaymentWriteAccess()).rejects.toThrow(/Forbidden/)
+  })
+
+  it('pages through every membership rather than trusting only the first 100 rows', async () => {
+    // Org A's own membership doesn't appear until page two — a naive single-page lookup would
+    // wrongly reject a real admin just because their org wasn't in the first batch Clerk returned.
+    loginAs(A)
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async ({ offset }: { offset: number }) => {
+          if (offset === 0) {
+            return {
+              data: Array.from({ length: 100 }, (_, i) => ({
+                organization: { id: `unrelated-org-${i}` },
+                role: 'org:member',
+              })),
+              totalCount: 101,
+            }
+          }
+          return { data: [{ organization: { id: A.org.clerkOrgId }, role: 'org:admin' }], totalCount: 101 }
+        },
+      },
+    })
+    await expect(requirePaymentWriteAccess()).resolves.toBeTruthy()
+  })
+
+  it('rejects when the matching membership found on a later page is not org:admin', async () => {
+    loginAs(A)
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async ({ offset }: { offset: number }) => {
+          if (offset === 0) {
+            return {
+              data: Array.from({ length: 100 }, (_, i) => ({
+                organization: { id: `unrelated-org-${i}` },
+                role: 'org:member',
+              })),
+              totalCount: 101,
+            }
+          }
+          return { data: [{ organization: { id: A.org.clerkOrgId }, role: 'org:member' }], totalCount: 101 }
+        },
+      },
+    })
+    await expect(requirePaymentWriteAccess()).rejects.toThrow(/Forbidden/)
+  })
+})
+
+describe('lib/data/payments: tenant isolation', () => {
+  it("getPaymentById returns null for another org's payment", async () => {
+    expect(await getPaymentById(B.org.id, A.payment.id)).toBeNull()
+  })
+  it("listPayments never includes another org's payments", async () => {
+    expect((await listPayments(B.org.id)).map((p) => p.id)).not.toContain(A.payment.id)
+  })
+})
+
+describe('lib/actions/payments: rejects a client-supplied dealId from another org', () => {
+  beforeEach(() => {
+    loginAs(A)
+    mockClerkAdminFor(A)
+  })
+  afterEach(() => mockClerkClient.mockReset())
+
+  it('createPaymentAction rejects a dealId belonging to another org', async () => {
+    await expect(
+      paymentActions.createPaymentAction({
+        id: randomUUID(),
+        dealId: B.deal.id,
+        amount: 100,
+        dueDate: new Date().toISOString(),
+      }),
+    ).rejects.toThrow(/Deal not found/)
+  })
+})
+
+describe('lib/actions/payments: role enforcement — a non-privileged member is rejected on every read and write', () => {
+  let member: Awaited<ReturnType<typeof prisma.owner.create>>
+
+  beforeAll(async () => {
+    member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-payments-member-${RUN}`,
+        name: 'Payments Member',
+        email: `payments-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+  })
+  afterAll(async () => {
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+  beforeEach(() => {
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' })
+  })
+  afterEach(() => mockClerkClient.mockReset())
+
+  it('rejects the Payments route / data-loader read gate', async () => {
+    await expect(requirePaymentAccess()).rejects.toThrow(/Admins only/)
+  })
+
+  it('createPaymentAction rejects', async () => {
+    await expect(
+      paymentActions.createPaymentAction({
+        id: randomUUID(),
+        dealId: B.deal.id,
+        amount: 100,
+        dueDate: new Date().toISOString(),
+      }),
+    ).rejects.toThrow(/Admins only/)
+  })
+
+  it('updatePaymentAction rejects', async () => {
+    await expect(
+      paymentActions.updatePaymentAction({ id: B.payment.id, amount: 200, dueDate: new Date().toISOString() }),
+    ).rejects.toThrow(/Admins only/)
+  })
+
+  it('markPaymentPaidAction rejects', async () => {
+    await expect(paymentActions.markPaymentPaidAction(B.payment.id)).rejects.toThrow(/Admins only/)
+  })
+
+  it('cancelPaymentAction rejects', async () => {
+    await expect(paymentActions.cancelPaymentAction(B.payment.id)).rejects.toThrow(/Admins only/)
+  })
+
+  it('deletePaymentAction rejects (throws, rather than returning {ok:false} — the role gate runs before the pending-only check)', async () => {
+    await expect(paymentActions.deletePaymentAction(B.payment.id)).rejects.toThrow(/Admins only/)
+  })
+
+  it("never received any Payment rows or payment-kind activities in this member's loaded data", async () => {
+    const data = await loadCrmData(B.org.id, member.id, false)
+    expect(data.payments).toEqual([])
+    expect(data.canAccessPayments).toBe(false)
+    expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
+  })
+})
+
+describe('lib/actions/payments: deletion is blocked once a payment is paid', () => {
+  beforeEach(() => {
+    loginAs(A)
+    mockClerkAdminFor(A)
+  })
+  afterEach(() => mockClerkClient.mockReset())
+
+  it('rejects deleting a paid payment, and allows it again once cancelled', async () => {
+    const created = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: A.deal.id,
+      amount: 750,
+      dueDate: new Date().toISOString(),
+    })
+
+    await paymentActions.markPaymentPaidAction(created.id)
+    const blockedDelete = await paymentActions.deletePaymentAction(created.id)
+    expect(blockedDelete).toEqual({ ok: false, error: expect.stringMatching(/cancel it instead/i) })
+    expect(await getPaymentById(A.org.id, created.id)).not.toBeNull() // still there — not deleted
+
+    await paymentActions.cancelPaymentAction(created.id)
+    const allowedDelete = await paymentActions.deletePaymentAction(created.id)
+    expect(allowedDelete).toEqual({ ok: true })
+    expect(await getPaymentById(A.org.id, created.id)).toBeNull()
+  })
+})
+
+describe('activity leak: payment-kind activities and Payment rows never reach a non-privileged caller', () => {
+  let paymentId: string
+
+  beforeAll(async () => {
+    loginAs(A)
+    mockClerkAdminFor(A)
+    const created = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: A.deal.id,
+      amount: 999,
+      dueDate: new Date().toISOString(),
+    })
+    paymentId = created.id
+  })
+  afterAll(async () => {
+    mockClerkClient.mockReset()
+    await prisma.payment.delete({ where: { id: paymentId } }).catch(() => {})
+  })
+
+  it('a privileged load includes the payment and its activity', async () => {
+    const data = await loadCrmData(A.org.id, A.owner.id, true)
+    expect(data.payments.some((p) => p.id === paymentId)).toBe(true)
+    expect(data.canAccessPayments).toBe(true)
+    expect(data.activities.some((a) => a.kind === 'payment' && a.subject?.id === A.deal.id)).toBe(true)
+    // No dollar figure ever lands in an activity title, regardless of who can see it.
+    for (const activity of data.activities.filter((a) => a.kind === 'payment')) {
+      expect(activity.title).not.toMatch(/\d/)
+    }
+  })
+
+  it('the exact same org, loaded as non-privileged, gets no Payment rows and no payment activities', async () => {
+    const data = await loadCrmData(A.org.id, A.owner.id, false)
+    expect(data.payments).toEqual([])
+    expect(data.canAccessPayments).toBe(false)
+    expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
+    // Every other activity kind this org has logged is still present — this isn't a blanket
+    // activity-feed failure, only payment-kind rows are excluded.
+    expect(data.activities.length).toBeGreaterThan(0)
   })
 })

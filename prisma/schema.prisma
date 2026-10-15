@@ -72,6 +72,13 @@ enum ActivityKind {
   task
   won
   lost
+  payment
+}
+
+enum PaymentStatus {
+  pending
+  paid
+  cancelled
 }
 
 /** What a Task or Activity is attached to — a lightweight polymorphic reference. */
@@ -147,6 +154,7 @@ model Owner {
   deals      Deal[]
   tasks      Task[]
   activities Activity[]
+  paymentsCreated Payment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -299,12 +307,46 @@ model Deal {
 
   tasks      Task[]
   activities Activity[]
+  payments   Payment[]
 
   @@index([orgId])
   @@index([orgId, stageId])
   @@index([orgId, ownerId])
   @@index([orgId, companyId])
   @@map("deals")
+}
+
+/// A payment tracked against a Deal (treated as the "project" — there is no separate Project
+/// entity). Deliberately a flat list with no PaymentPlan/installment-schedule model: each row is
+/// one expected or received amount. Payments never change automatically when the parent Deal
+/// changes (e.g. its value is edited) — they're purely informational against whatever the deal's
+/// value is *at the time they're viewed*; the UI flags when total received exceeds that value
+/// rather than reconciling anything. Admin-only feature for now — see requirePaymentAccess /
+/// requirePaymentWriteAccess in lib/auth.ts, which gate every read and write of this model.
+model Payment {
+  id      String        @id @default(cuid())
+  orgId   String
+  amount  Int
+  status  PaymentStatus @default(pending)
+  dueDate DateTime
+  /// Set only when status transitions to `paid`; cleared if later cancelled (see
+  /// lib/actions/payments.ts) — a cancelled payment was never actually received.
+  paidAt  DateTime?
+  note    String?
+
+  deal   Deal   @relation(fields: [dealId], references: [id])
+  dealId String
+
+  createdBy   Owner  @relation(fields: [createdById], references: [id])
+  createdById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orgId])
+  @@index([orgId, dealId])
+  @@index([orgId, status])
+  @@map("payments")
 }
 
 /// A pipeline stage a deal can sit in. Per-org, renameable and reorderable via Settings →

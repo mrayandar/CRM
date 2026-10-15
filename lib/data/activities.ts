@@ -4,7 +4,7 @@
 // Every function requires `orgId` as its first argument and includes it in
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
-import type { Prisma } from '@prisma/client'
+import type { ActivityKind, Prisma } from '@prisma/client'
 import { prisma } from '@lib/prisma'
 
 export interface ListActivitiesOptions {
@@ -12,6 +12,11 @@ export interface ListActivitiesOptions {
   contactId?: string
   dealId?: string
   limit?: number
+  /** Excludes these kinds entirely — used by the data loader to keep 'payment' activities out of
+   *  a non-privileged caller's feed. Not a UI filter: this is the one place that enforcement
+   *  happens, so nothing downstream (dashboard feed, deal timeline) ever receives them to begin
+   *  with. See requirePaymentAccess in lib/auth.ts. */
+  excludeKinds?: ActivityKind[]
 }
 
 /** Powers both the dashboard's recent-activity feed and a record's timeline tab. */
@@ -19,7 +24,7 @@ export function listActivities(
   orgId: string,
   options: ListActivitiesOptions = {},
 ) {
-  const { leadId, contactId, dealId, limit = 50 } = options
+  const { leadId, contactId, dealId, limit = 50, excludeKinds } = options
 
   return prisma.activity.findMany({
     where: {
@@ -27,6 +32,7 @@ export function listActivities(
       ...(leadId && { leadId }),
       ...(contactId && { contactId }),
       ...(dealId && { dealId }),
+      ...(excludeKinds && excludeKinds.length > 0 && { kind: { notIn: excludeKinds } }),
     },
     include: { actor: true },
     orderBy: { at: 'desc' },

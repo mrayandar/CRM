@@ -12,6 +12,7 @@ import {
   Plus,
   StickyNote,
   Trophy,
+  Wallet,
 } from 'lucide-react'
 import type { Activity, ActivityKind } from '@/data/types'
 import { cn, formatDateTime } from '@/lib/utils'
@@ -51,6 +52,12 @@ const KIND_META: Record<
     ring: 'border-negative-line bg-negative-soft',
     text: 'text-negative',
     label: 'Lost',
+  },
+  payment: {
+    icon: Wallet,
+    ring: 'border-line bg-subtle',
+    text: 'text-ink-500',
+    label: 'Payment',
   },
 }
 

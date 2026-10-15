@@ -11,6 +11,7 @@ import {
   Users,
   UserPlus,
   ChevronsUpDown,
+  Wallet,
 } from 'lucide-react'
 import { cn, dayDelta } from '@/lib/utils'
 import { useCrm } from '@/store/crm'
@@ -31,7 +32,7 @@ interface NavEntry {
 }
 
 export function Sidebar() {
-  const { leads, tasks, deals, contacts, stageById } = useCrm()
+  const { leads, tasks, deals, contacts, stageById, canAccessPayments } = useCrm()
 
   const newLeads = leads.filter((l) => l.status === 'new').length
   const overdueTasks = tasks.filter((t) => !t.done && dayDelta(t.dueDate) < 0).length
@@ -55,6 +56,7 @@ export function Sidebar() {
       countTone: overdueTasks ? 'alert' : 'neutral',
     },
     { to: '/reports', label: 'Reports', icon: BarChart3 },
+    ...(canAccessPayments ? [{ to: '/payments', label: 'Payments', icon: Wallet }] : []),
     { to: '/settings', label: 'Settings', icon: Settings },
   ]
 
