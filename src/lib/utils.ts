@@ -132,6 +132,18 @@ export function sum(values: number[]): number {
   return values.reduce((a, b) => a + b, 0)
 }
 
+/**
+ * The one correct definition of "received"/"collected" for Payments: sums only rows whose
+ * `status` is `paid`. Deliberately keyed off `status`, never off `paidAt` being set — a payment
+ * that was paid and then cancelled keeps `paidAt` (see `cancelPayment` in lib/data/payments.ts,
+ * which keeps it on purpose so the history reads "paid on X, then cancelled") but must never count
+ * toward a received total again. Every place that sums received money must call this, not
+ * re-derive its own filter, so a future summary tile/card can't reintroduce the same bug.
+ */
+export function receivedTotal(payments: Array<{ status: string; amount: number }>): number {
+  return sum(payments.filter((p) => p.status === 'paid').map((p) => p.amount))
+}
+
 export function sortBy<T>(items: T[], value: (item: T) => number | string, dir: 'asc' | 'desc' = 'asc'): T[] {
   const factor = dir === 'asc' ? 1 : -1
   return [...items].sort((a, b) => {

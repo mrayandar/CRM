@@ -36,6 +36,7 @@ import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
 import { getPaymentById, listPayments } from '@lib/data/payments'
 import * as paymentActions from '@lib/actions/payments'
 import { loadCrmData } from '@lib/data-loader'
+import { receivedTotal } from '@/lib/utils'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
@@ -1182,6 +1183,28 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
     const result = await paymentActions.deletePaymentAction(created.id)
     expect(result).toEqual({ ok: true })
     expect(await getPaymentById(A.org.id, created.id)).toBeNull()
+  })
+
+  it('a real paid-then-cancelled row (paidAt still set) is excluded from receivedTotal, end to end', async () => {
+    const created = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: A.deal.id,
+      amount: 753,
+      dueDate: new Date().toISOString(),
+    })
+    await paymentActions.markPaymentPaidAction(created.id)
+    await paymentActions.cancelPaymentAction(created.id)
+
+    const row = await getPaymentById(A.org.id, created.id)
+    expect(row?.status).toBe('cancelled')
+    expect(row?.paidAt).not.toBeNull() // the exact shape receivedTotal must not be fooled by
+
+    const dealPayments = (await listPayments(A.org.id, { dealId: A.deal.id })).filter((p) => p.id === created.id)
+    expect(receivedTotal(dealPayments)).toBe(0) // excluded — not the $753
+
+    // Cleanup: permanently undeletable by design (see the describe block above) — remove directly.
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: A.deal.id, kind: 'payment' } })
+    await prisma.payment.delete({ where: { id: created.id } })
   })
 })
 

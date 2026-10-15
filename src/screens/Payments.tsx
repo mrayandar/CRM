@@ -13,7 +13,7 @@ import { EmptyState } from '@/components/ui/Display'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
 import type { Payment, PaymentStatus } from '@/data/types'
-import { currency, currencySymbol, dayDelta, exportCsv, formatDate, sortBy } from '@/lib/utils'
+import { currency, currencySymbol, dayDelta, exportCsv, formatDate, receivedTotal, sortBy } from '@/lib/utils'
 
 const STATUS_TONE: Record<PaymentStatus, 'neutral' | 'positive' | 'negative' | 'warning'> = {
   pending: 'neutral',
@@ -34,6 +34,16 @@ function isOverdue(payment: Payment): boolean {
   return payment.status === 'pending' && dayDelta(payment.dueDate) < 0
 }
 
+/** The "Paid" column's text. A payment that was paid and then cancelled keeps its `paidAt` (see
+ *  cancelPayment in lib/data/payments.ts) specifically so this history stays visible, rather than
+ *  looking identical to a payment that was simply cancelled while still pending. */
+function paidColumnText(payment: Payment): string {
+  if (!payment.paidAt) return '—'
+  return payment.status === 'cancelled'
+    ? `Paid ${formatDate(payment.paidAt)}, then cancelled`
+    : formatDate(payment.paidAt)
+}
+
 export function Payments() {
   const { payments, deals, orgCurrency } = useCrm()
   const [searchParams] = useSearchParams()
@@ -49,8 +59,10 @@ export function Payments() {
   const dealName = (id: string) => deals.find((d) => d.id === id)?.name ?? 'Unknown deal'
 
   // Informational only — never reconciled against the deal, never changes anything. Only
-  // meaningful in the per-deal view, where "the deal" is unambiguous.
-  const receivedForDeal = deal ? scoped.filter((p) => p.status === 'paid').reduce((s, p) => s + p.amount, 0) : 0
+  // meaningful in the per-deal view, where "the deal" is unambiguous. receivedTotal() counts only
+  // status === 'paid' — a cancelled-after-paid payment is correctly excluded even though its
+  // paidAt is still set (see the doc comment on receivedTotal in src/lib/utils.ts).
+  const receivedForDeal = deal ? receivedTotal(scoped) : 0
   const overReceived = deal ? receivedForDeal > deal.value : false
 
   const exportPayments = () => {
@@ -130,7 +142,7 @@ export function Payments() {
                       </Badge>
                     </Td>
                     <Td className="text-ink-600">{formatDate(payment.dueDate)}</Td>
-                    <Td className="text-ink-600">{payment.paidAt ? formatDate(payment.paidAt) : '—'}</Td>
+                    <Td className="text-ink-600">{paidColumnText(payment)}</Td>
                     <Td className="max-w-[220px] truncate text-ink-500">{payment.note || '—'}</Td>
                     <Td align="right">
                       <PaymentActions

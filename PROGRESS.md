@@ -2,6 +2,38 @@
 
 > Living context file. Updated at the end of every task.
 
+## Audited every "received" total after the paidAt-retention fix; added the missing display (Oct 16 2026)
+
+Follow-up to the previous entry: once `cancelPayment` stopped clearing `paidAt`, every place that
+sums received money needed auditing for whether it keys off `status === 'paid'` (correct) or
+`paidAt` being truthy (now wrong — a cancelled-after-paid row has both). Audited every surface
+that could plausibly sum received money:
+- **Summary tiles, a Dashboard card, deal-card progress**: none of these exist for Payments —
+  confirmed by grep, not assumed. The approved design explicitly excluded Dashboard/Reports
+  widgets and deal-card badges, and that held.
+- **The received-vs-deal-value banner** (`src/screens/Payments.tsx`): already filtered by
+  `status === 'paid'`, already correct — but was its own inline `.filter().reduce()`, duplicated
+  logic that the next feature could easily get wrong. Extracted to `receivedTotal()` in
+  `src/lib/utils.ts`, the one place this sum is computed, so there's a single thing to test and a
+  single thing a future summary tile would reuse.
+- **CSV export**: exports raw per-row data (amount, status, paidAt as separate columns), never a
+  computed total — nothing to fix.
+
+Added the missing display: a payment that was paid and then cancelled now shows "Paid &lt;date&gt;,
+then cancelled" in the Payments list's "Paid" column (`paidColumnText()` in
+`src/screens/Payments.tsx`), instead of looking identical to a plain `paid` row.
+
+New tests (108 total, up from 104): a pure-function suite for `receivedTotal` (`tests/unit/
+payments-received.test.ts`) proving a cancelled row is excluded regardless of amount, plus an
+end-to-end integration test that creates a real payment, marks it paid, cancels it, and confirms
+`listPayments` + `receivedTotal` on the real Prisma-shaped row (with `paidAt` genuinely still set)
+correctly produces 0, not the payment's amount.
+
+Live-verified against real Neon data: created a $9,001 payment, marked it paid, cancelled it —
+the list showed exactly "Paid Oct 15, then cancelled", and the per-deal received-vs-value banner
+(with a second, still-pending $500 payment on the same deal for a realistic mix) correctly did not
+count the cancelled $9,001 toward anything.
+
 ## Fixed a deletion-rule gap: paid -> cancel -> delete used to erase a received payment (Oct 16 2026)
 
 The intent from the start was that a payment ever marked paid can never be erased, but the
