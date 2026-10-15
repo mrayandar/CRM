@@ -227,6 +227,9 @@ interface CrmState {
   /** Org-level display currency (ISO 4217, e.g. "USD"), set from Settings -> Workspace, admin-only.
    *  Relabels every amount in the app — never converts stored values. */
   orgCurrency: string
+  /** Read-only — there's no "rename workspace" action in this app; see orgName's doc comment in
+   *  lib/data-loader.ts for why it can lag a rename made directly in Clerk. */
+  orgName: string
   ownerById: (id: string) => Owner
   stageById: (id: string) => PipelineStage
   companyById: (id: string) => Company | undefined
@@ -366,6 +369,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [wonPaymentSetupDealId, setWonPaymentSetupDealId] = useState<string | null>(null)
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
+  const orgName = initialData.orgName
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const dismissToast = useCallback(
@@ -1648,6 +1652,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       closeWonPaymentSetup,
       quarterlyQuota,
       orgCurrency,
+      orgName,
       ownerById,
       stageById,
       companyById,
@@ -1701,6 +1706,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       closeWonPaymentSetup,
       quarterlyQuota,
       orgCurrency,
+      orgName,
       ownerById,
       stageById,
       companyById,

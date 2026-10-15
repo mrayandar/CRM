@@ -2,6 +2,64 @@
 
 > Living context file. Updated at the end of every task.
 
+## Settings + notification bell audit: one real fix, three honest "needs a decision" findings (Oct 16 2026)
+
+Scope: every Settings control and the top-bar bell, excluding what was asked to be skipped as
+already verified (Default currency, Quarterly quota, Profile Save, the Team tab).
+
+### 1. Notification bell — NOT BUILT, not a wiring gap
+
+Checked `src/components/layout/PageShell.tsx`: the bell is a plain `IconButton` with **no
+`onClick` at all** and a hardcoded "unread" dot (`<span className="... bg-brand-600 ...">`) that
+is not driven by any state — it always renders, regardless of whether anything has happened.
+Grepped the whole repo for anything notification-related: only this bell, the Settings
+Notifications tab's toggles, and the dead "Notification settings" account-menu item exist. There
+is no Notification model in `prisma/schema.prisma`, no API route, no data layer, nothing to wire
+up. This is not "a panel exists but is unwired" — there is no notification system at all.
+Live-confirmed: clicking it opens no panel/dialog and fires no server action.
+
+**Smallest useful version**, for when this gets built (not built here, per instructions):
+- **What counts as a notification**: reuse the existing `Activity` log as the source, not a new
+  parallel event system — a notification is "an Activity whose actor isn't you, that's relevant to
+  you" (you own the subject record, you're @mentioned, or it's your own overdue task crossing into
+  overdue). This avoids a second place business events need to be raised from.
+- **Storage**: a new `Notification` row per (recipient Owner, Activity) pair — not a single global
+  feed — so read/unread is naturally per-recipient. Minimal shape: `id, orgId, ownerId, activityId,
+  readAt (nullable)`.
+- **Read/unread**: `readAt IS NULL` = unread; the bell's badge count is `count(*) where ownerId =
+  me and readAt is null`; opening the panel marks the visible page read (sets `readAt = now()`).
+- **Fan-out**: generated at the same point `logActivity`/the payment actions already create an
+  Activity — append matching `Notification` rows in the same transaction, not a separate job.
+
+### 2. Every other Settings control, audited and verified against real data
+
+| Control | Does | Verified against | Result |
+|---|---|---|---|
+| Profile → Avatar "Upload photo" | — | — | **Dead** (already known). Needs a real decision: Clerk's `user.setProfileImage()` could avoid building our own file storage, but that's still a real choice to make, not a trivial wire-up — not attempted here. |
+| Profile → Full name / Time zone / Save | `updateProfile` | — | Already verified working; skipped per instructions. |
+| Profile → Role (display) | reads `currentUser.role` | Neon (`Owner.role`) | Accurate read-only display, real data. |
+| Profile → Email (display) | reads `currentUser.email` | Neon (`Owner.email`) | Accurate read-only display, real data. |
+| Workspace → Workspace name | **was** a hardcoded `defaultValue="Acme Revenue Team"`, uncontrolled, no save | — | **Was dead and actively wrong** (showed a fake name, not even the real org's). **Fixed**: now a read-only field showing the real `Organization.name` (`orgName` added to `CrmInitialData`/the store). Live-confirmed: Settings now shows "Nexo Verified Org", not "Acme Revenue Team". No edit action was added — there's no "rename workspace" feature in this app, and `Organization.name` is only ever set once at creation (see `upsertOrg`'s no-op update branch), so making it editable without also calling Clerk's own org-update API would silently drift from Clerk — flagged, not built. |
+| Workspace → Default currency | `updateCurrencyAction` | — | Already verified working; skipped per instructions. |
+| Workspace → Fiscal year starts | uncontrolled `<Select defaultValue="jan">`, no `onChange`, no save | — | **Dead, needs a decision + new infrastructure.** No `Organization` column backs this at all. Building it for real also means changing how "this quarter" is computed on the Dashboard/Reports (currently hardcoded to calendar-year quarters — `Math.floor(now.getMonth() / 3) * 3`), not just adding a field. Not attempted. |
+| Workspace → Quarterly team quota | `updateQuota` | — | Already verified working; skipped per instructions. |
+| Pipeline → Deal stages (`StageManager`) | `addStage`/`renameStage`/`moveStage`/`deleteStage` | Neon (`PipelineStage`) | **Works.** Live-verified: renamed "Discovery" to "Discovery (audit test)" from Settings → Pipeline, confirmed the write in Neon, reverted. Same component also backs Pipeline's "Customize stages" modal — one implementation, not a separate untested copy. |
+| Pipeline → Lead sources tags | static list mirroring the real `LeadSource` enum | — | The displayed tags are accurate (they match the actual enum) but the list itself isn't dynamic — it's hardcoded JSX, not read from anywhere. |
+| Pipeline → "Add source" button | no `onClick` | — | **Dead, needs a decision.** `LeadSource` is a fixed Prisma enum, not a per-org table — adding a source means either a schema migration to extend the enum (needs agreement on the exact taxonomy) or converting the whole lead-source model to a dynamic per-org list (a much bigger change touching every place `LeadSource` is used). Not attempted. |
+| Team tab (entire section) | — | — | Already verified working (invite, role change, remove, revoke); skipped per instructions. |
+| Notifications tab — all 5 toggles | local `useState` only, never persisted, no backend field | — | **Dead, same root cause as #1.** Even if persisted, there's no notification system for these preferences to gate — building toggle persistence ahead of the system they'd control would be fake progress. Not attempted; comes after a real notification system exists. |
+| Top bar → Bell | see #1 | — | NOT BUILT. |
+| Account menu → "Profile & preferences" / "Notification settings" / "Keyboard shortcuts" | `onClick={close}` only | — | Confirmed dead, matches what was already known — each just closes the menu. |
+
+### What was fixed vs. reported
+
+Fixed (small, contained, existing patterns): Workspace name now shows the real org name
+read-only, instead of a fake hardcoded one.
+
+Reported, not built (each needs a real decision and/or new infrastructure, per instructions):
+the notification bell and system; Fiscal year starts; Lead sources "Add source"; the Notifications
+tab's toggles; Upload photo (already known).
+
 ## Won-deal payment setup prompt: one shared trigger for all four "deal entered Won" paths (Oct 16 2026)
 
 **Confirmed first**: the "two concurrent split requests" test genuinely fires both

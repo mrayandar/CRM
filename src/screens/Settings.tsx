@@ -30,7 +30,7 @@ const TIMEZONES = [
 const formatQuota = (quota: number | null) => (quota !== null ? quota.toLocaleString('en-US') : '')
 
 export function Settings() {
-  const { currentUser, updateProfile, quarterlyQuota, updateQuota, orgCurrency, updateCurrency } = useCrm()
+  const { currentUser, updateProfile, quarterlyQuota, updateQuota, orgCurrency, updateCurrency, orgName } = useCrm()
   const [section, setSection] = useState<Section>('profile')
   const [profileName, setProfileName] = useState(currentUser.name)
   const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? TIMEZONES[0]!.value)
@@ -158,7 +158,10 @@ export function Settings() {
               <div className="grid gap-4 px-5 py-4 sm:grid-cols-2">
                 <div>
                   <Label>Workspace name</Label>
-                  <Input defaultValue="Acme Revenue Team" />
+                  <Input value={orgName} disabled />
+                  <p className="mt-1 text-[11px] text-ink-400">
+                    Set from your account provider when the workspace was created.
+                  </p>
                 </div>
                 <div>
                   <Label>Default currency</Label>

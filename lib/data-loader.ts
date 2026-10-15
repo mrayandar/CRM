@@ -53,6 +53,10 @@ export interface CrmInitialData {
   canAccessPayments: boolean
   quarterlyQuota: number | null
   orgCurrency: string
+  /** The org's own name, as stored in our DB (set once, at creation, from Clerk's org name — see
+   *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
+   *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
+  orgName: string
 }
 
 /**
@@ -120,5 +124,6 @@ export async function loadCrmData(
     canAccessPayments: includePayments,
     quarterlyQuota: org?.quarterlyQuota ?? null,
     orgCurrency: org?.currency ?? 'USD',
+    orgName: org?.name ?? '',
   }
 }
