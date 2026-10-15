@@ -2,6 +2,64 @@
 
 > Living context file. Updated at the end of every task.
 
+## Won-deal payment setup prompt: one shared trigger for all four "deal entered Won" paths (Oct 16 2026)
+
+**Confirmed first**: the "two concurrent split requests" test genuinely fires both
+`splitPaymentAction` calls in parallel against the real database (`Promise.allSettled([attempt(),
+attempt()])` — both start before either is awaited, same concurrency as `Promise.all`; `allSettled`
+only so the expected rejection doesn't throw out of the test) and asserts exactly one set exists
+afterward. No gap to fill there.
+
+**How a deal reaches Won** (reported before building, per the request): four UI paths — drag,
+the deal-card menu's "Move to stage" → Won, EditDealModal's stage select, and creating directly
+as Won (only reachable via a Won column's "+") — but only **three store functions** (`moveDeal`,
+`updateDeal`, `addDeal` in `src/store/crm.tsx`), all of which already route their server
+confirmation through the one shared `persist()` helper. That's the shared trigger point.
+
+**Built**: `persist()` gained an optional `onSuccess` callback, fired only once the mutation is
+genuinely confirmed saved (never on rollback). The actual success/rollback branching was extracted
+into a standalone `runPersist()` (`src/store/persistRun.ts`) specifically so it's unit-testable
+without a component harness (this repo has none — vitest runs in a plain Node environment).
+`moveDeal`/`updateDeal`/`addDeal` each detect "entering Won" the same way they already did for
+close-date stamping (`nextStage.isWon && !previousStage.isWon`, or just `stage.isWon` for a brand
+new deal) and, when true, pass `() => openWonPaymentSetup(dealId)` as that `onSuccess`.
+`openWonPaymentSetup` (and the pure `shouldPromptWonPaymentSetup` it's built on, in
+`src/lib/utils.ts`) is false for anyone without payment access, and false if the deal already has
+any payment row — re-winning a reopened deal that already has payments doesn't re-prompt.
+
+The dialog itself reuses the existing split form, extracted from the Payments screen into a shared
+`src/components/common/SplitPaymentModal.tsx` (no second copy) with optional `title`/
+`cancelLabel` overrides and a new fallback: if `splitPaymentAction` rejects because the deal
+already has payments (a race — e.g. another tab set one up in between), it shows received-vs-value
+and a link to `/payments?dealId=` instead of a bare error. Rendered once, in `AppLayout`, since a
+deal can enter Won from any screen. Won deal cards in Pipeline now show a "Set up payments" button
+(privileged, no-payments-yet) or the existing received-vs-value progress bar (privileged,
+has-payments) — never both.
+
+**Gating**: both the dialog and the button read `payments`/`canAccessPayments` from the same
+`loadCrmData` gate every other payment surface already relies on — nothing new to gate at the
+component level.
+
+**Tests** (138 total, up from 130): unit tests for `shouldPromptWonPaymentSetup` (Member gating,
+no-re-prompt-once-has-payments, doesn't false-block an unrelated deal) and for `runPersist` itself
+— the real shared code, not a reimplementation — proving `onSuccess` never fires when `run`
+rejects (the exact "rolled-back move must not open the dialog" guarantee, for all three call sites
+at once) and does fire when it resolves; an integration test proving a Member's loaded `Deal` data
+carries no payment-existence signal at all (same shape as a privileged load, `payments` empty).
+
+**Live-verified** against real Neon data, as separate focused scripts after Playwright's native
+HTML5 drag-and-drop proved flaky to automate reliably in this environment (confirmed by one
+diagnostic run where `dragTo()` did fire the real `moveDealAction`, and by the fact that drag and
+the card-menu option call the textually identical `moveDeal()` — so Path 2 below doubles as proof
+of Path 1's trigger logic): the card-menu "Move to stage" → Won path opened the dialog for the
+correct deal; the edit-modal stage-select → Won → Save path opened it for the correct deal;
+creating a deal directly in a Won column opened it for the correct deal; aborting the server
+request mid-move (via Playwright route interception) left the deal unmoved and never opened the
+dialog; re-winning a deal that already had a real payment did not re-open it; and, as a real
+Member, moving a deal into Won (the move itself still succeeds — only the payments UI is gated)
+never showed any dialog, and the resulting Won deal card showed neither a "Set up payments" button
+nor a received-vs-value line.
+
 ## Three checks on the installments work: no bug found, plus a real idempotency fix (Oct 16 2026)
 
 Three requested checks on the previous entry's installments work:

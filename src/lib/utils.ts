@@ -174,6 +174,27 @@ export function splitAmounts(total: number, percents: number[]): number[] {
   return [...parts, remainder]
 }
 
+/**
+ * Whether a deal that was just confirmed moved into Won should trigger the "set up payments"
+ * prompt. False for anyone without payment access (a Member's `payments` is always `[]` and this
+ * check isn't even the thing that hides it from them — the whole prompt/dialog never renders for
+ * them, see AppLayout — but this is the one place both conditions are decided, so neither call
+ * site can independently get one of them wrong). False if the deal already has any payment row —
+ * re-winning a reopened deal that already has payments doesn't re-prompt.
+ */
+export function shouldPromptWonPaymentSetup({
+  canAccessPayments,
+  dealId,
+  payments,
+}: {
+  canAccessPayments: boolean
+  dealId: string
+  payments: Array<{ dealId: string }>
+}): boolean {
+  if (!canAccessPayments) return false
+  return !payments.some((p) => p.dealId === dealId)
+}
+
 export function sortBy<T>(items: T[], value: (item: T) => number | string, dir: 'asc' | 'desc' = 'asc'): T[] {
   const factor = dir === 'asc' ? 1 : -1
   return [...items].sort((a, b) => {

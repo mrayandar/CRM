@@ -318,7 +318,7 @@ function DealCard({
    *  this component does no gating of its own, it just renders what it's given. */
   dealPayments: Payment[]
 }) {
-  const { logActivity, orgCurrency } = useCrm()
+  const { logActivity, orgCurrency, openWonPaymentSetup } = useCrm()
   const navigate = useNavigate()
   const days = dayDelta(deal.closeDate)
   const closed = stage.isClosed
@@ -491,8 +491,10 @@ function DealCard({
       </div>
 
       {/* Privileged users only; never reconciled against the deal — see the Payments screen's own
-          received-vs-value banner for the same informational-only reasoning. */}
-      {canAccessPayments && stage.isWon && (
+          received-vs-value banner for the same informational-only reasoning. Mutually exclusive
+          with the "Set up payments" button below: a deal either has payments (show progress) or
+          doesn't yet (offer to set them up) — never both. */}
+      {canAccessPayments && stage.isWon && dealPayments.length > 0 && (
         <div className="mt-2 border-t border-line pt-2">
           <div className="flex items-center justify-between text-[10.5px] text-ink-500">
             <span>Received</span>
@@ -506,6 +508,21 @@ function DealCard({
               style={{ width: `${Math.min((received / Math.max(deal.value, 1)) * 100, 100)}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Offered when the Won-stage trigger was skipped (or this deal never fired it, e.g. a
+          pre-existing Won deal from before this feature) — same shared dialog, same guard. */}
+      {canAccessPayments && stage.isWon && dealPayments.length === 0 && (
+        <div className="mt-2 border-t border-line pt-2">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="w-full justify-center"
+            onClick={() => openWonPaymentSetup(deal.id)}
+          >
+            Set up payments
+          </Button>
         </div>
       )}
     </article>

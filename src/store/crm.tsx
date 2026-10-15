@@ -25,7 +25,8 @@ import type {
   Priority,
   Task,
 } from '@/data/types'
-import { initialsOf } from '@/lib/utils'
+import { initialsOf, shouldPromptWonPaymentSetup } from '@/lib/utils'
+import { runPersist } from '@/store/persistRun'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
@@ -210,6 +211,17 @@ interface CrmState {
    *  once per request) — drives whether the Payments nav item, command palette rows, and the
    *  per-deal payments link show up. Never re-derived client-side. */
   canAccessPayments: boolean
+  /** Non-null while the "set up payments for [deal]" prompt should be showing, after a deal was
+   *  just confirmed moved into a Won stage (any of drag, the card menu, the edit modal, or
+   *  creating directly as Won) — see openWonPaymentSetup. Rendered once, in AppLayout, not
+   *  per-screen; always null for anyone without payment access. */
+  wonPaymentSetupDealId: string | null
+  /** The one shared trigger for all four "a deal entered Won" paths — called from moveDeal/
+   *  updateDeal/addDeal's persist() onSuccess, so it only ever runs after the stage change is
+   *  confirmed saved, never on a rollback. No-ops (via shouldPromptWonPaymentSetup) for a Member,
+   *  or if this deal already has payments (re-winning a reopened deal doesn't re-prompt). */
+  openWonPaymentSetup: (dealId: string) => void
+  closeWonPaymentSetup: () => void
   /** Team-wide quarterly revenue target set from Settings -> Workspace; null until an admin sets one. */
   quarterlyQuota: number | null
   /** Org-level display currency (ISO 4217, e.g. "USD"), set from Settings -> Workspace, admin-only.
@@ -351,6 +363,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [companies, setCompanies] = useState<Company[]>(initialData.companies)
   const [payments, setPayments] = useState<Payment[]>(initialData.payments)
   const canAccessPayments = initialData.canAccessPayments
+  const [wonPaymentSetupDealId, setWonPaymentSetupDealId] = useState<string | null>(null)
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -412,6 +425,12 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
    * state, the optimistic activity is dropped and the user is told via a toast. The activity is
    * only persisted *after* the mutation succeeded, so a failed change never leaves a log entry in
    * the database. Pass a null `run` for a standalone activity.
+   *
+   * `onSuccess`, when given, fires only once the mutation is genuinely confirmed saved — never on
+   * a rollback. The actual success/rollback branching lives in runPersist() (src/store/
+   * persistRun.ts), kept there specifically so it has its own unit tests independent of this
+   * React provider. Used by moveDeal/updateDeal/addDeal to open the "set up payments" prompt
+   * after (never before, never on failure) a deal is confirmed moved into a Won stage.
    */
   const persist = useCallback(
     (
@@ -419,18 +438,19 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       rollback: () => void,
       activity?: Activity,
       failureMessage = SAVE_FAILED,
+      onSuccess?: () => void,
     ) => {
       startTransition(async () => {
-        if (run) {
-          try {
-            await run()
-          } catch {
-            rollback()
+        const ok = await runPersist({
+          run,
+          rollback,
+          onSuccess,
+          onFailure: () => {
             if (activity) removeActivity(activity.id)
             notifyError(failureMessage)
-            return
-          }
-        }
+          },
+        })
+        if (!ok) return
         if (activity) {
           try {
             await logActivityAction(activity.kind, activity.title, activity.subject, activity.body)
@@ -451,6 +471,16 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     },
     [addLocalActivity, persist],
   )
+
+  const openWonPaymentSetup = useCallback(
+    (dealId: string) => {
+      if (!shouldPromptWonPaymentSetup({ canAccessPayments, dealId, payments })) return
+      setWonPaymentSetupDealId(dealId)
+    },
+    [canAccessPayments, payments],
+  )
+
+  const closeWonPaymentSetup = useCallback(() => setWonPaymentSetupDealId(null), [])
 
   const moveDeal = useCallback(
     (dealId: string, stageId: string) => {
@@ -496,9 +526,11 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
             ),
           ),
         activity,
+        undefined,
+        closedNow ? () => openWonPaymentSetup(dealId) : undefined,
       )
     },
-    [deals, stageById, addLocalActivity, persist],
+    [deals, stageById, addLocalActivity, persist, openWonPaymentSetup],
   )
 
   const addLead = useCallback(
@@ -692,10 +724,14 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         },
         undefined,
         "Couldn't create the deal, please try again.",
+        // A new deal has no "previous" stage to compare against — created directly as Won is
+        // itself the trigger (the only way to even select a closed stage here is a Won column's
+        // "+" — see NewDealModal's defaultStageId handling).
+        stage.isWon ? () => openWonPaymentSetup(id) : undefined,
       )
       return id
     },
-    [contacts, leads, currentUser.id, stageById, companyById, persist],
+    [contacts, leads, currentUser.id, stageById, companyById, persist, openWonPaymentSetup],
   )
 
   const updateLead = useCallback(
@@ -900,9 +936,10 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         },
         undefined,
         "Couldn't save the changes, please try again.",
+        closedNow ? () => openWonPaymentSetup(dealId) : undefined,
       )
     },
-    [deals, stageById, companyById, currentUser.id, persist],
+    [deals, stageById, companyById, currentUser.id, persist, openWonPaymentSetup],
   )
 
   const updateProfile = useCallback(
@@ -1606,6 +1643,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       companies,
       payments,
       canAccessPayments,
+      wonPaymentSetupDealId,
+      openWonPaymentSetup,
+      closeWonPaymentSetup,
       quarterlyQuota,
       orgCurrency,
       ownerById,
@@ -1656,6 +1696,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       companies,
       payments,
       canAccessPayments,
+      wonPaymentSetupDealId,
+      openWonPaymentSetup,
+      closeWonPaymentSetup,
       quarterlyQuota,
       orgCurrency,
       ownerById,

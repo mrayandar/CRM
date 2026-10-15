@@ -1126,6 +1126,35 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
     expect(data.canAccessPayments).toBe(false)
     expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
   })
+
+  it("a Won deal that has real payments carries no payment-existence signal in this member's loaded Deal data", async () => {
+    // Set up, as the real privileged path would: a Won deal with real payments on it.
+    loginAs(B) // B.owner is Admin by fixture construction
+    mockClerkAdminFor(B)
+    const created = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: B.deal.id,
+      amount: 500,
+      label: 'Other',
+      dueDate: new Date().toISOString(),
+    })
+
+    const privileged = await loadCrmData(B.org.id, B.owner.id, true)
+    const dealPrivileged = privileged.deals.find((d) => d.id === B.deal.id)
+    expect(dealPrivileged).toBeTruthy()
+
+    const asMember = await loadCrmData(B.org.id, member.id, false)
+    const dealAsMember = asMember.deals.find((d) => d.id === B.deal.id)
+    expect(dealAsMember).toBeTruthy()
+    // Same Deal shape either way — no extra "hasPayments"/count/amount field exists to leak,
+    // and the one place that data lives (`payments`) is empty for the member.
+    expect(Object.keys(dealAsMember!).sort()).toEqual(Object.keys(dealPrivileged!).sort())
+    expect(JSON.stringify(dealAsMember).toLowerCase()).not.toContain('payment')
+    expect(asMember.payments).toEqual([])
+
+    await prisma.activity.deleteMany({ where: { orgId: B.org.id, dealId: B.deal.id, kind: 'payment' } })
+    await prisma.payment.delete({ where: { id: created.id } })
+  })
 })
 
 describe('lib/actions/payments: a payment that was ever paid can never be deleted, even after cancelling', () => {
