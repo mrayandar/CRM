@@ -144,9 +144,11 @@ export async function markPaymentPaid(orgId: string, id: string, actorId: string
 }
 
 /**
- * The only way to undo a paid payment (deletion is blocked once paid — see deletePayment).
- * Clears `paidAt` too: a cancelled payment was never actually received, so it shouldn't keep
- * looking like it was when read back later.
+ * The only way to undo a paid payment (deletion is permanently blocked once paid — see
+ * deletePayment). Deliberately keeps `paidAt` rather than clearing it: the record should still
+ * read as "paid on X, then cancelled" rather than erasing the fact that money was received. The
+ * received-total calculation (Payments screen) excludes cancelled payments by `status`, not by
+ * `paidAt`, so this doesn't double-count anything.
  */
 export async function cancelPayment(orgId: string, id: string, actorId: string, dealLabel: string) {
   return prisma.$transaction(async (tx) => {
@@ -156,7 +158,7 @@ export async function cancelPayment(orgId: string, id: string, actorId: string, 
 
     const updated = await tx.payment.update({
       where: { id },
-      data: { status: 'cancelled', paidAt: null },
+      data: { status: 'cancelled' },
     })
 
     await tx.activity.create({
@@ -176,16 +178,18 @@ export async function cancelPayment(orgId: string, id: string, actorId: string, 
 }
 
 /**
- * Only a `pending` payment can be deleted outright — a `paid` one must be Cancelled instead (see
- * cancelPayment), never erased, so the money record stays auditable. A `cancelled` one can still
- * be deleted (it's already inert cleanup, same reasoning as deleteTask).
+ * Deletable only when there's no record of money ever having been received: a `pending` payment,
+ * or a `cancelled` one that was never `paid` first. Checked by `paidAt`, not `status` alone — a
+ * payment that was paid and then cancelled still has `paidAt` set (cancelPayment deliberately
+ * keeps it), so it stays permanently undeletable even though its *current* status is `cancelled`.
+ * Without this, paid -> cancel -> delete would erase the one row that proves money was received.
  */
 export async function deletePayment(orgId: string, id: string, actorId: string, dealLabel: string) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.payment.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Payment ${id} not found in org ${orgId}`)
-    if (existing.status === 'paid') {
-      throw new Error("Can't delete a paid payment — cancel it instead to undo it.")
+    if (existing.paidAt) {
+      throw new Error("Can't delete a payment that was ever marked paid — it stays as a record even once cancelled.")
     }
 
     await tx.payment.delete({ where: { id } })

@@ -1125,14 +1125,14 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
   })
 })
 
-describe('lib/actions/payments: deletion is blocked once a payment is paid', () => {
+describe('lib/actions/payments: a payment that was ever paid can never be deleted, even after cancelling', () => {
   beforeEach(() => {
     loginAs(A)
     mockClerkAdminFor(A)
   })
   afterEach(() => mockClerkClient.mockReset())
 
-  it('rejects deleting a paid payment, and allows it again once cancelled', async () => {
+  it('paid -> cancel -> delete is rejected (cancelling keeps paidAt, which permanently blocks deletion)', async () => {
     const created = await paymentActions.createPaymentAction({
       id: randomUUID(),
       dealId: A.deal.id,
@@ -1141,13 +1141,46 @@ describe('lib/actions/payments: deletion is blocked once a payment is paid', () 
     })
 
     await paymentActions.markPaymentPaidAction(created.id)
-    const blockedDelete = await paymentActions.deletePaymentAction(created.id)
-    expect(blockedDelete).toEqual({ ok: false, error: expect.stringMatching(/cancel it instead/i) })
-    expect(await getPaymentById(A.org.id, created.id)).not.toBeNull() // still there — not deleted
+    const paidRow = await getPaymentById(A.org.id, created.id)
+    expect(paidRow?.paidAt).not.toBeNull()
 
     await paymentActions.cancelPaymentAction(created.id)
-    const allowedDelete = await paymentActions.deletePaymentAction(created.id)
-    expect(allowedDelete).toEqual({ ok: true })
+    const cancelledRow = await getPaymentById(A.org.id, created.id)
+    expect(cancelledRow?.status).toBe('cancelled')
+    // The whole point of this fix: cancelling does NOT clear paidAt.
+    expect(cancelledRow?.paidAt).not.toBeNull()
+
+    const blockedDelete = await paymentActions.deletePaymentAction(created.id)
+    expect(blockedDelete).toEqual({ ok: false, error: expect.stringMatching(/ever marked paid/i) })
+    expect(await getPaymentById(A.org.id, created.id)).not.toBeNull() // still there — not deleted
+  })
+
+  it('a pending payment (never paid) is still deletable', async () => {
+    const created = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: A.deal.id,
+      amount: 751,
+      dueDate: new Date().toISOString(),
+    })
+    const result = await paymentActions.deletePaymentAction(created.id)
+    expect(result).toEqual({ ok: true })
+    expect(await getPaymentById(A.org.id, created.id)).toBeNull()
+  })
+
+  it('a cancelled payment that was never paid first is still deletable', async () => {
+    const created = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: A.deal.id,
+      amount: 752,
+      dueDate: new Date().toISOString(),
+    })
+    await paymentActions.cancelPaymentAction(created.id)
+    const cancelledRow = await getPaymentById(A.org.id, created.id)
+    expect(cancelledRow?.status).toBe('cancelled')
+    expect(cancelledRow?.paidAt).toBeNull() // never paid — nothing to protect
+
+    const result = await paymentActions.deletePaymentAction(created.id)
+    expect(result).toEqual({ ok: true })
     expect(await getPaymentById(A.org.id, created.id)).toBeNull()
   })
 })

@@ -179,7 +179,9 @@ function PaymentActions({
       <Button variant="ghost" size="sm" onClick={onEdit}>
         Edit
       </Button>
-      {payment.status !== 'paid' && (
+      {/* Never deletable once there's any record money was received — even after cancelling,
+          paidAt stays set (see cancelPayment in lib/data/payments.ts). */}
+      {!payment.paidAt && (
         <IconButton label="Delete payment" onClick={onDelete}>
           <X size={14} />
         </IconButton>

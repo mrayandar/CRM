@@ -1458,9 +1458,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     (paymentId: string) => {
       const payment = payments.find((p) => p.id === paymentId)
       if (!payment || payment.status === 'cancelled') return
-      setPayments((prev) =>
-        prev.map((p) => (p.id === paymentId ? { ...p, status: 'cancelled', paidAt: undefined } : p)),
-      )
+      // paidAt is deliberately kept, not cleared — a cancelled payment that was once paid still
+      // reads as "paid on X, then cancelled" and stays undeletable (see deletePayment).
+      setPayments((prev) => prev.map((p) => (p.id === paymentId ? { ...p, status: 'cancelled' } : p)))
 
       persist(
         () => cancelPaymentAction(paymentId),

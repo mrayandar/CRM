@@ -2,6 +2,36 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fixed a deletion-rule gap: paid -> cancel -> delete used to erase a received payment (Oct 16 2026)
+
+The intent from the start was that a payment ever marked paid can never be erased, but the
+original `cancelPayment` cleared `paidAt` when cancelling — so a `paid` payment, once cancelled,
+looked identical to one that had never been paid, and `deletePayment`'s `status === 'paid'` check
+no longer caught it. `paid -> cancel -> delete` removed the one row proving money had actually
+been received.
+
+Fixed in `lib/data/payments.ts`: `cancelPayment` now keeps `paidAt` as-is (a cancelled-but-once-
+paid row reads "paid on X, then cancelled"), and `deletePayment` checks `paidAt` directly instead
+of `status` — any payment that has ever had `paidAt` set is permanently undeletable, regardless of
+its current status. A `pending` payment, or a `cancelled` one that was never paid first
+(`paidAt` still null), stays deletable exactly as before. The Payments screen's delete control
+(`src/screens/Payments.tsx`) now hides on `!payment.paidAt` rather than `status !== 'paid'`, and
+the optimistic store update (`src/store/crm.tsx`) matches — it no longer clears `paidAt` locally
+on cancel either. Received-total math (the per-deal "exceeds this deal's value" banner) was
+already filtering by `status === 'paid'`, not `paidAt`, so it still correctly excludes cancelled
+payments without any change.
+
+New/updated tests (104 total, up from 102): `paid -> cancel -> delete` now asserts `paidAt` stays
+set through the cancel and rejects the delete attempt; a `pending` payment and a `cancelled`
+payment that was never paid are each confirmed still deletable. Live-verified against real Neon
+data as the real admin: created a payment, marked it paid, cancelled it, confirmed `paidAt` was
+still set in the database and the delete control stayed hidden in the UI, confirmed the row was
+never erased.
+
+Also confirmed (no change needed): the Payments page already has CSV export for admins, with the
+raw `amount` as a number plus a separate `currency` column, matching the pattern used by Reports/
+Companies exports.
+
 ## Built Payments, admin-only, with a two-source auth gate enforced at the data loader (Oct 16 2026)
 
 Full build of the previously-approved Payments design: a `Payment` tracks a single
