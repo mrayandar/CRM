@@ -3,8 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { auth, clerkClient } from '@clerk/nextjs/server'
-import { requireAuth, requireAdmin, canAccessPayments } from '@lib/auth'
-import { loadCrmData, type CrmInitialData } from '@lib/data-loader'
+import { requireAuth, requireAdmin } from '@lib/auth'
 import { updateOrgQuota, updateOrgCurrency } from '@lib/data/organizations'
 import { CURRENCY_CODES } from '@/data/types'
 import {
@@ -72,22 +71,6 @@ async function assertSubjectInOrg(orgId: string, subject?: { type: 'lead' | 'con
 /** Optimistic creates use a client-generated UUID as the row id; reject anything else. */
 function assertClientId(id: unknown): asserts id is string {
   if (typeof id !== 'string' || !UUID_RE.test(id)) throw new Error('Invalid id')
-}
-
-/**
- * Powers CrmProvider's live-update refetch (poll + focus/visibility — see src/store/crm.tsx and
- * src/store/livePoll.ts): a plain server action that reuses the exact same loadCrmData() the
- * (app) layout calls on first load, so a refetch gets the identical role gating a fresh page load
- * would — a Member's result has no Payment rows and no payment-kind activities, scoped to the
- * same org, with no separate set of checks to keep in sync. requireAuth() just throws if the
- * session is somehow no longer valid (deactivated Owner, etc.) — unlike resolveAuth(), it never
- * redirects, so a refetch failure can only ever surface as a rejected promise the client fails
- * quietly on, never a navigation.
- */
-export async function refetchCrmDataAction(): Promise<CrmInitialData> {
-  const { orgId, ownerId } = await requireAuth()
-  const includePayments = await canAccessPayments()
-  return loadCrmData(orgId, ownerId, includePayments)
 }
 
 export async function createCompanyAction(input: {

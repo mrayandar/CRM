@@ -2,6 +2,118 @@
 
 > Living context file. Updated at the end of every task.
 
+## Three follow-ups on the live-update work: a real queuing bug fixed, access flags confirmed, cost measured (Oct 22 2026)
+
+### 1. Action queuing — real bug found and fixed, with measurements
+
+**Yes, Server Actions from the same client do serialize.** Measured it directly: with
+`refetchCrmDataAction` (a Server Action) in flight, fired a real `moveDealAction` the instant the
+refetch's request was observed. Timeline (ms from the refetch's request being sent):
+
+```
++0ms     refetch request sent
++3743ms  refetch response received
++3746ms  mutation request SENT        <- did not go out until the refetch finished
++5821ms  mutation response received
+```
+
+The mutation was clicked at +560ms but its network request didn't fire until +3746ms — it waited
+out the entire refetch, adding the refetch's full duration (here ~3.7s) to the mutation's own
+latency. This is Next.js's own Server Action dispatch queue serializing concurrent action calls
+from the same client — not something a lighter loader alone fixes, since even a near-instant
+action would still occupy the queue slot.
+
+**Fix**: moved the refetch off Server Actions entirely, onto a plain Route Handler,
+`GET /api/crm-refetch` (`app/api/crm-refetch/route.ts`) — same `requireAuth()` +
+`canAccessPayments()` + `loadCrmData()`, same gating, just not dispatched through Next's action
+queue. `lib/actions/crm.ts`'s `refetchCrmDataAction` was removed (replaced, not kept alongside) and
+`src/store/crm.tsx`'s `refetchTick` now does a plain `fetch('/api/crm-refetch', { cache: 'no-store' })`.
+
+Re-measured after the fix, same scenario:
+
+```
++0ms     refetch (route handler) request sent
++555ms   mutation request SENT        <- genuinely concurrent now
++6291ms  mutation response received
++6321ms  refetch response received
+```
+
+The mutation's request now goes out immediately, truly overlapping with the in-flight refetch.
+(Both requests took a bit longer individually this run — expected: they're now actually
+contending for the same Node event loop / Postgres connections concurrently, instead of one
+waiting for the other to finish first. That's real parallel load, not an artificial queuing delay,
+and it's far smaller than the ~3.2s the queue was adding.)
+
+**Query/payload cost**, measured directly (`performance.now()` + Prisma query-event logging
+around a raw `loadCrmData()` call, against the real dev org and a temporary bulk-seeded org — see
+item 3 below) — `loadCrmData` itself takes ~2-4s server-side regardless of org size (confirms no
+N+1: the query count is flat), and the end-to-end route round-trip measured above (~3.6-3.7s) is
+consistent with that plus normal dev-mode/network overhead.
+
+Updated tests: the `refetchCrmDataAction` cross-tenant/role tests now call the exported `GET()`
+from `app/api/crm-refetch/route.ts` directly (same tenant/role assertions, same coverage — a
+Route Handler's exported function is just as callable from a test as a Server Action was).
+
+### 2. Access flags — already updated by the refetch; verified live with a real demotion and promotion
+
+Checked `applyFreshData` (`src/store/crm.tsx`, added in the previous entry): it already calls
+`setCanAccessPayments(fresh.canAccessPayments)` on every successful refetch, not just the data
+arrays — this was built in from the start, not stale. Verified live anyway, for real, rather than
+trusting the code read: demoted the real admin (`nexoverify1@mailinator.com`,
+`user_3JrXB891yBRmNt1kfQLKzGp2M9J`) in "Nexo Verified Org" to `org:member` via Clerk's Backend API
+while their session stayed open in a real browser tab on the Dashboard (no reload):
+
+- Payments nav item present before demotion.
+- Demoted via Backend API. A background refetch ~24s later (the session JWT refreshing, then the
+  next focus-triggered refetch picking up the new `orgRole` claim) made the Payments nav item
+  disappear — never manually reloaded.
+- Opened the command palette and searched "payment": no `Payments · Go to` row, confirming
+  `canAccessPayments`/`payments` were actually cleared in client state, not just the nav item
+  hidden.
+- Promoted back to `org:admin`. ~37s later, a background refetch brought the Payments nav item
+  back — again with no manual reload.
+- Confirmed via the Backend API afterward that the account ended the test correctly restored to
+  `org:admin`.
+
+This is the same two-source check (`Owner.role` + the session's `orgRole` claim) `requirePaymentAccess()`
+has always used — the refetch doesn't need its own separate staleness logic, it's just calling the
+same gate again on a timer.
+
+### 3. Cost — measured, with a scaling note (not building the lighter version now)
+
+Measured directly against the real dev org and a temporary bulk-seeded org (created and fully
+deleted for this measurement only — never committed):
+
+| | Dev org (real data) | Bulk org (300 per entity) |
+|---|---|---|
+| `loadCrmData()` duration | ~2.1-4.3s | ~2.6-3.8s |
+| SQL queries issued | 22 | 22 (flat — no N+1) |
+| JSON payload size | ~36 KB | ~478 KB |
+| Row counts returned | 4 owners, 13 leads, 11 contacts, 10 deals, 8 tasks, 50 activities (capped), 15 companies, 0 payments, 6 stages | 1 owner, 300 leads, 300 contacts, 300 deals, 300 tasks, 50 activities (capped by `listActivities`'s own `limit`), 1 company, 300 payments, 1 stage |
+
+22 queries is from Prisma's per-relation batching across the 9-10 parallel `list*` calls (one base
+query per entity plus one batched query per `include`d relation — e.g. `listDeals`'s owner/contact/
+stage/company includes), not one-per-row — confirmed flat between the small real org and the
+300-per-entity synthetic one. `activities` is the one field that doesn't grow with org size at all:
+`listActivities`'s default `limit: 50` caps it regardless.
+
+**Scaling note — when this should move to a changes-only fetch or push-based updates (not built
+now, per instructions):** this wholesale "refetch everything" approach is fine while the payload
+stays in the tens-to-low-hundreds of KB and the whole round trip stays a low single-digit number of
+seconds — true today even for a 300-per-entity org. It stops being fine well before an org reaches
+thousands of rows per entity, for two compounding reasons: (1) payload size grows linearly with
+total row count with no cap (unlike `activities`), so a few-thousand-row org could mean multiple
+MB transferred on every poll tick, every ~60 seconds, from every open tab; (2) 22 queries per
+refetch, multiplied across every open tab's independent poll timer, becomes a real concurrent-load
+source on Postgres as the number of simultaneously-open tabs across an org grows, independent of
+any one org's data size. The concrete trigger point: once a single org's `loadCrmData()` payload
+regularly exceeds ~1-2 MB, or once a given org has enough simultaneously-open tabs that their
+independent ~60s polls become a visible load pattern in Neon's own metrics — either is the signal
+to stop wholesale-refetching and move to either (a) a changes-only endpoint (e.g. "rows touched
+since timestamp X," keyed off `updatedAt`, which this schema already has on every table) or (b) a
+push-based mechanism (a webhook-style or WebSocket fan-out from the mutation side, so clients stop
+polling at all). Neither is built here.
+
 ## Fixed the live-update gap: poll + focus/visibility refetch, safe against races (Oct 16 2026)
 
 **Report, before building (as requested):**

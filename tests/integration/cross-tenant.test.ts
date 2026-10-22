@@ -41,6 +41,7 @@ import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
 import * as actions from '@lib/actions/crm'
+import { GET } from '../../app/api/crm-refetch/route'
 import type { PipelineStage } from '@prisma/client'
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -1571,20 +1572,31 @@ describe('Dashboard Payments card math: a paid-then-cancelled payment is exclude
   })
 })
 
-describe('refetchCrmDataAction: live-update refetch is scoped and role-gated exactly like first load', () => {
+describe('GET /api/crm-refetch: live-update refetch is scoped and role-gated exactly like first load', () => {
+  // A plain Route Handler (not a Server Action) — see its doc comment for why: Next's Server
+  // Action dispatch queue was measured to serialize a mutation behind an in-flight refetch,
+  // adding the refetch's full duration to the mutation's own latency. Calling the exported GET()
+  // function directly, same as any other async function, still exercises the real handler.
+  async function callRefetchRoute() {
+    const response = await GET()
+    return { status: response.status, body: await response.json() }
+  }
+
   it("is scoped by the caller's own session — never returns another org's rows", async () => {
     loginAs(A)
-    const data = await actions.refetchCrmDataAction()
-    expect(data.deals.some((d) => d.id === B.deal.id)).toBe(false)
-    expect(data.leads.some((l) => l.id === B.lead.id)).toBe(false)
-    expect(data.contacts.some((c) => c.id === B.contact.id)).toBe(false)
-    expect(data.companies.some((c) => c.id === B.company.id)).toBe(false)
-    expect(data.deals.some((d) => d.id === A.deal.id)).toBe(true) // sanity: it's not just empty
+    const { status, body: data } = await callRefetchRoute()
+    expect(status).toBe(200)
+    expect(data.deals.some((d: { id: string }) => d.id === B.deal.id)).toBe(false)
+    expect(data.leads.some((l: { id: string }) => l.id === B.lead.id)).toBe(false)
+    expect(data.contacts.some((c: { id: string }) => c.id === B.contact.id)).toBe(false)
+    expect(data.companies.some((c: { id: string }) => c.id === B.company.id)).toBe(false)
+    expect(data.deals.some((d: { id: string }) => d.id === A.deal.id)).toBe(true) // sanity: it's not just empty
   })
 
-  it('rejects when there is no valid session (never redirects — just throws)', async () => {
+  it('returns 401 (never redirects) when there is no valid session', async () => {
     mockAuth.mockResolvedValue({ userId: null, orgId: null })
-    await expect(actions.refetchCrmDataAction()).rejects.toThrow()
+    const { status } = await callRefetchRoute()
+    expect(status).toBe(401)
   })
 
   it("a non-privileged member's refetch carries no Payment rows and no payment-kind activities, same as first load", async () => {
@@ -1599,17 +1611,18 @@ describe('refetchCrmDataAction: live-update refetch is scoped and role-gated exa
     })
     mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' })
 
-    const data = await actions.refetchCrmDataAction()
+    const { status, body: data } = await callRefetchRoute()
+    expect(status).toBe(200)
     expect(data.canAccessPayments).toBe(false)
     expect(data.payments).toEqual([])
-    expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
+    expect(data.activities.some((a: { kind: string }) => a.kind === 'payment')).toBe(false)
 
     await prisma.owner.delete({ where: { id: member.id } })
   })
 
   it("an admin's refetch does include payment access, mirroring first load", async () => {
     loginAs(A) // A.owner is an active Admin with a matching org:admin session — see makeFixture
-    const data = await actions.refetchCrmDataAction()
+    const { body: data } = await callRefetchRoute()
     expect(data.canAccessPayments).toBe(true)
   })
 })

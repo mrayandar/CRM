@@ -56,7 +56,6 @@ import {
   renameStageAction,
   reorderStageAction,
   deleteStageAction,
-  refetchCrmDataAction,
 } from '@lib/actions/crm'
 import { isRefetchStale, startLivePoll } from '@/store/livePoll'
 import {
@@ -1691,7 +1690,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   /**
    * Replaces every server-sourced field with a fresh loadCrmData() result (see
-   * refetchCrmDataAction). A plain wholesale replace, not a field-level merge — safe specifically
+   * GET /api/crm-refetch). A plain wholesale replace, not a field-level merge — safe specifically
    * because refetchTick only ever calls this once it's confirmed no mutation is in flight and
    * none started since the fetch was issued (see generationRef/pendingCountRef there). Pure local
    * UI state (toasts, wonPaymentSetupDealId) is untouched.
@@ -1720,10 +1719,20 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
    * fresh as what's already on screen, so it's discarded (not applied, not treated as an error —
    * src/store/livePoll.ts retries soon after, no backoff). Also discarded if a mutation happens
    * to be in flight at the exact moment the response lands, for the same reason.
+   *
+   * Fetches GET /api/crm-refetch directly, not a Server Action — measured, real reason: a Server
+   * Action invoked from the client goes through Next's own action-dispatch queue, which
+   * serializes concurrent action calls from the same client. A mutation (e.g. moveDealAction)
+   * started while a Server Action version of this was in flight didn't even have its own network
+   * request sent until the refetch's response came back, adding the refetch's full ~3-4s to the
+   * mutation's latency. A Route Handler sits outside that queue, so a mutation fired during this
+   * fetch goes out immediately instead of waiting for it.
    */
   const refetchTick = useCallback(async (): Promise<'applied' | 'discarded'> => {
     const generationAtStart = generationRef.current
-    const fresh = await refetchCrmDataAction()
+    const response = await fetch('/api/crm-refetch', { cache: 'no-store' })
+    if (!response.ok) throw new Error(`refetch failed: ${response.status}`)
+    const fresh: CrmInitialData = await response.json()
     if (disposedRef.current) return 'discarded'
     if (
       isRefetchStale({
@@ -1740,8 +1749,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   // Poll every ~60s while the tab is visible, refetch immediately on focus/visibility-regained,
   // pause while hidden, back off on repeated failures — see src/store/livePoll.ts. Never redirects
-  // or surfaces anything on failure: refetchCrmDataAction only ever throws (requireAuth(), never a
-  // redirect), and that rejection just means "try again later," silently.
+  // or surfaces anything on failure: GET /api/crm-refetch's requireAuth() only ever throws (never
+  // a redirect), a non-ok response just throws too, and either one just means "try again later,"
+  // silently.
   useEffect(() => {
     disposedRef.current = false
     const stop = startLivePoll({
