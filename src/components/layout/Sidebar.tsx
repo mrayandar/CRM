@@ -1,6 +1,6 @@
 'use client'
 
-import { NavLink } from '@/lib/router-compat'
+import { NavLink, useNavigate } from '@/lib/router-compat'
 import {
   BarChart3,
   Building2,
@@ -120,6 +120,7 @@ function UserMenu() {
   const { currentUser } = useCrm()
   const { user: clerkUser } = useUser()
   const { signOut } = useClerk()
+  const navigate = useNavigate()
 
   const displayName = clerkUser?.fullName ?? currentUser.name
   const displayEmail = clerkUser?.primaryEmailAddress?.emailAddress ?? currentUser.email
@@ -149,9 +150,22 @@ function UserMenu() {
       {({ close }) => (
         <>
           <MenuLabel>{displayEmail}</MenuLabel>
-          <MenuItem onClick={close}>Profile & preferences</MenuItem>
-          <MenuItem onClick={close}>Notification settings</MenuItem>
-          <MenuItem onClick={close}>Keyboard shortcuts</MenuItem>
+          <MenuItem
+            onClick={() => {
+              close()
+              navigate('/settings')
+            }}
+          >
+            Profile & preferences
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              close()
+              navigate('/settings?section=notifications')
+            }}
+          >
+            Notification settings
+          </MenuItem>
           <MenuDivider />
           <MenuItem
             onClick={() => {

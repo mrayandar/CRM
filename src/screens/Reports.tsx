@@ -5,6 +5,7 @@ import { Download } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { Tag } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { BarChart, EmptyState, Meter } from '@/components/ui/Display'
 import { MetricRow } from '@/components/common/MetricTile'
@@ -177,9 +178,10 @@ export function Reports() {
       subtitle="Revenue performance, source efficiency, and rep attainment"
       actions={
         <>
-          <Button variant="secondary" size="sm">
+          <Button variant="secondary" size="sm" disabled>
             This quarter
           </Button>
+          <Tag>Coming soon</Tag>
           <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportReports}>
             Export
           </Button>

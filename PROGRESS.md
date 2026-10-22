@@ -2,6 +2,51 @@
 
 > Living context file. Updated at the end of every task.
 
+## Made the UI honest about every remaining dead control (Oct 23 2026)
+
+Re-scanned every control named in the earlier Settings/bell audit, plus the leftovers from the
+Sep/Oct full-codebase audits (Leads "Add filter" and row menu, Contacts row menu, Dashboard "Last
+30 days"/"View full history", Reports "This quarter"). Each got one of three dispositions —
+**remove** (purely decorative, no stated plan), **disable + "Coming soon"** (a plausible, commonly
+expected feature with zero backing infrastructure), or **wire** (a real capability already exists
+elsewhere in the app) — decided per-control before any non-trivial change, per the user's request.
+
+| Control | Disposition |
+|---|---|
+| Notifications: 5 toggles (Deal stage changes, New lead assigned, Mentions and comments, Overdue task reminders, Daily pipeline digest) | Disabled + one "Coming soon" banner above them (state is local-only, never persisted) |
+| Fiscal year starts | Disabled select + "Coming soon" tag; added a note that it would change the Dashboard quota's quarter definition once built |
+| Lead sources "Add source" | Disabled button + "Coming soon" tag |
+| Upload photo | Disabled button + "Coming soon" tag |
+| Account menu: "Profile & preferences" | Wired → navigates to `/settings` |
+| Account menu: "Notification settings" | Wired → navigates to `/settings?section=notifications` (added query-param deep-linking to `Settings.tsx`, mirroring the existing `?status=`/`?tag=` saved-view pattern) |
+| Account menu: "Keyboard shortcuts" | Removed — no stated plan, nothing to wire |
+| Top-bar bell | Wrapped in the existing `Popover` component; now opens a panel reading "Notifications aren't available yet." instead of doing nothing. Removed the hardcoded fake unread dot. |
+| Leads "Add filter" | Removed (dead button, no stated plan); also removed the now-unused `activeFilters` state and `SlidersHorizontal` import |
+| Leads row menu: "Log activity", "Send email", "Delete lead" | Disabled + "Coming soon" (via `MenuItem`'s new `comingSoon` prop) |
+| Contacts row menu: "Log activity", "Add to sequence", "Delete contact" | Disabled + "Coming soon" |
+| Contacts row menu: "View company" | Wired → navigates to `/companies/[companyId]` (the company detail page already exists) |
+| Dashboard "Last 30 days" | Disabled + "Coming soon" tag |
+| Dashboard "View full history" | Disabled + "Coming soon" tag |
+| Reports "This quarter" | Disabled + "Coming soon" tag |
+
+**Quarter definition, as requested:** the Dashboard's quota card uses a hardcoded **calendar**
+quarter (`Math.floor(now.getMonth() / 3) * 3` → Jan/Apr/Jul/Oct), not a value read from any
+org setting. Reports has no quarter-scoping logic at all today, so there's nothing to compare it
+against there. Wiring "Fiscal year starts" would change the Dashboard's quarter boundaries once a
+non-calendar fiscal year is selected — noted directly in the Settings UI next to that control.
+
+Mechanism: extended `MenuItem` (`src/components/ui/Menu.tsx`) with `disabled`/`comingSoon` props,
+and `Toggle` (bottom of `src/screens/Settings.tsx`) with a `disabled` prop — both reused everywhere
+above rather than inventing a one-off pattern per site. The existing `Tag` component
+(`@/components/ui/Badge`) is the "Coming soon" label everywhere outside a menu item.
+
+**Verified in a real browser** against the live "Nexo Verified Org" data (minted Clerk sign-in
+tickets + the scratchpad Playwright harness, not just typecheck/build): 16 checks across Dashboard,
+the bell, the account menu, Settings' Profile/Pipeline/Notifications tabs, Leads, and Reports, plus
+9 more checks on the Leads/Contacts row menus including the "View company" navigation — all 25
+passed. `npx tsc --noEmit`, `npx vitest run` (156 passed), and `npx next build` all also passed
+clean on the final state.
+
 ## Confirmed GET /api/crm-refetch can never be served cross-user by a shared cache (Oct 23 2026)
 
 Once the live-update refetch moved to `GET /api/crm-refetch` (see the entry below), it needed its
@@ -3807,6 +3852,17 @@ still imported by Dashboard and Reports only for the chart array above.
 > "pending invitations aren't listed", Settings Save not persisting) were fixed in later tasks and
 > never removed from this list. See "Full honest state-of-the-codebase audit (Oct 2 2026)" at the
 > top of this file for what's actually still true today.
+
+### Unconfirmed (Oct 23 2026)
+
+- The four test cases for `GET /api/crm-refetch` — a Member gets no payments or payment-kind
+  activities, another org's data never appears, an unauthenticated request gets a 401, a demoted
+  admin gets no payment data — were never individually confirmed by name against the actual test
+  file. They were implied to exist by the surrounding work but not checked one by one.
+- The test totals reported across recent runs (164, 153, 159, and now 156 as of this task) were
+  never reconciled. No one has verified whether these differences reflect tests added/removed
+  between runs, a flaky/non-deterministic suite, or a miscount — treat any single reported total
+  as unverified until that's done.
 
 ### Active org is not restored on sign-in
 

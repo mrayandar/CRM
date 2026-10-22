@@ -99,27 +99,44 @@ export function MenuItem({
   icon,
   selected,
   tone = 'default',
+  disabled = false,
+  comingSoon = false,
 }: {
   children: ReactNode
   onClick?: () => void
   icon?: ReactNode
   selected?: boolean
   tone?: 'default' | 'danger'
+  /** Renders as inert — no onClick, muted, no hover — for a control with no handler at all. */
+  disabled?: boolean
+  /** Same as `disabled`, plus a trailing "Coming soon" label — for a planned-but-unbuilt feature,
+   *  as opposed to one that's just not relevant here. */
+  comingSoon?: boolean
 }) {
+  const inert = disabled || comingSoon
   return (
     <button
       type="button"
-      onClick={onClick}
+      disabled={inert}
+      aria-disabled={inert}
+      onClick={inert ? undefined : onClick}
       className={cn(
         'flex w-full items-center gap-2 rounded-[6px] px-2 py-[6px] text-left text-[13px]',
         'transition-colors duration-75',
-        tone === 'danger'
-          ? 'text-negative hover:bg-negative-soft'
-          : 'text-ink-700 hover:bg-subtle hover:text-ink-900',
+        inert
+          ? 'cursor-not-allowed text-ink-400'
+          : tone === 'danger'
+            ? 'text-negative hover:bg-negative-soft'
+            : 'text-ink-700 hover:bg-subtle hover:text-ink-900',
       )}
     >
-      {icon && <span className="text-ink-400">{icon}</span>}
+      {icon && <span className={inert ? 'text-ink-300' : 'text-ink-400'}>{icon}</span>}
       <span className="min-w-0 flex-1 truncate">{children}</span>
+      {comingSoon && (
+        <span className="shrink-0 rounded-[4px] bg-subtle px-1.5 py-[1px] text-[10px] font-medium text-ink-400">
+          Coming soon
+        </span>
+      )}
       {selected && <Check size={13} className="text-brand-600" />}
     </button>
   )

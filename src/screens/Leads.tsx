@@ -8,7 +8,6 @@ import {
   Mail,
   MoreHorizontal,
   Plus,
-  SlidersHorizontal,
   Trash2,
   UserPlus,
 } from 'lucide-react'
@@ -94,7 +93,6 @@ export function Leads() {
     )
 
   const allSelected = filtered.length > 0 && filtered.every((l) => selected.has(l.id))
-  const activeFilters = [owner !== 'all', source !== 'all', status !== 'all'].filter(Boolean).length
 
   const exportLeads = () => {
     exportCsv(
@@ -169,17 +167,6 @@ export function Leads() {
               </option>
             ))}
           </Select>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={<SlidersHorizontal size={13} />}
-            className={cn(activeFilters > 0 && 'text-brand-700')}
-          >
-            {activeFilters === 0
-              ? 'Add filter'
-              : `${activeFilters} ${activeFilters === 1 ? 'filter' : 'filters'}`}
-          </Button>
-
           <div className="ml-auto flex items-center gap-2">
             {selected.size > 0 ? (
               <div className="flex animate-fade-in items-center gap-2">
@@ -662,8 +649,8 @@ function RowMenu({
       {({ close }) => (
         <>
           <MenuItem onClick={() => { onOpen(); close() }}>Open lead</MenuItem>
-          <MenuItem onClick={close}>Log activity</MenuItem>
-          <MenuItem onClick={close}>Send email</MenuItem>
+          <MenuItem comingSoon>Log activity</MenuItem>
+          <MenuItem comingSoon>Send email</MenuItem>
           <MenuDivider />
           <MenuLabel>Set status</MenuLabel>
           {LEAD_STATUS_ORDER.map((s) => (
@@ -679,7 +666,7 @@ function RowMenu({
             </MenuItem>
           ))}
           <MenuDivider />
-          <MenuItem tone="danger" onClick={close}>
+          <MenuItem tone="danger" comingSoon>
             Delete lead
           </MenuItem>
         </>

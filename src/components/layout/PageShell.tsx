@@ -5,6 +5,7 @@ import { useNavigate } from '@/lib/router-compat'
 import { ArrowLeft, Bell, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { IconButton } from '@/components/ui/Button'
+import { Popover } from '@/components/ui/Menu'
 import { useCommandPalette } from './CommandPalette'
 
 export function PageShell({
@@ -61,10 +62,21 @@ export function PageShell({
           </kbd>
         </button>
 
-        <IconButton label="Notifications" className="relative">
-          <Bell size={15} />
-          <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand-600 ring-2 ring-surface" />
-        </IconButton>
+        <Popover
+          align="end"
+          width={220}
+          trigger={({ toggle }) => (
+            <IconButton label="Notifications" onClick={toggle}>
+              <Bell size={15} />
+            </IconButton>
+          )}
+        >
+          {() => (
+            <p className="px-2 py-1.5 text-[12.5px] leading-4.5 text-ink-500">
+              Notifications aren&apos;t available yet.
+            </p>
+          )}
+        </Popover>
 
         {actions && <div className="flex items-center gap-2">{actions}</div>}
       </header>

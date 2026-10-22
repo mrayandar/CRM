@@ -417,6 +417,7 @@ function ContactRow({
   ownerInitials: string
   onOpen: () => void
 }) {
+  const navigate = useNavigate()
   const stale = dayDelta(contact.lastInteractionAt) <= -30
 
   return (
@@ -499,13 +500,16 @@ function ContactRow({
             {({ close }) => (
               <>
                 <MenuItem onClick={() => { onOpen(); close() }}>Open contact</MenuItem>
-                <MenuItem onClick={close}>Log activity</MenuItem>
-                <MenuItem onClick={close}>Add to sequence</MenuItem>
-                <MenuItem icon={<Building2 size={13} />} onClick={close}>
+                <MenuItem comingSoon>Log activity</MenuItem>
+                <MenuItem comingSoon>Add to sequence</MenuItem>
+                <MenuItem
+                  icon={<Building2 size={13} />}
+                  onClick={() => { navigate(`/companies/${contact.companyId}`); close() }}
+                >
                   View company
                 </MenuItem>
                 <MenuDivider />
-                <MenuItem tone="danger" onClick={close}>
+                <MenuItem tone="danger" comingSoon>
                   Delete contact
                 </MenuItem>
               </>

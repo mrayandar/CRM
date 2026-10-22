@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useSearchParams } from '@/lib/router-compat'
 import { Check, Plus, Loader2, UserX, X } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
@@ -31,7 +32,13 @@ const formatQuota = (quota: number | null) => (quota !== null ? quota.toLocaleSt
 
 export function Settings() {
   const { currentUser, updateProfile, quarterlyQuota, updateQuota, orgCurrency, updateCurrency, orgName } = useCrm()
-  const [section, setSection] = useState<Section>('profile')
+  const [params] = useSearchParams()
+  const initialSection = params.get('section')
+  const [section, setSection] = useState<Section>(
+    initialSection === 'pipeline' || initialSection === 'team' || initialSection === 'notifications'
+      ? initialSection
+      : 'profile',
+  )
   const [profileName, setProfileName] = useState(currentUser.name)
   const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? TIMEZONES[0]!.value)
   const [quotaInput, setQuotaInput] = useState(formatQuota(quarterlyQuota))
@@ -102,9 +109,12 @@ export function Settings() {
                 <div className="flex items-center gap-4">
                   <Avatar name={currentUser.name} initials={currentUser.initials} size="xl" />
                   <div>
-                    <Button variant="secondary" size="sm">
-                      Upload photo
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button variant="secondary" size="sm" disabled>
+                        Upload photo
+                      </Button>
+                      <Tag>Coming soon</Tag>
+                    </div>
                     <p className="mt-1.5 text-[11.5px] text-ink-400">PNG or JPG, up to 2MB.</p>
                   </div>
                 </div>
@@ -200,12 +210,19 @@ export function Settings() {
                   </p>
                 </div>
                 <div>
-                  <Label>Fiscal year starts</Label>
-                  <Select defaultValue="jan" className="h-9">
+                  <div className="flex items-center gap-2">
+                    <Label>Fiscal year starts</Label>
+                    <Tag>Coming soon</Tag>
+                  </div>
+                  <Select defaultValue="jan" className="h-9" disabled>
                     <option value="jan">January</option>
                     <option value="apr">April</option>
                     <option value="jul">July</option>
                   </Select>
+                  <p className="mt-1 text-[11px] text-ink-400">
+                    The Dashboard's quarterly quota currently always uses the calendar quarter
+                    (Jan/Apr/Jul/Oct) — this would change that once it's built.
+                  </p>
                 </div>
                 <div>
                   <Label>Quarterly team quota</Label>
@@ -257,16 +274,18 @@ export function Settings() {
 
             <Card>
               <CardHeader title="Lead sources" subtitle="Used for attribution across reports" />
-              <div className="flex flex-wrap gap-1.5 px-5 py-4">
+              <div className="flex flex-wrap items-center gap-1.5 px-5 py-4">
                 {['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website'].map((s) => (
                   <Tag key={s}>{s}</Tag>
                 ))}
                 <button
                   type="button"
-                  className="inline-flex items-center gap-0.5 rounded-[5px] border border-dashed border-line-strong px-1.5 py-[1px] text-[11.5px] font-medium text-ink-400 hover:border-ink-400 hover:text-ink-600"
+                  disabled
+                  className="inline-flex cursor-not-allowed items-center gap-0.5 rounded-[5px] border border-dashed border-line px-1.5 py-[1px] text-[11.5px] font-medium text-ink-300"
                 >
                   <Plus size={10} /> Add source
                 </button>
+                <Tag>Coming soon</Tag>
               </div>
             </Card>
           </>
@@ -278,6 +297,12 @@ export function Settings() {
           <Card>
             <CardHeader title="Notifications" subtitle="Choose what reaches your inbox" />
             <div className="px-5 py-4">
+              <div className="mb-4 flex items-center gap-2 rounded-[8px] bg-subtle px-3 py-2">
+                <Tag>Coming soon</Tag>
+                <p className="text-[12px] text-ink-500">
+                  Notification delivery isn&apos;t built yet — these switches don&apos;t do anything.
+                </p>
+              </div>
               <SectionLabel>Deals & pipeline</SectionLabel>
               <div className="mt-2 divide-y divide-line">
                 <Toggle
@@ -285,12 +310,14 @@ export function Settings() {
                   description="When a deal you own moves between stages"
                   checked={notifications.dealStage}
                   onChange={(v) => setNotifications((n) => ({ ...n, dealStage: v }))}
+                  disabled
                 />
                 <Toggle
                   label="New lead assigned to me"
                   description="Immediately when routing assigns you a lead"
                   checked={notifications.leadAssigned}
                   onChange={(v) => setNotifications((n) => ({ ...n, leadAssigned: v }))}
+                  disabled
                 />
               </div>
 
@@ -301,18 +328,21 @@ export function Settings() {
                   description="When a teammate @mentions you on a record"
                   checked={notifications.mentions}
                   onChange={(v) => setNotifications((n) => ({ ...n, mentions: v }))}
+                  disabled
                 />
                 <Toggle
                   label="Overdue task reminders"
                   description="A single reminder each morning for overdue work"
                   checked={notifications.overdueTasks}
                   onChange={(v) => setNotifications((n) => ({ ...n, overdueTasks: v }))}
+                  disabled
                 />
                 <Toggle
                   label="Daily pipeline digest"
                   description="Summary of pipeline movement from the previous day"
                   checked={notifications.dailyDigest}
                   onChange={(v) => setNotifications((n) => ({ ...n, dailyDigest: v }))}
+                  disabled
                 />
               </div>
             </div>
@@ -656,16 +686,20 @@ function Toggle({
   description,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: string
   description: string
   checked: boolean
   onChange: (value: boolean) => void
+  disabled?: boolean
 }) {
   return (
     <div className="flex items-start justify-between gap-4 py-3">
       <div className="min-w-0">
-        <p className="text-[13px] font-medium text-ink-800">{label}</p>
+        <p className={cn('text-[13px] font-medium', disabled ? 'text-ink-400' : 'text-ink-800')}>
+          {label}
+        </p>
         <p className="mt-0.5 text-[12px] leading-4 text-ink-500">{description}</p>
       </div>
       <button
@@ -673,15 +707,21 @@ function Toggle({
         role="switch"
         aria-checked={checked}
         aria-label={label}
-        onClick={() => onChange(!checked)}
+        disabled={disabled}
+        onClick={disabled ? undefined : () => onChange(!checked)}
         className={cn(
           'relative mt-0.5 h-[18px] w-[32px] shrink-0 rounded-full border transition-colors duration-150',
-          checked ? 'border-brand-600 bg-brand-600' : 'border-line-strong bg-subtle',
+          disabled
+            ? 'cursor-not-allowed border-line bg-subtle'
+            : checked
+              ? 'border-brand-600 bg-brand-600'
+              : 'border-line-strong bg-subtle',
         )}
       >
         <span
           className={cn(
-            'absolute top-[2px] size-[12px] rounded-full bg-white shadow-hairline transition-[left] duration-150',
+            'absolute top-[2px] size-[12px] rounded-full shadow-hairline transition-[left] duration-150',
+            disabled ? 'bg-ink-200' : 'bg-white',
             checked ? 'left-[17px]' : 'left-[2px]',
           )}
         />

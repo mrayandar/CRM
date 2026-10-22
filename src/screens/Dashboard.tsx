@@ -6,7 +6,7 @@ import { ArrowUpRight, ChevronRight, Plus, TriangleAlert } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Badge, StatusDot, stageTone } from '@/components/ui/Badge'
+import { Badge, StatusDot, Tag, stageTone } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { BarChart, EmptyState } from '@/components/ui/Display'
 import { Segmented } from '@/components/ui/Field'
@@ -139,9 +139,10 @@ export function Dashboard() {
       title={`Good ${timeOfDay()}, ${currentUser.name.split(' ')[0]}`}
       actions={
         <>
-          <Button variant="secondary" size="sm">
+          <Button variant="secondary" size="sm" disabled>
             Last 30 days
           </Button>
+          <Tag>Coming soon</Tag>
           <Button
             variant="primary"
             size="sm"
@@ -441,10 +442,11 @@ export function Dashboard() {
                 }
               />
               <ActivityFeed items={activities} limit={8} />
-              <div className="border-t border-line px-5 py-2.5 text-center">
-                <Button variant="ghost" size="xs" trailingIcon={<ArrowUpRight size={12} />}>
+              <div className="flex items-center justify-center gap-2 border-t border-line px-5 py-2.5">
+                <Button variant="ghost" size="xs" trailingIcon={<ArrowUpRight size={12} />} disabled>
                   View full history
                 </Button>
+                <Tag>Coming soon</Tag>
               </div>
             </Card>
           </div>
