@@ -42,6 +42,7 @@ import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
 import * as actions from '@lib/actions/crm'
 import { GET, dynamic as crmRefetchDynamic } from '../../app/api/crm-refetch/route'
+import { GET as getActivitiesRoute, dynamic as activitiesRouteDynamic } from '../../app/api/activities/route'
 import type { PipelineStage } from '@prisma/client'
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -1659,5 +1660,155 @@ describe('GET /api/crm-refetch: live-update refetch is scoped and role-gated exa
     expect(data.canAccessPayments).toBe(false)
     expect(data.payments).toEqual([])
     expect(data.activities.some((a: { kind: string }) => a.kind === 'payment')).toBe(false)
+  })
+})
+
+describe('GET /api/activities: one record\'s own paginated history, scoped and role-gated', () => {
+  async function callActivitiesRoute(params: Record<string, string>) {
+    const qs = new URLSearchParams(params).toString()
+    const request = new Request(`http://localhost/api/activities?${qs}`)
+    const response = await getActivitiesRoute(request)
+    return { status: response.status, headers: response.headers, body: await response.json() }
+  }
+
+  it('is forced dynamic — never statically optimized/cached by Next itself', () => {
+    expect(activitiesRouteDynamic).toBe('force-dynamic')
+  })
+
+  it('sets Cache-Control: private, no-store on a successful response', async () => {
+    loginAs(A)
+    const { status, headers } = await callActivitiesRoute({ subjectType: 'lead', subjectId: A.lead.id })
+    expect(status).toBe(200)
+    expect(headers.get('Cache-Control')).toBe('private, no-store')
+  })
+
+  it('also sets Cache-Control: private, no-store on the 401 (unauthenticated) response', async () => {
+    mockAuth.mockResolvedValue({ userId: null, orgId: null })
+    const { status, headers } = await callActivitiesRoute({ subjectType: 'lead', subjectId: A.lead.id })
+    expect(status).toBe(401)
+    expect(headers.get('Cache-Control')).toBe('private, no-store')
+  })
+
+  it('returns 401 (never redirects) when there is no valid session', async () => {
+    mockAuth.mockResolvedValue({ userId: null, orgId: null })
+    const { status } = await callActivitiesRoute({ subjectType: 'lead', subjectId: A.lead.id })
+    expect(status).toBe(401)
+  })
+
+  it('rejects a subject id that belongs to another org, same as a cross-tenant id elsewhere', async () => {
+    loginAs(B) // B's own valid session...
+    const { status } = await callActivitiesRoute({ subjectType: 'lead', subjectId: A.lead.id }) // ...A's lead
+    expect(status).toBe(401)
+  })
+
+  it('rejects an unknown subjectType and a missing subjectId', async () => {
+    loginAs(A)
+    expect((await callActivitiesRoute({ subjectType: 'bogus', subjectId: A.lead.id })).status).toBe(401)
+    expect((await callActivitiesRoute({ subjectType: 'lead', subjectId: '' })).status).toBe(401)
+  })
+
+  it('a record with 120 activities in an org shows all of them across pages, newest first', async () => {
+    // A dedicated, throwaway lead (not the shared A.lead fixture other tests also touch) so this
+    // test's count is exact and unaffected by activity logged elsewhere in this file.
+    const lead = await prisma.lead.create({
+      data: {
+        orgId: A.org.id,
+        name: 'Deep History Lead',
+        title: '',
+        companyId: A.company.id,
+        email: `deep-history-${RUN}@example.com`,
+        phone: '',
+        source: 'Inbound',
+        location: '',
+        ownerId: A.owner.id,
+      },
+    })
+    await prisma.activity.createMany({
+      data: Array.from({ length: 120 }, (_, i) => ({
+        orgId: A.org.id,
+        kind: 'note' as const,
+        title: `note ${i}`,
+        actorId: A.owner.id,
+        subjectType: 'lead' as const,
+        subjectLabel: lead.name,
+        leadId: lead.id,
+        // Spread across distinct timestamps, oldest first in creation order, so "newest first"
+        // ordering is actually exercised rather than coincidentally matching insertion order.
+        at: new Date(Date.now() - (120 - i) * 1000),
+      })),
+    })
+
+    loginAs(A)
+    const seen: string[] = []
+    let cursor: string | undefined
+    for (let page = 0; page < 10; page++) {
+      const { status, body } = await callActivitiesRoute({
+        subjectType: 'lead',
+        subjectId: lead.id,
+        ...(cursor ? { cursor } : {}),
+      })
+      expect(status).toBe(200)
+      seen.push(...body.activities.map((a: { title: string }) => a.title))
+      if (!body.nextCursor) break
+      cursor = body.nextCursor
+    }
+
+    expect(seen).toHaveLength(120)
+    expect(new Set(seen).size).toBe(120) // no row repeated across pages
+    expect(seen[0]).toBe('note 119') // newest (latest `at`) first
+    expect(seen[119]).toBe('note 0') // oldest last
+
+    await prisma.lead.delete({ where: { id: lead.id } })
+  })
+
+  it("a Member never gets payment-kind activities on a deal's timeline", async () => {
+    await prisma.activity.create({
+      data: {
+        orgId: A.org.id,
+        kind: 'payment',
+        title: 'payment logged',
+        actorId: A.owner.id,
+        subjectType: 'deal',
+        subjectLabel: A.deal.name,
+        dealId: A.deal.id,
+      },
+    })
+    const member = await prisma.owner.create({
+      data: {
+        orgId: A.org.id,
+        clerkUserId: `test-clerk-activities-member-${RUN}`,
+        name: 'Activities Member',
+        email: `activities-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: A.org.clerkOrgId, orgRole: 'org:member' })
+
+    const { status, body } = await callActivitiesRoute({ subjectType: 'deal', subjectId: A.deal.id })
+    expect(status).toBe(200)
+    expect(body.activities.some((a: { kind: string }) => a.kind === 'payment')).toBe(false)
+
+    await prisma.owner.delete({ where: { id: member.id } })
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: A.deal.id, kind: 'payment' } })
+  })
+
+  it("an admin does get payment-kind activities on a deal's timeline", async () => {
+    await prisma.activity.create({
+      data: {
+        orgId: A.org.id,
+        kind: 'payment',
+        title: 'payment logged',
+        actorId: A.owner.id,
+        subjectType: 'deal',
+        subjectLabel: A.deal.name,
+        dealId: A.deal.id,
+      },
+    })
+    loginAs(A) // A.owner is an active Admin — see makeFixture
+
+    const { body } = await callActivitiesRoute({ subjectType: 'deal', subjectId: A.deal.id })
+    expect(body.activities.some((a: { kind: string }) => a.kind === 'payment')).toBe(true)
+
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, dealId: A.deal.id, kind: 'payment' } })
   })
 })

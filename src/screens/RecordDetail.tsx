@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from '@/lib/router-compat'
 import {
   ArrowRight,
@@ -35,6 +35,7 @@ import { useCrm } from '@/store/crm'
 import {
   LEAD_STATUS_LABEL,
   LEAD_STATUS_ORDER,
+  type Activity,
   type Contact,
   type Lead,
   type Priority,
@@ -55,6 +56,76 @@ const LIFECYCLE_TONE: Record<Contact['lifecycle'], Tone> = {
   Prospect: 'info',
   Evaluator: 'neutral',
   Churned: 'negative',
+}
+
+/** Matches an optimistic, locally-added activity (temp client id) against the real, persisted
+ *  row GET /api/activities eventually returns for it (a different id — the server assigns its
+ *  own). There's no shared id to match on, so this matches on content instead: kind + actor +
+ *  title + body is specific enough that two genuinely different activities colliding on all four
+ *  is not a real-world case this app needs to guard against. */
+const activityDedupeKey = (a: Activity) => `${a.kind}|${a.actorId}|${a.title}|${a.body ?? ''}`
+
+interface RecordTimelinePage {
+  persisted: Activity[]
+  nextCursor: string | null
+  loading: boolean
+  loadingMore: boolean
+  loadMore: () => void
+}
+
+/** One record's own activity history from GET /api/activities, paginated. Replaces filtering the
+ *  globally-capped `activities` array from CrmProvider (see that route's doc comment for the bug
+ *  this fixes) — that array stays exactly as it was for the Dashboard's recent-activity feed. */
+function useRecordTimeline(subjectType: 'lead' | 'contact', subjectId: string): RecordTimelinePage {
+  const [persisted, setPersisted] = useState<Activity[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+
+  const fetchPage = useCallback(
+    async (cursor?: string) => {
+      const params = new URLSearchParams({ subjectType, subjectId })
+      if (cursor) params.set('cursor', cursor)
+      const res = await fetch(`/api/activities?${params.toString()}`, { cache: 'no-store' })
+      if (!res.ok) throw new Error(`activities fetch failed: ${res.status}`)
+      return (await res.json()) as { activities: Activity[]; nextCursor: string | null }
+    },
+    [subjectType, subjectId],
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setPersisted([])
+    setNextCursor(null)
+    fetchPage()
+      .then((page) => {
+        if (cancelled) return
+        setPersisted(page.activities)
+        setNextCursor(page.nextCursor)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [fetchPage])
+
+  const loadMore = useCallback(() => {
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    fetchPage(nextCursor)
+      .then((page) => {
+        setPersisted((prev) => [...prev, ...page.activities])
+        setNextCursor(page.nextCursor)
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false))
+  }, [fetchPage, nextCursor, loadingMore])
+
+  return { persisted, nextCursor, loading, loadingMore, loadMore }
 }
 
 export function LeadDetail() {
@@ -112,15 +183,26 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
 
   const owner = ownerById(record.ownerId)
 
-  const timeline = useMemo(
-    () =>
-      sortBy(
-        activities.filter((a) => a.subject?.id === record.id),
-        (a) => new Date(a.at).getTime(),
-        'desc',
-      ),
+  // Optimistic rows CrmProvider adds locally the instant an action fires (see addLocalActivity in
+  // src/store/crm.tsx) — kept so a just-logged note/call shows immediately, not only once the
+  // server round-trip and the next fetch below land.
+  const pendingLocal = useMemo(
+    () => activities.filter((a) => a.subject?.id === record.id),
     [activities, record.id],
   )
+  const {
+    persisted: persistedTimeline,
+    nextCursor: timelineNextCursor,
+    loading: timelineLoading,
+    loadingMore: timelineLoadingMore,
+    loadMore: loadMoreTimeline,
+  } = useRecordTimeline(type, record.id)
+
+  const timeline = useMemo(() => {
+    const persistedKeys = new Set(persistedTimeline.map(activityDedupeKey))
+    const pendingOnly = pendingLocal.filter((a) => !persistedKeys.has(activityDedupeKey(a)))
+    return sortBy([...persistedTimeline, ...pendingOnly], (a) => new Date(a.at).getTime(), 'desc')
+  }, [persistedTimeline, pendingLocal])
 
   const notes = timeline.filter((a) => a.kind === 'note')
   const recordTasks = tasks.filter((t) => t.relatedTo?.id === record.id)
@@ -502,13 +584,24 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
             {tab === 'activity' && (
               <div className="px-5 py-4">
                 {timeline.length === 0 ? (
-                  <EmptyState
-                    icon={<CalendarPlus size={16} />}
-                    title="No activity yet"
-                    description="Log a note, schedule a call, or send an email to start the timeline."
-                  />
+                  timelineLoading ? null : (
+                    <EmptyState
+                      icon={<CalendarPlus size={16} />}
+                      title="No activity yet"
+                      description="Log a note, schedule a call, or send an email to start the timeline."
+                    />
+                  )
                 ) : (
-                  <ActivityTimeline items={timeline} />
+                  <>
+                    <ActivityTimeline items={timeline} />
+                    {timelineNextCursor && (
+                      <div className="mt-3 text-center">
+                        <Button variant="secondary" size="sm" onClick={loadMoreTimeline} disabled={timelineLoadingMore}>
+                          {timelineLoadingMore ? 'Loading…' : 'Load more'}
+                        </Button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -516,13 +609,24 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
             {tab === 'notes' && (
               <div className="px-5 py-4">
                 {notes.length === 0 ? (
-                  <EmptyState
-                    icon={<StickyNote size={16} />}
-                    title="No notes yet"
-                    description="Use the composer above to capture context from your last conversation."
-                  />
+                  timelineLoading ? null : (
+                    <EmptyState
+                      icon={<StickyNote size={16} />}
+                      title="No notes yet"
+                      description="Use the composer above to capture context from your last conversation."
+                    />
+                  )
                 ) : (
-                  <ActivityTimeline items={notes} />
+                  <>
+                    <ActivityTimeline items={notes} />
+                    {timelineNextCursor && (
+                      <div className="mt-3 text-center">
+                        <Button variant="secondary" size="sm" onClick={loadMoreTimeline} disabled={timelineLoadingMore}>
+                          {timelineLoadingMore ? 'Loading…' : 'Load more'}
+                        </Button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

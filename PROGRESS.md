@@ -2,6 +2,56 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fixed a live bug: record timelines were incomplete beyond the org's 50 most-recent activities (Oct 23 2026)
+
+Found while measuring payload size for the scale/visibility design work (see the design
+discussion below): `loadCrmData` calls `listActivities()` with no `limit`, which defaults to
+`take: 50` — so the `activities` array every client holds is capped at the **50 most recent
+activities org-wide**, not per record. `RecordDetail.tsx`'s Activity and Notes tabs filtered that
+same capped, global array down to one record's subject id. Once an org has more than 50
+activities total, any record whose own activity isn't among the org's 50 most recent *overall*
+silently showed an incomplete or fully empty timeline — a real, live bug, not a scale concern for
+later.
+
+**Fix**: a dedicated endpoint for one record's own history, paginated with no cap.
+
+- `GET /api/activities?subjectType=lead|contact|deal&subjectId=&cursor=` (`app/api/activities/route.ts`,
+  new) — a Route Handler, not a Server Action, for the same measured reason `GET /api/crm-refetch`
+  already is one (doesn't queue behind the Server Action dispatch queue). Same `requireAuth()`
+  gating, same `Cache-Control: private, no-store` + `force-dynamic` as that route. The subject id
+  is checked against the caller's org via the existing scoped by-id reads
+  (`getLeadById`/`getContactById`/`getDealById`) — a cross-tenant or nonexistent subject gets the
+  same uniform 401 as an unauthenticated request; nothing distinguishes "wrong org" from "doesn't
+  exist" in the response, same philosophy as `crm-refetch`. Payment-kind activities are excluded
+  unless `canAccessPayments()` (session-based, no live Clerk API call) says yes — same enforcement
+  point `loadCrmData` already uses.
+- `lib/data/activities.ts`: new `listActivitiesForSubject()` — real cursor pagination (`take`/`cursor`
+  on `id`, ordered `at desc`), no cap, unlike `listActivities()` which stays exactly as it is (still
+  powers the Dashboard's capped, org-wide recent-activity feed — that one is deliberately capped
+  and wasn't touched).
+- `RecordDetail.tsx`: Activity and Notes tabs now fetch from this endpoint (with a "Load more"
+  button) instead of filtering the global capped array. Optimistic, locally-added rows (from
+  `addNote`/`logActivity` — unchanged, still land in `CrmProvider`'s global `activities` state
+  immediately) are merged in and shown right away, then de-duplicated against the fetched page
+  once the real persisted row appears there — matched by content (`kind` + `actorId` + `title` +
+  `body`), since the optimistic row's client-generated temp id and the server's real id are never
+  the same value and nothing currently reconciles them.
+
+**Tests** (`tests/integration/cross-tenant.test.ts`, new describe block): forced-dynamic, both
+`Cache-Control` cases, 401 on no session, 401 on a cross-org subject id, 401 on a bad/missing
+subject, a 120-activity record paginating correctly across pages with no row repeated or
+reordered, a Member never receiving payment-kind activities on a deal's timeline, an admin
+correctly receiving them. All pass — **166/166** total (157 pre-existing + 9 new).
+
+**Live-verified** against the real "Nexo Verified Org": seeded 5 old (backdated) notes on an
+existing contact, then flooded the org with 65 newer activities on *other* records — enough to
+push those 5 old notes out of any naive "50 most recent org-wide" window, reproducing the exact
+bug condition. Loaded that contact's page for real: the response is a real `200` with
+`Cache-Control: private, no-store`, all 5 old notes render on both the Activity and Notes tabs, and
+none of the 65 unrelated flood activities leaked onto this record's timeline. This test data (5 old
+notes + 65 flood activities, clearly titled) is left in the dev org, per the task's own
+instruction to create it there — delete it if the clutter matters.
+
 ## Feature audit (8 named features) + test-count reconciliation, resolved (Oct 23 2026)
 
 **Feature audit** — checked against the real code and the running app, not PROGRESS.md:

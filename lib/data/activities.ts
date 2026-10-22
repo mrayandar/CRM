@@ -19,7 +19,12 @@ export interface ListActivitiesOptions {
   excludeKinds?: ActivityKind[]
 }
 
-/** Powers both the dashboard's recent-activity feed and a record's timeline tab. */
+/** Powers the dashboard's recent-activity feed (org-wide, capped at `limit`) — NOT a record's
+ *  timeline tab. That used to filter this function's capped, org-wide result down to one
+ *  record's own subject, which meant any record whose activity wasn't among the org's `limit`
+ *  most recent *overall* silently showed an incomplete or empty timeline once an org had more
+ *  activity than `limit`. See `listActivitiesForSubject` below — a record's own, properly
+ *  paginated query — for that case now. */
 export function listActivities(
   orgId: string,
   options: ListActivitiesOptions = {},
@@ -38,6 +43,50 @@ export function listActivities(
     orderBy: { at: 'desc' },
     take: limit,
   })
+}
+
+export interface ListActivitiesForSubjectOptions {
+  /** Id of the last activity on the previous page — omit for the first page. */
+  cursor?: string
+  /** Rows per page. Default 30. */
+  take?: number
+  /** Excludes these kinds entirely — same enforcement point as `listActivities`'s option of the
+   *  same name: a non-privileged caller's page never receives a payment-kind row to begin with. */
+  excludeKinds?: ActivityKind[]
+}
+
+/** One record's own activity history, newest first, real cursor pagination — unlike
+ *  `listActivities`, this has no cap: every page is reachable, however much history exists.
+ *  Powers GET /api/activities (RecordDetail's Activity and Notes tabs). The caller is
+ *  responsible for checking the subject itself belongs to this org before calling this — this
+ *  function only filters by the subject id, same as every other data-layer function here. */
+export async function listActivitiesForSubject(
+  orgId: string,
+  subject: { type: 'lead' | 'contact' | 'deal'; id: string },
+  options: ListActivitiesForSubjectOptions = {},
+): Promise<{ rows: Awaited<ReturnType<typeof prisma.activity.findMany>>; nextCursor: string | null }> {
+  const { cursor, take = 30, excludeKinds } = options
+  const subjectWhere =
+    subject.type === 'lead'
+      ? { leadId: subject.id }
+      : subject.type === 'contact'
+        ? { contactId: subject.id }
+        : { dealId: subject.id }
+
+  const rows = await prisma.activity.findMany({
+    where: {
+      orgId,
+      ...subjectWhere,
+      ...(excludeKinds && excludeKinds.length > 0 && { kind: { notIn: excludeKinds } }),
+    },
+    orderBy: { at: 'desc' },
+    take: take + 1,
+    ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+  })
+
+  const hasMore = rows.length > take
+  const page = hasMore ? rows.slice(0, take) : rows
+  return { rows: page, nextCursor: hasMore ? page[page.length - 1]!.id : null }
 }
 
 /**
