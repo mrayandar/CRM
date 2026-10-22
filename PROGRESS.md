@@ -2,6 +2,36 @@
 
 > Living context file. Updated at the end of every task.
 
+## Confirmed GET /api/crm-refetch can never be served cross-user by a shared cache (Oct 23 2026)
+
+Once the live-update refetch moved to `GET /api/crm-refetch` (see the entry below), it needed its
+own explicit cache guarantee — unlike a Server Action, a plain Route Handler has no built-in
+"never shared" behavior, and this one returns one org's full data, including Payment rows for an
+admin. `cache: 'no-store'` on the *client's* `fetch()` call (`src/store/crm.tsx`) only keeps
+Next's own client-side fetch cache from reusing it — it says nothing about a browser's disk
+cache, a corporate proxy, or a CDN sitting in front of the deployment.
+
+Added two independent, explicit guarantees to `app/api/crm-refetch/route.ts`:
+- `export const dynamic = 'force-dynamic'` — the route is never statically optimized/cached by
+  Next itself, regardless of whether a "dynamic API" is auto-detected.
+- An explicit `Cache-Control: private, no-store` response header, on both the success (200) and
+  failure (401) paths, so no shared/intermediary cache between the server and the browser is
+  permitted to store or reuse the response either.
+
+New tests (159 total, up from 156): `dynamic` is asserted to be `'force-dynamic'`; the header is
+asserted present with the exact value on a successful response and on a 401.
+
+**Live-verified** — the actual response headers from a real request (signed in, real session,
+via both Playwright's wire-level response inspection and the browser's own `fetch()` Headers
+object, for two independent views of the same response):
+
+```
+status: 200
+cache-control: private, no-store
+content-type: application/json
+...
+```
+
 ## Three follow-ups on the live-update work: a real queuing bug fixed, access flags confirmed, cost measured (Oct 22 2026)
 
 ### 1. Action queuing — real bug found and fixed, with measurements

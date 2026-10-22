@@ -41,7 +41,7 @@ import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
 import * as actions from '@lib/actions/crm'
-import { GET } from '../../app/api/crm-refetch/route'
+import { GET, dynamic as crmRefetchDynamic } from '../../app/api/crm-refetch/route'
 import type { PipelineStage } from '@prisma/client'
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -1579,8 +1579,26 @@ describe('GET /api/crm-refetch: live-update refetch is scoped and role-gated exa
   // function directly, same as any other async function, still exercises the real handler.
   async function callRefetchRoute() {
     const response = await GET()
-    return { status: response.status, body: await response.json() }
+    return { status: response.status, headers: response.headers, body: await response.json() }
   }
+
+  it('is forced dynamic — never statically optimized/cached by Next itself', () => {
+    expect(crmRefetchDynamic).toBe('force-dynamic')
+  })
+
+  it('sets Cache-Control: private, no-store on a successful response — this is one org\'s data (including Payment rows for an admin), and must never be servable to a different user from any shared/intermediary cache', async () => {
+    loginAs(A)
+    const { status, headers } = await callRefetchRoute()
+    expect(status).toBe(200)
+    expect(headers.get('Cache-Control')).toBe('private, no-store')
+  })
+
+  it('also sets Cache-Control: private, no-store on the 401 (unauthenticated) response', async () => {
+    mockAuth.mockResolvedValue({ userId: null, orgId: null })
+    const { status, headers } = await callRefetchRoute()
+    expect(status).toBe(401)
+    expect(headers.get('Cache-Control')).toBe('private, no-store')
+  })
 
   it("is scoped by the caller's own session — never returns another org's rows", async () => {
     loginAs(A)
