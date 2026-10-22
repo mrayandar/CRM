@@ -1643,4 +1643,21 @@ describe('GET /api/crm-refetch: live-update refetch is scoped and role-gated exa
     const { body: data } = await callRefetchRoute()
     expect(data.canAccessPayments).toBe(true)
   })
+
+  it("a demoted admin's refetch carries no payment data, even while Owner.role in our DB is still stale", async () => {
+    // Mirrors the "rejects when the session says org:member but the Owner row says Admin" case
+    // above (requirePaymentAccess tests) end to end through the actual route: Owner.role is still
+    // "Admin" in our DB — no webhook has synced the demotion yet — but the Clerk session itself
+    // (the independent source canAccessPayments() also checks) already reports org:member. The
+    // route must not include payment data on that stale-but-still-admin-in-our-DB window.
+    const stillAdminInOurDb = await prisma.owner.findUnique({ where: { id: A.owner.id } })
+    expect(stillAdminInOurDb?.role).toBe('Admin') // confirms the DB really is stale for this test
+    mockAuth.mockResolvedValue({ userId: A.owner.clerkUserId, orgId: A.org.clerkOrgId, orgRole: 'org:member' })
+
+    const { status, body: data } = await callRefetchRoute()
+    expect(status).toBe(200)
+    expect(data.canAccessPayments).toBe(false)
+    expect(data.payments).toEqual([])
+    expect(data.activities.some((a: { kind: string }) => a.kind === 'payment')).toBe(false)
+  })
 })

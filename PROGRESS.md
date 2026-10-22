@@ -2,6 +2,37 @@
 
 > Living context file. Updated at the end of every task.
 
+## Feature audit (8 named features) + test-count reconciliation, resolved (Oct 23 2026)
+
+**Feature audit** — checked against the real code and the running app, not PROGRESS.md:
+
+| Feature | Status | Evidence |
+|---|---|---|
+| CSV import (column mapping, dedup, per-row errors) | **NOT BUILT** | `exportCsv` exists everywhere; no import path anywhere in `src/` — no file upload, no parser, no mapping UI |
+| Contact tags/segments | **PARTIAL** | Display (`contact.tags`) and filter-by-tag (`?tag=`, used by the sidebar's "Champions" saved view) both work. Creating/assigning a tag does not: `addContactTag(orgId, id, tag)` exists in `lib/data/contacts.ts` but is never called from any server action or any UI — the "Add" tag button in `RecordDetail.tsx` has no `onClick` at all. No tag-taxonomy management (rename/delete a tag, see all tags in use) exists either. |
+| Saved filter views | **NOT BUILT** | Sidebar's "Saved views" are 3 hardcoded links (`/leads?status=new`, `/pipeline?close=30`, `/contacts?tag=Champion`) with no save/create/delete affordance and no persistence model — not a feature a user can add to |
+| Calendar view of tasks/follow-ups | **NOT BUILT** | No calendar route, component, or library anywhere in `src/` |
+| Reminders for due/overdue tasks (in-app or email) | **NOT BUILT** | No email client (nodemailer/Resend/SendGrid), no cron/scheduled job, anywhere in `lib/`. The only "reminder" surface is the Settings Notifications toggles, now explicitly disabled + labeled "Coming soon" |
+| Manager role; reps restricted to own records | **NOT BUILT** | `Owner.role` is an unconstrained `String`; `ownerRoleFromClerk()` (`lib/roles.ts`) only ever produces `'Admin' \| 'Member'`. `listLeads`/`listContacts`/`listDeals` all take an optional `ownerId` filter, but `lib/data-loader.ts` never passes one — every Member sees every record in the org, with no scoping |
+| Lead follow-up date + reminder | **NOT BUILT** | No `followUpAt`/equivalent field on the `Lead` model; a generic `Task` can be created against a lead manually, but there's no dedicated field or reminder tied to it |
+| Automatic "last interaction" tracking on contacts | **BUILT** | `Contact.lastInteractionAt` is bumped server-side on every activity log (`lib/data/activities.ts:64`) and on contact edits (`lib/data/contacts.ts:99`); surfaced in the UI (`Contacts.tsx`, `RecordDetail.tsx`) via `RelativeTime`, including a "stale" (30+ days) flag |
+
+**Test-count reconciliation** — ran the full suite at both named commits in a temporary, now-removed git worktree (`e0cd8b8` and `14a5b09`; `node_modules` junctioned in rather than reinstalled, working tree never touched), with `--reporter=verbose`, then diffed the sorted test-name lists:
+
+- Both commits have **exactly 156 tests** — confirmed two ways: the actual vitest run, and a direct `it(`/`it.each(` count in the checked-out source at `e0cd8b8`. `14a5b09` only touched UI files, so this was expected, not a coincidence.
+- The name-list diff between the two commits is **empty** except for one test's pass/fail status: `Dashboard Payments card math... mirrors PaymentsSummaryCard's own "collected this month" filter on real data` failed at `e0cd8b8` with a 30000ms timeout, then passed cleanly on rerun and at `14a5b09` — a flaky DB-bound timeout, not a lost or regressed test. Nothing was missing; nothing needed restoring.
+- The previously reported totals of 164, 153, and 159 do **not** match the actual, reproducible count in the codebase at any point checked. In particular, `e0cd8b8`'s own commit message claimed "159 total, up from 156" — but the actual source at that exact commit has 156 `it()` blocks, confirmed by direct count. That claim was simply wrong when written, not a sign of tests lost afterward.
+- **Authoritative current total: 157** (156 existing + the 1 new test added below), all passing, confirmed by `npx vitest run`.
+
+**The four named `GET /api/crm-refetch` cases** — all four already existed by name in the `GET /api/crm-refetch: live-update refetch is scoped and role-gated exactly like first load` describe block (`tests/integration/cross-tenant.test.ts:1575`), except one:
+
+| Case | Test |
+|---|---|
+| A Member gets no payments or payment-kind activities | `a non-privileged member's refetch carries no Payment rows and no payment-kind activities, same as first load` |
+| Another org's data never appears | `is scoped by the caller's own session — never returns another org's rows` |
+| An unauthenticated request gets a 401 | `returns 401 (never redirects) when there is no valid session` |
+| A demoted admin gets no payment data | **Gap found — no test existed.** The closest existing coverage, `requirePaymentAccess`'s `rejects when the session says org:member but the Owner row says Admin`, only exercised the auth helper directly, never the route end to end. Added `a demoted admin's refetch carries no payment data, even while Owner.role in our DB is still stale` to the same describe block, mirroring that helper-level test's exact scenario (DB role still "Admin", Clerk session already "org:member") through the real `GET()` handler. |
+
 ## Made the UI honest about every remaining dead control (Oct 23 2026)
 
 Re-scanned every control named in the earlier Settings/bell audit, plus the leftovers from the
@@ -3853,16 +3884,16 @@ still imported by Dashboard and Reports only for the chart array above.
 > never removed from this list. See "Full honest state-of-the-codebase audit (Oct 2 2026)" at the
 > top of this file for what's actually still true today.
 
-### Unconfirmed (Oct 23 2026)
+### Resolved (Oct 23 2026)
 
-- The four test cases for `GET /api/crm-refetch` — a Member gets no payments or payment-kind
-  activities, another org's data never appears, an unauthenticated request gets a 401, a demoted
-  admin gets no payment data — were never individually confirmed by name against the actual test
-  file. They were implied to exist by the surrounding work but not checked one by one.
-- The test totals reported across recent runs (164, 153, 159, and now 156 as of this task) were
-  never reconciled. No one has verified whether these differences reflect tests added/removed
-  between runs, a flaky/non-deterministic suite, or a miscount — treat any single reported total
-  as unverified until that's done.
+Both previously-unconfirmed items from the Oct 23 2026 UI-honesty task are now resolved — see
+"Feature audit (8 named features) + test-count reconciliation, resolved" above for the full
+detail. Summary: all four named `GET /api/crm-refetch` cases are covered by name (one test, for a
+demoted admin, had to be added — it didn't exist before); the previously-reported totals of 164,
+153, and 159 were never reconciled because they don't match the actual codebase at any point
+checked — the real, reproducible total is **157** (156 pre-existing + 1 added), confirmed by
+running the suite at two separate commits in an isolated worktree and diffing test names, not by
+re-reading a past report.
 
 ### Active org is not restored on sign-in
 
