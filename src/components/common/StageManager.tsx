@@ -14,7 +14,10 @@ import { sortBy } from '@/lib/utils'
  * two entry points can never drift apart.
  */
 export function StageManager() {
-  const { stages, addStage, renameStage, moveStage, deleteStage } = useCrm()
+  const { stages, addStage, renameStage, moveStage, deleteStage, currentUser } = useCrm()
+  // Pipeline stage management is admin-only server-side (lib/actions/crm.ts) — mirrored here so a
+  // Member sees a read-only list instead of controls that would just fail on the server.
+  const isAdmin = currentUser.role === 'Admin'
   const sorted = sortBy(stages, (s) => s.order)
   const openStages = sorted.filter((s) => !s.isClosed)
 
@@ -62,7 +65,7 @@ export function StageManager() {
           const isOpen = !stage.isClosed
           return (
             <li key={stage.id} className="group flex items-center gap-3 px-5 py-3">
-              {isOpen ? (
+              {isOpen && isAdmin ? (
                 <div className="flex shrink-0 flex-col">
                   <IconButton
                     label={`Move ${stage.label} up`}
@@ -87,7 +90,7 @@ export function StageManager() {
 
               <StatusDot tone={stageTone(stage, openStages)} />
 
-              {editingId === stage.id ? (
+              {editingId === stage.id && isAdmin ? (
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
                   <Input
                     autoFocus
@@ -106,7 +109,7 @@ export function StageManager() {
                     <X size={12} />
                   </IconButton>
                 </div>
-              ) : (
+              ) : isAdmin ? (
                 <button
                   type="button"
                   onClick={() => startEdit(stage.id, stage.label)}
@@ -115,6 +118,8 @@ export function StageManager() {
                 >
                   {stage.label}
                 </button>
+              ) : (
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink-800">{stage.label}</span>
               )}
 
               {stage.isClosed && (
@@ -127,7 +132,7 @@ export function StageManager() {
                 {stage.probability}%
               </span>
 
-              {isOpen && confirmDeleteId === stage.id ? (
+              {isOpen && isAdmin && confirmDeleteId === stage.id ? (
                 <div className="flex shrink-0 items-center gap-1.5">
                   <span className="text-[11.5px] text-ink-500">Delete?</span>
                   <IconButton label="Confirm delete" variant="danger" className="size-6" onClick={() => confirmDelete(stage.id)}>
@@ -138,7 +143,8 @@ export function StageManager() {
                   </IconButton>
                 </div>
               ) : (
-                isOpen && (
+                isOpen &&
+                isAdmin && (
                   <IconButton
                     label={`Delete ${stage.label}`}
                     variant="ghost"
@@ -161,20 +167,26 @@ export function StageManager() {
         })}
       </ul>
 
-      <div className="flex items-center gap-2 border-t border-line px-5 py-3">
-        <Input
-          value={newLabel}
-          onChange={(e) => setNewLabel(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submitAdd()
-          }}
-          placeholder="New stage name…"
-          className="h-8 flex-1"
-        />
-        <IconButton label="Add stage" variant="secondary" onClick={submitAdd} disabled={!newLabel.trim()}>
-          <Plus size={14} />
-        </IconButton>
-      </div>
+      {isAdmin ? (
+        <div className="flex items-center gap-2 border-t border-line px-5 py-3">
+          <Input
+            value={newLabel}
+            onChange={(e) => setNewLabel(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitAdd()
+            }}
+            placeholder="New stage name…"
+            className="h-8 flex-1"
+          />
+          <IconButton label="Add stage" variant="secondary" onClick={submitAdd} disabled={!newLabel.trim()}>
+            <Plus size={14} />
+          </IconButton>
+        </div>
+      ) : (
+        <p className="border-t border-line px-5 py-3 text-[11.5px] text-ink-400">
+          Only admins can add, rename, reorder, or delete pipeline stages.
+        </p>
+      )}
     </div>
   )
 }

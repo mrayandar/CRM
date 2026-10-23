@@ -205,3 +205,36 @@ export async function requirePaymentWriteAccess() {
   }
   throw new Error('Forbidden')
 }
+
+/**
+ * For the RepVisibility switch write (`updateRepVisibilityAction`) — same strict, live-Clerk-role
+ * check as `requirePaymentWriteAccess()`, and for the same reason: a stale DB `Owner.role` must
+ * never grant (or keep granting) a sensitive permission for up to a webhook-delivery window.
+ * Flipping this switch is sensitive in EITHER direction — turning OWN mode on restricts every
+ * Member's visibility, and turning it back off hands every Member visibility into every other
+ * rep's records again — so both directions go through this, not `requireAdmin()`'s DB-only check
+ * alone. Pages through every membership the same way, for the same reason (see that function's
+ * doc comment).
+ */
+export async function requireLiveAdminAccess() {
+  const session = await requireAdmin()
+  const clerk = await clerkClient()
+
+  const pageSize = 100
+  let offset = 0
+  for (;;) {
+    const page = await clerk.users.getOrganizationMembershipList({
+      userId: session.clerkUserId,
+      limit: pageSize,
+      offset,
+    })
+    const current = page.data.find((m) => m.organization.id === session.clerkOrgId)
+    if (current) {
+      if (current.role !== 'org:admin') throw new Error('Forbidden')
+      return session
+    }
+    offset += page.data.length
+    if (page.data.length < pageSize || offset >= page.totalCount) break
+  }
+  throw new Error('Forbidden')
+}

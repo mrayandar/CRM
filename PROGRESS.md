@@ -2,6 +2,165 @@
 
 > Living context file. Updated at the end of every task.
 
+## Stage 1c: the OWN-mode switch is live (Oct 24 2026)
+
+Five items, done in order, with a required gate: the full matrix had to pass before the switch
+became reachable by any real admin.
+
+### 1. Two more permissions fixed: pipeline stage management and company delete → admin-only
+
+Audit finding: `createStageAction`/`renameStageAction`/`reorderStageAction`/`deleteStageAction`
+and `deleteCompanyAction` were Member-accessible (`requireAuth()`), same gap category as the
+`inviteMemberAction`/`updateQuotaAction` bugs fixed in the prior round. Per instruction: all four
+stage actions and company delete → `requireAdmin()`. **Company edit stays open to Members** —
+only unchanged, per instruction.
+
+- `createStageAction`/`renameStageAction`/`reorderStageAction`/`deleteStageAction`: now
+  admin-only. A stage's structure (including its `isWon`/`isClosed` flags, which are only ever
+  set once at creation — never independently editable, see `createStage`'s doc comment in
+  `lib/data/stages.ts`) affects every deal in the org.
+- `deleteCompanyAction`: now admin-only — destructive and org-wide, unlike `createCompanyAction`/
+  `updateCompanyAction`, which stay Member-accessible.
+- **UI hidden to match**: `StageManager.tsx` now checks `currentUser.role === 'Admin'` and
+  renders a read-only stage list (no reorder arrows, no click-to-rename, no delete button, no
+  "add stage" field) for a Member, with a one-line "Only admins can add, rename, reorder, or
+  delete pipeline stages" note. `CompanyDetail.tsx` hides its Delete button for a non-admin
+  (Edit stays visible).
+- **Tests**: rewrote the two "Member-accessible by design" assertions that were now wrong
+  (`cross-tenant.test.ts`) into "Member is rejected" assertions, and added a new describe block
+  proving a real Admin can still do all of it. `own-mode.test.ts`'s `EXEMPT_ACTIONS` reasons
+  updated to say which role each of the 15 entries actually requires.
+
+### 2. Truthful numbers when scoped — every org-wide figure checked
+
+Went through Dashboard, Reports, the Sidebar, and Pipeline looking for anything presented as
+team-wide that a scoped Member's own data couldn't actually support, or anything that should
+explicitly say "yours."
+
+| Surface | Before | After (scoped Member only — unchanged for Admins/ALL-mode) |
+|---|---|---|
+| Dashboard "Recent activity" | Subtitle said **"Across the whole team"** — actively false once `activities` is scoped | "Your own records" |
+| Dashboard "Won this month" quota comparison | Compared the Member's own (scoped) won-this-quarter value against the **team-wide** quota target | **Hidden entirely** — comparing "your number" against "the team's target" isn't a comparison either figure actually supports once scoped |
+| Dashboard "Pipeline snapshot" | No scope indicator | Appends "(your records)" |
+| Reports page subtitle | No scope indicator | Appends "— your own records only" |
+| Reports "Rep attainment" table subtitle | "Closed-won and open pipeline **per owner**" — implies multiple rows | "Your closed-won and open pipeline" (the leaderboard itself was already restricted to one row in Stage 1b) |
+| Sidebar "Saved views" | No scope indicator | "Your own records" note under the heading |
+| Pipeline toolbar | No scope indicator | "Showing your own deals" note (column totals themselves were already scoped from Stage 1a) |
+
+**Figures checked and found already correct, nothing to change**: Sidebar nav badges, Dashboard's
+"Open pipeline value"/"Active deals"/"Conversion rate" metrics, Reports' "Win rate"/"Closed-won
+revenue"/"Performance by lead source" — all computed purely from the already-scoped `leads`/
+`contacts`/`deals`/`tasks` arrays, so a scoped Member's numbers were already their own, just
+without an explicit label (added one where the instruction named the surface; left the rest,
+since Reports' and Dashboard's page-level subtitles already cover them).
+
+**Found and fixed, unrelated to scoping but a real gap left over from the quota permission fix
+two rounds ago**: the "Quarterly team quota" input in Settings had no `disabled={!isAdmin}` —
+a Member could type a new value and click Save, which would silently fail server-side
+(`updateQuotaAction` is admin-only) and just toast an error. Now disabled for non-admins, with a
+"Only admins can set the quarterly quota" note, matching the currency field's existing pattern.
+
+### 3. The switch itself
+
+- **Schema** (migration `20261023211432_rep_visibility_change_tracking`):
+  `Organization.repVisibilityChangedBy` (`String?`, Owner.id — bare, no formal relation, same
+  no-cross-table-FK convention as every `orgId` column) and `repVisibilityChangedAt`
+  (`DateTime?`). Both null until the first change.
+- **`requireLiveAdminAccess()`** (`lib/auth.ts`) — copy of `requirePaymentWriteAccess()`'s exact
+  pattern (pages through every Clerk org membership via the Backend API, not just the DB
+  `Owner.role`), for the stated reason: switching back to ALL hands every Member visibility into
+  every other rep's records again, which is exactly as sensitive as restricting it in the first
+  place, so a stale DB role must never be enough to make either change.
+- **`updateRepVisibilityAction`** (`lib/actions/crm.ts`) — the only writer of `RepVisibility`,
+  `repVisibilityChangedBy`, and `repVisibilityChangedAt` (`updateRepVisibility` in
+  `lib/data/organizations.ts`). Validates the value, stamps the caller's own id and `now()`.
+- **UI**: `RepVisibilitySection` in `src/screens/Settings.tsx` (Workspace card, admin-only) — a
+  `Segmented` control ("Everyone sees all records" / "Reps see only their own"), a confirmation
+  `Modal` using the copy drafted in Stage 1b (`repVisibilityConfirmCopy.ts`, revised to say
+  "within about a minute" for an already-open tab rather than "immediately," matching the real
+  live-poll mechanism), and a "Changed by `{name}` on `{date}`" line underneath once it's ever
+  been changed. A non-admin sees the current value read-only with "Only admins can change record
+  visibility."
+- **Propagation mechanism, unchanged from Stage 0/1a**: the live poll
+  (`src/store/livePoll.ts`, 60s steady-state) re-fetches `repVisibility` on every tick;
+  `QueryCacheSecurityGuard` already clears the whole TanStack Query cache the moment that value
+  differs from what a tab already had. Nothing new needed here — Stage 1c only had to give it a
+  real write to react to.
+- **Tests**: new describe block in `cross-tenant.test.ts` — a real admin flips ALL→OWN and
+  OWN→ALL (stamps who/when correctly each time); a Member is rejected outright; **a stale-DB-role
+  Admin is rejected the moment Clerk reports a live demotion, in BOTH directions** (the
+  OWN→ALL-while-actually-demoted case was the one explicitly worth a dedicated test, since that's
+  the "granting more visibility" direction); an invalid value is rejected even for a real admin.
+  `own-mode.test.ts`'s exhaustiveness bucket gained `updateRepVisibilityAction` (exempt,
+  org-level by definition).
+
+### 4. Final red team, live, on the real dev org — 33/33 checks passed
+
+Used the real Settings switch (not a direct DB write) throughout. Member tab (Jordan Ellis)
+opened **before** each switch flip, in both directions, and never reloaded — the only way to
+actually prove the live-poll + cache-clear mechanism works in a real open tab, not just that a
+fresh load picks up the right value.
+
+- **ALL → OWN, via the switch**: confirmation modal showed the drafted copy (confirmed it
+  mentions "minute"), DB stamped `repVisibilityChangedBy`/`repVisibilityChangedAt` correctly.
+  Jordan's already-open tab, never reloaded, picked up `repVisibility: "OWN"` within the 70s
+  window and re-rendered every gated screen correctly (no Team toggle, no owner filters, the
+  Pipeline/Reports/Sidebar "your own records" notes) **purely from the poll — no manual refresh**.
+- **Every path tried as the scoped Member**: Dashboard, Pipeline, Tasks, Leads (+ search),
+  Contacts, Companies, Reports, Settings (read-only switch) all loaded correctly. `/payments`
+  stayed unreachable. Command palette worked. **CSV export produced a real file download** (not
+  just a button that's present). **Direct URL navigation to another rep's Lead and Contact detail
+  pages produced a friendly "not found" page — no 500, no stack trace** (confirmed by scanning
+  the page text for error-indicating strings). A Company detail page loaded normally (shared by
+  design). `GET /api/activities` for another rep's lead subject returned 404, not 500.
+- **Reassignment**: moved a real lead ("Marcus Chen") from Jordan to another rep. Within the 70s
+  window, it disappeared from Jordan's still-open tab's `GET /api/crm-refetch` response.
+- **OWN → ALL, via the switch**: confirmation modal showed the "whole team" copy. Jordan's
+  (freshly reopened, but still never-manually-refreshed-after-flip) tab picked up `repVisibility:
+  "ALL"` and `scopeOwnerId: null` within the window, lead count back to the full 13, and the
+  Pipeline's "All owners" filter reappeared — all without a reload.
+- **One script bug, not a product bug**: the first run's script tried to reuse the same
+  single-use Clerk sign-in ticket for a second admin session and failed with a timeout at that
+  exact point — 24 checks had already passed by then, including the critical reassignment-
+  propagation one. Re-minted a fresh ticket and ran the OWN→ALL half as a second pass; all 9 of
+  those checks passed too. **33/33 real checks, combined.**
+- Restored afterward: `repVisibility` back to `ALL`, `repVisibilityChangedBy`/`At` cleared,
+  "Marcus Chen" back to Jordan — confirmed by a direct DB read.
+
+### 5. Test total
+
+Full suite run before the switch was considered reachable by any admin, and once more after all
+fixes: **272/272** (265 pre-existing + 7 new: 2 in the new "Admin can still manage stages/delete a
+company" block, 5 in the new `requireLiveAdminAccess`/`updateRepVisibilityAction` block — the two
+rewritten "Member is rejected" assertions replaced existing tests 1:1, not net-new). `tsc
+--noEmit` and `next build` both clean.
+
+### What OWN mode does and does not cover (plain language)
+
+**What it does**: once an admin switches "Record visibility" to "Reps see only their own," every
+Member (not Admins) sees only the leads, contacts, deals, and tasks they own or are assigned to —
+everywhere: the Dashboard, Pipeline, Tasks, Leads, Contacts, Reports, search, CSV export, the
+activity feed, and the live-refresh/refetch path. A task is visible if you're either its assignee
+or its creator. If a task's related lead/contact/deal belongs to someone else, the task itself
+still shows, but the link to that parent record is replaced with a "Restricted record" notice.
+Reassigning a record moves it (and its history) to the new owner immediately; the previous
+owner loses it everywhere, usually within a minute even in a tab they already have open.
+
+**What it does NOT cover, by design, not as a gap**:
+- **Companies, pipeline stages, and the team roster (Owners) stay shared and visible to
+  everyone**, regardless of mode — they're not "whose" in the way a lead or deal is. Only the
+  per-rep *rollup counts* on the Companies page are scoped.
+- **Task assignment itself is unrestricted** even when scoped — a Member can still hand a task to
+  any teammate. Only who can later *see* that task is gated.
+- **Admins are always unrestricted**, in every mode — this switch changes what Members see, never
+  what an Admin sees.
+- **Payments has its own, separate, always-on gate** (admin-only, independent of this switch
+  entirely) — turning OWN mode on or off has no effect on who can see Payments.
+- It is a **visibility** control, not a data-partitioning one: nothing is duplicated, deleted, or
+  made permanently inaccessible. Flipping the switch back to "Everyone sees all records" restores
+  full visibility immediately for every Member, with no data loss or migration involved either
+  way.
+
 ## Part 1 (role-rule audit + structural hardening) and Stage 1b (UI gating) (Oct 24 2026)
 
 Two parts, done in order, both reported with evidence. **No Stage 1c (the Settings switch

@@ -54,6 +54,7 @@ import {
   updateQuotaAction,
   updateCurrencyAction,
   updateOrgTimezoneAction,
+  updateRepVisibilityAction,
   createStageAction,
   renameStageAction,
   reorderStageAction,
@@ -249,8 +250,15 @@ interface CrmState {
    *  (never a silent, un-chosen "UTC"). See resolveOrgTimezone in lib/timezones.ts. */
   effectiveOrgTimezone: string
   updateOrgTimezone: (timezone: string) => void
-  /** Always "ALL" today — see lib/data-loader.ts's identical field. */
   repVisibility: 'ALL' | 'OWN'
+  /** Owner.id of whoever last changed `repVisibility`, and when (ISO string) — both null until
+   *  the first change. See lib/data-loader.ts's identical fields. */
+  repVisibilityChangedBy: string | null
+  repVisibilityChangedAt: string | null
+  /** Admin-only (requireLiveAdminAccess — a live Clerk role check, not just Owner.role; see its
+   *  doc comment for why). Awaited, not fire-and-forget, so the Settings confirmation dialog can
+   *  show a real error rather than silently rolling back. */
+  updateRepVisibility: (next: 'ALL' | 'OWN') => Promise<{ ok: true } | { ok: false; error: string }>
   /** Null for an unscoped viewer (Admin, or the org is in ALL mode) — see lib/data-loader.ts's
    *  identical field. Stage 1b's UI gating reads `isScopedMember` (derived from this), not
    *  `repVisibility` + role on its own, so the UI can never show something more permissive than
@@ -415,6 +423,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     [orgTimezone, orgTimezoneConfigured, currentUser.timezone],
   )
   const [repVisibility, setRepVisibility] = useState<'ALL' | 'OWN'>(initialData.repVisibility)
+  const [repVisibilityChangedBy, setRepVisibilityChangedBy] = useState<string | null>(initialData.repVisibilityChangedBy)
+  const [repVisibilityChangedAt, setRepVisibilityChangedAt] = useState<string | null>(initialData.repVisibilityChangedAt)
   const [scopeOwnerId, setScopeOwnerId] = useState<string | null>(initialData.scopeOwnerId)
   const isScopedMember = scopeOwnerId !== null
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
@@ -1092,6 +1102,27 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       )
     },
     [orgTimezone, persist],
+  )
+
+  // Awaited (not persist()'s fire-and-forget pattern) — the Settings confirmation dialog needs a
+  // real {ok, error} result, not a toast-after-the-fact, since this change is sensitive enough to
+  // already require an explicit confirm step before this is even called.
+  const updateRepVisibility = useCallback(
+    async (next: 'ALL' | 'OWN'): Promise<{ ok: true } | { ok: false; error: string }> => {
+      beginMutation()
+      try {
+        const result = await updateRepVisibilityAction(next)
+        setRepVisibility(result.repVisibility)
+        setRepVisibilityChangedBy(currentUser.id)
+        setRepVisibilityChangedAt(result.changedAt)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Couldn't save record visibility" }
+      } finally {
+        endMutation()
+      }
+    },
+    [beginMutation, endMutation, currentUser.id],
   )
 
   // Not routed through persist(): the caller (the inline create-or-select picker) needs the real
@@ -1780,6 +1811,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     setOrgTimezone(fresh.orgTimezone)
     setOrgTimezoneConfigured(fresh.orgTimezoneConfigured)
     setRepVisibility(fresh.repVisibility)
+    setRepVisibilityChangedBy(fresh.repVisibilityChangedBy)
+    setRepVisibilityChangedAt(fresh.repVisibilityChangedAt)
     setScopeOwnerId(fresh.scopeOwnerId)
     setOrgName(fresh.orgName)
   }, [])
@@ -1860,6 +1893,9 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       effectiveOrgTimezone,
       updateOrgTimezone,
       repVisibility,
+      repVisibilityChangedBy,
+      repVisibilityChangedAt,
+      updateRepVisibility,
       scopeOwnerId,
       isScopedMember,
       orgName,
@@ -1922,6 +1958,9 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       effectiveOrgTimezone,
       updateOrgTimezone,
       repVisibility,
+      repVisibilityChangedBy,
+      repVisibilityChangedAt,
+      updateRepVisibility,
       scopeOwnerId,
       isScopedMember,
       orgName,

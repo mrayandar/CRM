@@ -159,9 +159,17 @@ model Organization {
   timezoneConfigured Boolean @default(false)
 
   /// Admin-only, changed in Settings with a confirmation (see PROGRESS.md's visibility design).
-  /// Not yet read or written by any code path as of this column's introduction — every org is
-  /// ALL until the Settings switch ships.
+  /// Stage 1c: updateRepVisibilityAction is the only writer, gated by requireLiveAdminAccess()
+  /// (the live Clerk Backend API check, same pattern as requirePaymentWriteAccess — granting
+  /// MORE visibility back to every Member, by switching this to ALL, is exactly as sensitive a
+  /// change as restricting it, so both directions use the same strict check).
   repVisibility RepVisibility @default(ALL)
+
+  /// Who last changed `repVisibility` (Owner.id) and when — both null until the first change.
+  /// Bare string, not a formal relation, same no-cross-table-FK convention as every `orgId`
+  /// column in this schema. Shown under the Settings switch.
+  repVisibilityChangedBy String?
+  repVisibilityChangedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

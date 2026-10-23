@@ -34,7 +34,7 @@ interface NavEntry {
 }
 
 export function Sidebar() {
-  const { leads, tasks, deals, contacts, stageById, canAccessPayments, currentUser, effectiveOrgTimezone } = useCrm()
+  const { leads, tasks, deals, contacts, stageById, canAccessPayments, currentUser, effectiveOrgTimezone, isScopedMember } = useCrm()
   const viewerTimezone = currentUser.timezone ?? resolveBrowserTimezone()
 
   const newLeads = leads.filter((l) => l.status === 'new').length
@@ -80,6 +80,11 @@ export function Sidebar() {
           <p className="mb-1.5 text-[10.5px] font-semibold tracking-[0.07em] text-ink-400 uppercase">
             Saved views
           </p>
+          {/* Every count on this page (nav badges and saved views alike) already comes from the
+              already-scoped leads/tasks/deals/contacts arrays — this just makes that explicit
+              rather than leaving a scoped Member to guess whether a number is theirs or the
+              team's. */}
+          {isScopedMember && <p className="mb-1.5 text-[10.5px] text-ink-400">Your own records</p>}
           <ul className="space-y-0.5">
             <SavedView to="/leads?status=new" label="Untouched leads" count={newLeads} />
             <SavedView to="/pipeline?close=30" label="Closing in 30 days" count={closingSoon} />

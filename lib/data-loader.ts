@@ -65,10 +65,14 @@ export interface CrmInitialData {
    *  shipped). While false, callers must fall back to the viewer's own timezone instead of
    *  trusting `orgTimezone`'s default. */
   orgTimezoneConfigured: boolean
-  /** Always "ALL" today — no Settings switch exists yet to change it (Stage 1). Exposed now so
-   *  the query-cache security guard (lib/queryCacheSecurity.ts) already watches it; nothing else
-   *  reads or writes this. */
+  /** Settings -> Workspace, admin-only (`updateRepVisibilityAction`). Read by the query-cache
+   *  security guard (lib/queryCacheSecurity.ts) and by every Stage 1b UI gate (via
+   *  `isScopedMember`, derived from `scopeOwnerId` below, not from this directly). */
   repVisibility: 'ALL' | 'OWN'
+  /** Owner.id of whoever last changed `repVisibility`, and when — both null until the first
+   *  change. Shown under the Settings switch. */
+  repVisibilityChangedBy: string | null
+  repVisibilityChangedAt: string | null
   /** The exact same value the server used to scope this request's own leads/contacts/deals/
    *  tasks/activities — null for an unscoped caller (Admin, or the org is in ALL mode), the
    *  caller's own id once scoped. Stage 1b's UI gating reads this (never re-derives "am I scoped"
@@ -156,6 +160,8 @@ export async function loadCrmData(
     orgTimezone: org?.timezone ?? DEFAULT_ORG_TIMEZONE,
     orgTimezoneConfigured: org?.timezoneConfigured ?? false,
     repVisibility: org?.repVisibility ?? 'ALL',
+    repVisibilityChangedBy: org?.repVisibilityChangedBy ?? null,
+    repVisibilityChangedAt: org?.repVisibilityChangedAt?.toISOString() ?? null,
     scopeOwnerId: scope.scopeOwnerId,
     orgName: org?.name ?? '',
   }

@@ -177,7 +177,11 @@ export function Reports() {
   return (
     <PageShell
       title="Reports"
-      subtitle="Revenue performance, source efficiency, and rep attainment"
+      subtitle={
+        isScopedMember
+          ? 'Revenue performance, source efficiency, and rep attainment — your own records only'
+          : 'Revenue performance, source efficiency, and rep attainment'
+      }
       actions={
         <>
           <Button variant="secondary" size="sm" disabled>
@@ -333,7 +337,10 @@ export function Reports() {
         </Card>
 
         <Card className="overflow-hidden">
-          <CardHeader title="Rep attainment" subtitle="Closed-won and open pipeline per owner" />
+          <CardHeader
+            title="Rep attainment"
+            subtitle={isScopedMember ? 'Your closed-won and open pipeline' : 'Closed-won and open pipeline per owner'}
+          />
           <TableShell>
             <Thead>
               <Th>Rep</Th>

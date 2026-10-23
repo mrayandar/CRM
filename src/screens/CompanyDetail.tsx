@@ -19,8 +19,11 @@ import { currency, formatDate, sortBy } from '@/lib/utils'
 export function CompanyDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { companies, leads, contacts, deals, stages, ownerById, stageById, updateCompany, deleteCompany, orgCurrency } = useCrm()
+  const { companies, leads, contacts, deals, stages, ownerById, stageById, updateCompany, deleteCompany, orgCurrency, currentUser } = useCrm()
   const company = companies.find((c) => c.id === id)
+  // Deleting a company is admin-only server-side (lib/actions/crm.ts) — mirrored here; editing
+  // stays open to any Member.
+  const isAdmin = currentUser.role === 'Admin'
 
   const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -56,9 +59,11 @@ export function CompanyDetail() {
           <Button variant="secondary" size="sm" icon={<Pencil size={14} />} onClick={() => setEditOpen(true)}>
             Edit
           </Button>
-          <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteOpen(true)}>
-            Delete
-          </Button>
+          {isAdmin && (
+            <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteOpen(true)}>
+              Delete
+            </Button>
+          )}
         </>
       }
     >

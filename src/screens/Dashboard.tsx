@@ -192,23 +192,30 @@ export function Dashboard() {
               ...(wonDelta !== null && { delta: wonDelta }),
               footer: (
                 <>
-                  {wonThisMonth.length} deals closed
+                  {wonThisMonth.length} deals closed{isScopedMember ? ' (your records)' : ''}
                   {wonDelta === null && ' · not enough history for a trend yet'}
-                  {quotaProgress !== null ? (
-                    <>
-                      {' · '}
-                      {fmtCompact(wonThisQuarterValue)} of {fmtCompact(quarterlyQuota!)} quota this
-                      quarter ({percent(quotaProgress)})
-                    </>
-                  ) : (
-                    <>
-                      {' · '}
-                      <Link to="/settings" className="underline hover:text-ink-600">
-                        Set a quota in Settings
-                      </Link>{' '}
-                      to see progress
-                    </>
-                  )}
+                  {/* The quota is a team-wide target, compared here against the TEAM's
+                      won-this-quarter value — for a scoped Member, `deals` (and so
+                      `wonThisQuarterValue`) only ever contains their own deals, so this
+                      comparison would silently become "your number vs. the team's target,"
+                      which isn't what either figure means once scoped. Hidden entirely for a
+                      scoped Member; Admins (always unscoped) still see it. */}
+                  {!isScopedMember &&
+                    (quotaProgress !== null ? (
+                      <>
+                        {' · '}
+                        {fmtCompact(wonThisQuarterValue)} of {fmtCompact(quarterlyQuota!)} quota
+                        this quarter ({percent(quotaProgress)})
+                      </>
+                    ) : (
+                      <>
+                        {' · '}
+                        <Link to="/settings" className="underline hover:text-ink-600">
+                          Set a quota in Settings
+                        </Link>{' '}
+                        to see progress
+                      </>
+                    ))}
                 </>
               ),
             },
@@ -234,7 +241,7 @@ export function Dashboard() {
             <Card>
               <CardHeader
                 title="Pipeline snapshot"
-                subtitle={`${fmt(openValue)} across ${openDeals.length} open deals`}
+                subtitle={`${fmt(openValue)} across ${openDeals.length} open deals${isScopedMember ? ' (your records)' : ''}`}
                 action={
                   <Link to="/pipeline">
                     <Button variant="ghost" size="xs" trailingIcon={<ChevronRight size={13} />}>
@@ -459,7 +466,7 @@ export function Dashboard() {
             <Card>
               <CardHeader
                 title="Recent activity"
-                subtitle="Across the whole team"
+                subtitle={isScopedMember ? 'Your own records' : 'Across the whole team'}
                 action={
                   <Badge tone="neutral">{activities.length}</Badge>
                 }

@@ -354,19 +354,20 @@ describe('lib/actions/crm: OWN-mode scoped-creation matrix — creating a record
 const EXEMPT_ACTIONS: Record<string, string> = {
   createCompanyAction: 'Member or Admin — companies are shared/org-wide identity, never per-owner (see lib/data/companies.ts)',
   updateCompanyAction: 'Member or Admin — same as createCompanyAction',
-  deleteCompanyAction: 'Member or Admin — same as createCompanyAction',
+  deleteCompanyAction: 'Admin only — destructive and org-wide, unlike create/update (Stage 1c fix; was Member-accessible before)',
   inviteMemberAction: 'Admin only — org-membership action; previously had no role check at all (fixed in the role-rule audit)',
   addTaskAction: 'Member or Admin — task assignment is unrestricted even when scoped (see its own doc comment) — visibility, not assignability, is what OWN mode gates',
   logActivityAction: 'Member or Admin — delegates its subject-in-scope check to assertSubjectInScope, covered by its own direct test below',
   addNoteAction: 'Member or Admin — thin wrapper around logActivityAction',
   updateProfileAction: 'Member or Admin — the caller\'s own profile, not an org-level setting',
+  updateRepVisibilityAction: 'Admin only, via the live Clerk role check (requireLiveAdminAccess), not just Owner.role — the switch itself (Stage 1c), org-level by definition',
   updateOrgTimezoneAction: 'Admin only — org-level setting, not a scoped CRM record',
   updateQuotaAction: 'Admin only — org-level setting; previously called requireAuth(), letting any Member set it (fixed in the role-rule audit)',
   updateCurrencyAction: 'Admin only — org-level setting, not a scoped CRM record',
-  createStageAction: 'Member or Admin — pipeline stages are shared/org-wide, never per-owner',
-  renameStageAction: 'Member or Admin — same as createStageAction',
-  reorderStageAction: 'Member or Admin — same as createStageAction',
-  deleteStageAction: 'Member or Admin — same as createStageAction',
+  createStageAction: 'Admin only — stage structure is org-wide and affects every deal (Stage 1c fix; was Member-accessible before)',
+  renameStageAction: 'Admin only — same as createStageAction',
+  reorderStageAction: 'Admin only — same as createStageAction',
+  deleteStageAction: 'Admin only — same as createStageAction',
 }
 
 describe('lib/actions/crm: OWN-mode matrix is exhaustive over every exported action', () => {

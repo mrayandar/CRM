@@ -1069,24 +1069,32 @@ describe('Role-rule audit: actions confirmed Member-accessible by design (pinned
   })
   beforeEach(() => mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' }))
 
-  it('a Member can create/update/delete a Company — shared CRM entity management, not org-level configuration, same category as leads/contacts/deals', async () => {
+  it('a Member can create/update (but NOT delete) a Company — editing a shared CRM entity stays open, but deletion is destructive and org-wide (Stage 1c fix)', async () => {
     const created = await actions.createCompanyAction({ id: randomUUID(), name: `Member Co ${RUN}` })
     expect(created.existing).toBe(false)
     await actions.updateCompanyAction({ id: created.id, name: `Member Co Renamed ${RUN}` })
     const renamed = await prisma.company.findUnique({ where: { id: created.id } })
     expect(renamed?.name).toBe(`Member Co Renamed ${RUN}`)
+
+    await expect(actions.deleteCompanyAction(created.id)).rejects.toThrow(/Admins only/)
+    expect(await prisma.company.findUnique({ where: { id: created.id } })).not.toBeNull()
+
+    // Clean up as the real admin — the Member-level delete above was correctly rejected.
+    loginAs(B)
     await actions.deleteCompanyAction(created.id)
     expect(await prisma.company.findUnique({ where: { id: created.id } })).toBeNull()
   })
 
-  it('a Member can create/rename/reorder/delete a pipeline stage — shared kanban structure, same UI/server treatment as Companies (StageManager.tsx has no role gate either)', async () => {
+  it('a Member cannot create/rename/reorder/delete a pipeline stage — structural, org-wide, admin-only (Stage 1c fix; was Member-accessible before)', async () => {
     const stageId = randomUUID()
-    await actions.createStageAction({ id: stageId, label: `Member Stage ${RUN}` })
-    await prisma.pipelineStage.findUniqueOrThrow({ where: { id: stageId } })
-    await actions.renameStageAction(stageId, 'Renamed by Member')
-    await actions.reorderStageAction(stageId, 'up')
-    await actions.deleteStageAction(stageId)
+    await expect(actions.createStageAction({ id: stageId, label: `Member Stage ${RUN}` })).rejects.toThrow(/Admins only/)
     expect(await prisma.pipelineStage.findUnique({ where: { id: stageId } })).toBeNull()
+
+    await expect(actions.renameStageAction(B.stage.id, 'Hijacked by Member')).rejects.toThrow(/Admins only/)
+    await expect(actions.reorderStageAction(B.stage.id, 'up')).rejects.toThrow(/Admins only/)
+    await expect(actions.deleteStageAction(B.stage.id)).rejects.toThrow(/Admins only/)
+    const stageUntouched = await prisma.pipelineStage.findUniqueOrThrow({ where: { id: B.stage.id } })
+    expect(stageUntouched.label).not.toBe('Hijacked by Member')
   })
 
   it('a Member can update their own profile (name/timezone) — never an org-wide setting', async () => {
@@ -1094,6 +1102,26 @@ describe('Role-rule audit: actions confirmed Member-accessible by design (pinned
     const updated = await prisma.owner.findUniqueOrThrow({ where: { id: member.id } })
     expect(updated.name).toBe('Role Rule Member (Updated)')
     expect(updated.timezone).toBe('Asia/Karachi')
+  })
+})
+
+describe('Role-rule audit: a real Admin can still fully manage pipeline stages and delete a Company (Stage 1c)', () => {
+  it('an admin can create/rename/reorder/delete a pipeline stage', async () => {
+    loginAs(B)
+    const stageId = randomUUID()
+    await actions.createStageAction({ id: stageId, label: `Admin Stage ${RUN}` })
+    await prisma.pipelineStage.findUniqueOrThrow({ where: { id: stageId } })
+    await actions.renameStageAction(stageId, 'Renamed by Admin')
+    await actions.reorderStageAction(stageId, 'up')
+    await actions.deleteStageAction(stageId)
+    expect(await prisma.pipelineStage.findUnique({ where: { id: stageId } })).toBeNull()
+  })
+
+  it('an admin can delete a Company', async () => {
+    loginAs(B)
+    const created = await actions.createCompanyAction({ id: randomUUID(), name: `Admin-deletable Co ${RUN}` })
+    await actions.deleteCompanyAction(created.id)
+    expect(await prisma.company.findUnique({ where: { id: created.id } })).toBeNull()
   })
 })
 
@@ -1325,6 +1353,91 @@ describe('requirePaymentWriteAccess: live Clerk check, no session-refresh window
       },
     })
     await expect(requirePaymentWriteAccess()).rejects.toThrow(/Forbidden/)
+  })
+})
+
+describe('requireLiveAdminAccess / updateRepVisibilityAction: Stage 1c switch, live Clerk check both directions', () => {
+  afterAll(() => mockClerkClient.mockReset())
+  afterEach(async () => {
+    // Leave the fixture org exactly as every other describe block in this file expects it.
+    await prisma.organization.update({
+      where: { id: A.org.id },
+      data: { repVisibility: 'ALL', repVisibilityChangedBy: null, repVisibilityChangedAt: null },
+    })
+  })
+
+  function mockLiveRole(org: Fixture, role: 'org:admin' | 'org:member') {
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async () => ({
+          data: [{ organization: { id: org.org.clerkOrgId }, role }],
+        }),
+      },
+    })
+  }
+
+  it('a real admin whose live Clerk role matches can flip ALL -> OWN, and it stamps who/when', async () => {
+    loginAs(A)
+    mockLiveRole(A, 'org:admin')
+    const result = await actions.updateRepVisibilityAction('OWN')
+    expect(result.repVisibility).toBe('OWN')
+
+    const org = await prisma.organization.findUniqueOrThrow({ where: { id: A.org.id } })
+    expect(org.repVisibility).toBe('OWN')
+    expect(org.repVisibilityChangedBy).toBe(A.owner.id)
+    expect(org.repVisibilityChangedAt).not.toBeNull()
+  })
+
+  it('flipping back OWN -> ALL works the same way and re-stamps changedAt', async () => {
+    loginAs(A)
+    mockLiveRole(A, 'org:admin')
+    await actions.updateRepVisibilityAction('OWN')
+    const afterOn = await prisma.organization.findUniqueOrThrow({ where: { id: A.org.id } })
+
+    await actions.updateRepVisibilityAction('ALL')
+    const afterOff = await prisma.organization.findUniqueOrThrow({ where: { id: A.org.id } })
+    expect(afterOff.repVisibility).toBe('ALL')
+    expect(+afterOff.repVisibilityChangedAt!).toBeGreaterThanOrEqual(+afterOn.repVisibilityChangedAt!)
+  })
+
+  it('rejects a Member outright (DB role check alone, before any live Clerk call)', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-repvis-member-${RUN}`,
+        name: 'Member Owner',
+        email: `repvis-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+
+    await expect(actions.updateRepVisibilityAction('OWN')).rejects.toThrow(/Admins only/)
+    const org = await prisma.organization.findUniqueOrThrow({ where: { id: B.org.id } })
+    expect(org.repVisibility).toBe('ALL')
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it('rejects turning OWN mode OFF immediately after a live Clerk demotion, even while Owner.role is still "Admin" in our DB — granting more visibility is just as sensitive as restricting it', async () => {
+    loginAs(A)
+    mockLiveRole(A, 'org:admin')
+    await actions.updateRepVisibilityAction('OWN') // org starts this test actually in OWN mode
+
+    const stillAdminInOurDb = await prisma.owner.findUnique({ where: { id: A.owner.id } })
+    expect(stillAdminInOurDb?.role).toBe('Admin') // DB is stale on purpose for this test
+
+    mockLiveRole(A, 'org:member') // demoted, live
+    await expect(actions.updateRepVisibilityAction('ALL')).rejects.toThrow(/Forbidden/)
+
+    const org = await prisma.organization.findUniqueOrThrow({ where: { id: A.org.id } })
+    expect(org.repVisibility).toBe('OWN') // never flipped back
+  })
+
+  it('rejects an invalid visibility value even for a real admin', async () => {
+    loginAs(A)
+    mockLiveRole(A, 'org:admin')
+    await expect(actions.updateRepVisibilityAction('SOMETHING_ELSE' as never)).rejects.toThrow(/Invalid visibility/)
   })
 })
 

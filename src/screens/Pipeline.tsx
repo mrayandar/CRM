@@ -161,6 +161,12 @@ export function Pipeline() {
               />
             </>
           )}
+          {/* The column headers' deal counts and totals come straight from `deals`, which is
+              already scoped — this makes that explicit so a scoped Member doesn't read a
+              column's total as the team's. */}
+          {isScopedMember && (
+            <span className="text-[11.5px] text-ink-400">Showing your own deals</span>
+          )}
           <span className="ml-auto hidden items-center gap-1.5 text-[11.5px] text-ink-400 md:flex">
             <GripVertical size={12} />
             Drag a card to move it between stages

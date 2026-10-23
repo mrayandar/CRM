@@ -4,9 +4,9 @@ import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { Prisma } from '@prisma/client'
 import { clerkClient } from '@clerk/nextjs/server'
-import { requireAuth, requireAdmin } from '@lib/auth'
+import { requireAuth, requireAdmin, requireLiveAdminAccess } from '@lib/auth'
 import type { Scope } from '@lib/scope'
-import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone } from '@lib/data/organizations'
+import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone, updateRepVisibility } from '@lib/data/organizations'
 import { isValidIanaTimezone } from '@lib/timezones'
 import { CURRENCY_CODES } from '@/data/types'
 import {
@@ -50,7 +50,7 @@ import {
   reorderStage as dbReorderStage,
   deleteStage as dbDeleteStage,
 } from '@lib/data/stages'
-import type { LeadSource, LeadStatus, Priority, ActivityKind, TaskType } from '@prisma/client'
+import type { LeadSource, LeadStatus, Priority, ActivityKind, TaskType, RepVisibility } from '@prisma/client'
 
 const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualified', 'lost']
 const PRIORITIES: Priority[] = ['low', 'medium', 'high']
@@ -174,8 +174,14 @@ export async function updateCompanyAction(input: {
   revalidatePath('/', 'layout')
 }
 
+/**
+ * Admin-only via `requireAdmin()` — found and fixed in the Stage 1c role-rule follow-up: deleting
+ * a company is destructive and org-wide (every Lead/Contact/Deal linked to it would need
+ * reassigning first), unlike editing one's fields, which stays open to any Member. Creating one
+ * also stays open to any Member — see createCompanyAction.
+ */
 export async function deleteCompanyAction(companyId: string) {
-  const { orgId } = await requireAuth()
+  const { orgId } = await requireAdmin()
   await dbDeleteCompany(orgId, companyId)
   revalidatePath('/', 'layout')
 }
@@ -871,6 +877,32 @@ export async function updateOrgTimezoneAction(input: { timezone: string }) {
   revalidatePath('/', 'layout')
 }
 
+const REP_VISIBILITIES: RepVisibility[] = ['ALL', 'OWN']
+
+/**
+ * Stage 1c: the switch itself. Flips the whole org between "everyone sees all records" (ALL) and
+ * "reps see only their own" (OWN) — see lib/scope.ts for what OWN mode actually restricts, and
+ * requireLiveAdminAccess()'s doc comment for why this uses the strict live-Clerk-role check
+ * (same as requirePaymentWriteAccess) rather than plain requireAdmin(): switching back to ALL
+ * hands every Member visibility into every other rep's records again, which is exactly as
+ * sensitive as restricting it in the first place — a stale DB `Owner.role` must never be enough
+ * to make either change.
+ *
+ * Takes effect for every Member's next page load or refetch — the live poll
+ * (src/store/livePoll.ts) runs at most 60s apart, so no open tab is more than a minute behind;
+ * `QueryCacheSecurityGuard` already clears the whole TanStack Query cache the moment
+ * `repVisibility` changes in the data it receives (see that component), so there's nothing extra
+ * to invalidate here.
+ */
+export async function updateRepVisibilityAction(repVisibility: RepVisibility) {
+  const session = await requireLiveAdminAccess()
+  if (!REP_VISIBILITIES.includes(repVisibility)) throw new Error('Invalid visibility setting')
+
+  const updated = await updateRepVisibility(session.orgId, repVisibility, session.ownerId)
+  revalidatePath('/', 'layout')
+  return { repVisibility: updated.repVisibility, changedAt: updated.repVisibilityChangedAt!.toISOString() }
+}
+
 /**
  * Admin-only via `requireAdmin()` — found and fixed during a role-rule audit: this previously
  * called `requireAuth()`, letting any Member set the org's quarterly quota, despite
@@ -906,8 +938,16 @@ export async function updateCurrencyAction(input: { currency: string }) {
   revalidatePath('/', 'layout')
 }
 
+/**
+ * Pipeline stage management (create/rename/reorder/delete, all four below) is admin-only via
+ * `requireAdmin()` — found and fixed in the Stage 1c role-rule follow-up: a stage's structure
+ * (including its fixed isWon/isClosed flags, set once at creation and never independently
+ * editable — see createStage's doc comment in lib/data/stages.ts) affects every deal in the org,
+ * unlike moving an individual deal between existing stages (moveDealAction), which stays open to
+ * any Member.
+ */
 export async function createStageAction(input: { id: string; label: string }) {
-  const { orgId } = await requireAuth()
+  const { orgId } = await requireAdmin()
   assertClientId(input.id)
   const label = input.label.trim()
   if (!label || label.length > 100) throw new Error('Stage name is required')
@@ -916,7 +956,7 @@ export async function createStageAction(input: { id: string; label: string }) {
 }
 
 export async function renameStageAction(stageId: string, label: string) {
-  const { orgId } = await requireAuth()
+  const { orgId } = await requireAdmin()
   const trimmed = label.trim()
   if (!trimmed || trimmed.length > 100) throw new Error('Stage name is required')
   // dbRenameStage does its own findFirst({id, orgId}) check — same tenant-check convention as
@@ -926,13 +966,13 @@ export async function renameStageAction(stageId: string, label: string) {
 }
 
 export async function reorderStageAction(stageId: string, direction: 'up' | 'down') {
-  const { orgId } = await requireAuth()
+  const { orgId } = await requireAdmin()
   await dbReorderStage(orgId, stageId, direction)
   revalidatePath('/', 'layout')
 }
 
 export async function deleteStageAction(stageId: string) {
-  const { orgId } = await requireAuth()
+  const { orgId } = await requireAdmin()
   await dbDeleteStage(orgId, stageId)
   revalidatePath('/', 'layout')
 }

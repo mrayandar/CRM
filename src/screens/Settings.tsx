@@ -20,6 +20,7 @@ import { CURRENCY_CODES, CURRENCY_LABEL } from '@/data/types'
 import { resolveBrowserTimezone } from '@lib/timezones'
 import { useOrganization, useUser } from '@clerk/nextjs'
 import { inviteMemberAction } from '@lib/actions/crm'
+import { REP_VISIBILITY_ENABLE_CONFIRM, REP_VISIBILITY_DISABLE_CONFIRM } from '@/components/common/repVisibilityConfirmCopy'
 
 type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
 
@@ -295,6 +296,7 @@ export function Settings() {
                         value={quotaInput}
                         inputMode="numeric"
                         placeholder="e.g. 1,200,000"
+                        disabled={!isAdmin}
                         onChange={(e) => {
                           const digits = e.target.value.replace(/[^0-9]/g, '')
                           setQuotaInput(digits ? Number(digits).toLocaleString('en-US') : '')
@@ -302,7 +304,7 @@ export function Settings() {
                         className="tabular pl-10"
                       />
                     </div>
-                    {quotaDirty && (
+                    {isAdmin && quotaDirty && (
                       <>
                         <IconButton label="Save quota" variant="secondary" onClick={saveQuota}>
                           <Check size={13} />
@@ -314,9 +316,12 @@ export function Settings() {
                     )}
                   </div>
                   <p className="mt-1 text-[11px] text-ink-400">
-                    Drives the "won this quarter" progress shown on the Dashboard.
+                    {isAdmin
+                      ? 'Drives the "won this quarter" progress shown on the Dashboard.'
+                      : 'Only admins can set the quarterly quota.'}
                   </p>
                 </div>
+                <RepVisibilitySection />
               </div>
             </Card>
           </>
@@ -436,6 +441,97 @@ export function Settings() {
         </Modal>
       )}
     </PageShell>
+  )
+}
+
+/**
+ * Settings -> Workspace, admin-only. The switch itself: "Everyone sees all records" (ALL) vs.
+ * "Reps see only their own" (OWN) — see lib/scope.ts for what OWN mode actually restricts.
+ * Self-contained (owns its own confirm-modal state) rather than threaded through Settings()'s
+ * top-level state, since nothing else in that component needs to know about it.
+ */
+function RepVisibilitySection() {
+  const { currentUser, owners, repVisibility, repVisibilityChangedBy, repVisibilityChangedAt, updateRepVisibility } = useCrm()
+  const isAdmin = currentUser.role === 'Admin'
+  const [confirmTarget, setConfirmTarget] = useState<'ALL' | 'OWN' | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const copy = confirmTarget === 'OWN' ? REP_VISIBILITY_ENABLE_CONFIRM : REP_VISIBILITY_DISABLE_CONFIRM
+  // Not ownerById() — that falls back to currentUser for an unknown id, which would misattribute
+  // a change made by someone since removed from the org to whoever's viewing this page now.
+  const changedByOwner = repVisibilityChangedBy ? owners.find((o) => o.id === repVisibilityChangedBy) : undefined
+
+  const closeConfirm = () => {
+    if (saving) return
+    setConfirmTarget(null)
+    setError(null)
+  }
+
+  const confirm = async () => {
+    if (!confirmTarget) return
+    setSaving(true)
+    setError(null)
+    const result = await updateRepVisibility(confirmTarget)
+    setSaving(false)
+    if (result.ok) {
+      setConfirmTarget(null)
+    } else {
+      setError(result.error)
+    }
+  }
+
+  return (
+    <div>
+      <Label>Record visibility</Label>
+      {isAdmin ? (
+        <Segmented
+          value={repVisibility}
+          onChange={(next) => {
+            if (next !== repVisibility) setConfirmTarget(next)
+          }}
+          options={[
+            { value: 'ALL', label: 'Everyone sees all records' },
+            { value: 'OWN', label: 'Reps see only their own' },
+          ]}
+        />
+      ) : (
+        <Input value={repVisibility === 'OWN' ? 'Reps see only their own' : 'Everyone sees all records'} disabled />
+      )}
+      <p className="mt-1 text-[11px] text-ink-400">
+        {isAdmin
+          ? 'Members with "Reps see only their own" selected can only see leads, contacts, deals, and tasks they own or are assigned.'
+          : 'Only admins can change record visibility.'}
+        {repVisibilityChangedAt && (
+          <>
+            {' '}
+            Changed by {changedByOwner?.name ?? 'a former member'} on {formatDate(repVisibilityChangedAt)}.
+          </>
+        )}
+      </p>
+
+      {confirmTarget && (
+        <Modal
+          open
+          onClose={closeConfirm}
+          width={460}
+          title={copy.title}
+          footer={
+            <>
+              <Button variant="ghost" onClick={closeConfirm} disabled={saving}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={confirm} disabled={saving}>
+                {saving ? 'Saving…' : copy.confirmLabel}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-[13px] leading-5 text-ink-700">{copy.body}</p>
+          {error && <p className="mt-2 text-[12.5px] text-negative">{error}</p>}
+        </Modal>
+      )}
+    </div>
   )
 }
 

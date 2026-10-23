@@ -1,5 +1,5 @@
 import { prisma } from '@lib/prisma'
-import type { PlanTier } from '@prisma/client'
+import type { PlanTier, RepVisibility } from '@prisma/client'
 
 export function getOrgByClerkId(clerkOrgId: string) {
   return prisma.organization.findUnique({ where: { clerkOrgId } })
@@ -96,5 +96,17 @@ export function updateOrgTimezone(orgId: string, timezone: string) {
   return prisma.organization.update({
     where: { id: orgId },
     data: { timezone, timezoneConfigured: true },
+  })
+}
+
+/** Sets the org's `RepVisibility` AND stamps who changed it and when — the only writer of
+ *  `repVisibilityChangedBy`/`repVisibilityChangedAt`. `changedByOwnerId` is the caller's own id
+ *  (from `requireLiveAdminAccess()`'s session), never a client-supplied value. Same
+ *  orgId-from-auth reasoning as updateOrgCurrency/updateOrgTimezone — the admin-only check
+ *  happens one layer up, in the action. */
+export function updateRepVisibility(orgId: string, repVisibility: RepVisibility, changedByOwnerId: string) {
+  return prisma.organization.update({
+    where: { id: orgId },
+    data: { repVisibility, repVisibilityChangedBy: changedByOwnerId, repVisibilityChangedAt: new Date() },
   })
 }
