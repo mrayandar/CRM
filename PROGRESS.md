@@ -2,6 +2,124 @@
 
 > Living context file. Updated at the end of every task.
 
+## Scale/visibility redesign, Stage 0 of 11 (foundation, no user-visible behavior change except one) (Oct 23 2026)
+
+Full design (Part A: per-org record visibility; Part B: scale — pagination, SQL aggregates,
+TanStack Query, timezones, measurement) is in the design discussion preceding this entry in the
+session log, approved with revisions across three rounds. This entry covers Stage 0 only — three
+separate commits, each its own test run, as instructed. **Nothing in Stage 0 enforces visibility
+scoping or changes how any screen loads its data** — that starts at Stage 1. The one real,
+user-visible change is the Settings timezone picker (below).
+
+### Commit 1 — `657b812`: Scope type, schema, requireAuth computing scope (no behavior change)
+
+- `RepVisibility` enum + `Organization.repVisibility` (default `ALL`).
+- `Activity.ownerId` and `Task.createdById`, both nullable — no write path populates them yet (a
+  `NOT NULL` constraint today would break every current create/activity-log call), backfilled
+  once for existing rows from their subject/assignee.
+- `lib/scope.ts`: the `Scope` type and `computeScopeOwnerId()` — the same fail-closed, two-source
+  rule `requirePaymentAccess()` already uses (null only when the DB role AND the live session
+  both say Admin; otherwise scoped).
+- `requireAuth()`/`resolveAuth()` both compute `scopeOwnerId` now. Always `null` today (every org
+  defaults to `ALL`); nothing reads it yet.
+- **Test total: 180/180.**
+
+### Commit 2 — `e93bbeb`: named helpers extracted; real IANA timezones end to end
+
+- Behavior-preserving extraction: `weightedValue`, `isTaskOverdue`, `isTaskDueToday`,
+  `isClosingSoon` replace their inline duplicates in Dashboard/Sidebar/Pipeline — one definition
+  each instead of two copies that could silently drift apart.
+- **Timezone redesign** (the one user-visible change in Stage 0):
+  - **Owner.timezone** is now a real IANA zone id, picked from a searchable dropdown
+    (`Intl.supportedValuesOf('timeZone')`, ~400 entries, filtered as you type) — not the old
+    4-option free-text list (`"Pacific Time (US & Canada)"` etc.).
+  - Existing values migrated via a one-time static map (the 4 old labels → their IANA
+    equivalents); anything that doesn't map stays `null`, and Settings prompts for it (pre-filled
+    with the browser's own resolved zone, confirm-and-save) rather than silently defaulting to UTC.
+  - New **Organization.timezone** (default `"UTC"`, admin-editable in Settings → Workspace,
+    pre-filled with the admin's browser zone while still at that untouched default).
+  - `lib/timePeriods.ts` (new): `isThisMonth`, `isMonthsAgo`, `monthlyWonRevenue`,
+    `isClosingSoon`, `isTaskOverdue`, `isTaskDueToday`, and a new `isInCurrentQuarter` all take an
+    explicit timezone now. **Org-wide business periods** (won this month, quota progress, monthly
+    charts, MoM, closing in 30 days) use `Organization.timezone`; **personal day boundaries**
+    (task overdue/due today) use the viewer's own `Owner.timezone`. `dayDelta` itself
+    (`src/lib/utils.ts`) stays zone-naive — every other, unnamed use of it (relative-time labels,
+    the generic "due in Nd" text, payment overdue/awaiting-milestone, stalled-deal detection)
+    wasn't named in the policy and wasn't touched; `Payment.dueDate`'s overdue check is a known
+    open item for whenever the Payments stage lands.
+  - Golden boundary tests (`tests/unit/time-periods.test.ts`) prove genuine disagreement at day,
+    month, and quarter boundaries for Asia/Karachi and America/New_York (including a DST-season
+    case), computed from real ground truth (`Intl.DateTimeFormat`), not hand-derived arithmetic —
+    the first draft of these tests had the comparison direction backwards in three places until
+    verified against actual `Intl` output.
+  - Every date column's nature (calendar date vs. instant) is documented directly in
+    `lib/timePeriods.ts`'s own doc comment, including `Deal.closeDate`'s dual nature (an expected
+    date while open; an instant once stamped Won/Lost).
+- **Test total: 195/195.** Live-verified: the searchable timezone picker and the new workspace
+  timezone field, in a real browser.
+
+### Commit 3 — `b0044e1`: TanStack Query infrastructure, query-cache security, pg_trgm, P2002
+
+- `@tanstack/react-query` added and wired (`QueryProvider`) — **no screen uses it yet**; Stage 2
+  (Tasks) is the first real query.
+- `lib/queryKeys.ts`: every future query key is built here, always `[entity, orgId, scopeOwnerId,
+  ...]` — "query keys include the orgId and the viewer's scope" by construction, not convention.
+- `QueryCacheSecurityGuard` (rendered inside `CrmProvider`): clears the **entire** QueryClient
+  cache — never a targeted subset — on an org switch, sign-out, or any change in role,
+  `repVisibility`, or payment access. No persistence anywhere (no localStorage/sessionStorage/a
+  persist plugin). Found and fixed a real pre-existing gap while wiring this: `CrmProvider`'s own
+  `orgId` prop was received but never actually used anywhere — needed it for the guard's
+  org-switch check, so it now actually flows through. `repVisibility` threads through the data
+  flow too now (always `"ALL"` today, same treatment as `scopeOwnerId`).
+- `pg_trgm` extension + trigram GIN indexes on every column `lib/data/*.ts`'s existing
+  `contains`/insensitive searches already target (Lead/Contact name+email, Deal name, Company
+  name). Confirmed against the synthetic org: `Seq Scan` (1.97ms) → `Bitmap Index Scan` via the
+  new index (0.48ms) for `name ILIKE '%james%'` on 10,000 contacts — real EXPLAIN output, not
+  estimated:
+  ```
+  -- before
+  Seq Scan on contacts (actual time=0.013..1.926) Rows Removed by Filter: 9804
+  -- after
+  Bitmap Heap Scan on contacts (actual time=0.104..0.431)
+    -> Bitmap Index Scan on contacts_name_trgm_idx (actual time=0.074..0.075)
+  ```
+- `vercel.json` added, pinning Vercel Functions to `iad1` — **no region was pinned before this**.
+  Caveat: this sets the deploy config; I can't confirm from the repo alone what the live Vercel
+  project's actual configured region is today, only that nothing in-repo was constraining it.
+- P2002 handling: catches only a primary-key collision (`meta.target` includes `"id"`) across
+  every create path and every activity-id-accepting update, converting it to one uniform `"Could
+  not create record"` error — explicit application code now, not an accident of Next's
+  production-only error redaction (which wouldn't hold in dev mode or off a future plain API
+  route). Every other unique-constraint violation (duplicate email, etc.) is untouched. Verified:
+  the same id colliding within one org and across two different orgs fails identically — no
+  existence leak.
+- **Test total: 207/207.** `tsc --noEmit`, `next build`, and a full-app live smoke test (every
+  screen, signed in as a real user, zero console/page errors) all clean.
+
+### What changed for users, concretely
+
+- **Settings → Profile → Time zone**: replaced with a searchable picker over real IANA zone ids
+  instead of 4 generic labels. If it was never set, it's now pre-filled with your browser's zone —
+  confirm or change it, then save.
+- **Settings → Workspace**: new "Workspace time zone" field (admin-only to edit), defaulting to
+  UTC, pre-filled with the admin's browser zone the first time it's opened. It explicitly says
+  what it drives (won this month, quota progress, monthly charts, closing in 30 days) and that a
+  Member's own time zone only affects their task due dates.
+- Nothing else is visibly different — no new permissions, no new restrictions, no screen loads
+  differently. `RepVisibility`/`scopeOwnerId`/TanStack Query are all present in the code but inert.
+
+### Next stage (1): per-org record visibility, shipped dark then exposed last
+
+Per the approved design: data-layer + action enforcement and the full OWN-mode test matrix first
+(still no UI change — `repVisibility` stays `ALL` for every org while this lands), then the UI
+gating (sidebar counts/toggles/owner filters closing per the design), and **only last**, once the
+whole matrix passes, the Settings switch that lets an admin actually turn OWN mode on. Touches:
+`lib/scope.ts` consumers added across `lib/data/{leads,contacts,deals,tasks,activities}.ts` and
+`lib/actions/crm.ts` (every function gains a required `Scope` param), the lead-conversion
+owner-reassignment cascade, the task-complete-redacted-parent guard, `GET /api/activities`
+adopting `Scope`, and the OWN-mode cross-tenant test matrix in
+`tests/integration/cross-tenant.test.ts`. Waiting for go-ahead before starting.
+
 ## Two follow-ups on GET /api/activities: a real de-dup bug fixed properly, status codes split (Oct 23 2026)
 
 **1. De-duplication was content-based and had a real, confirmable bug.** Testing it directly: two
