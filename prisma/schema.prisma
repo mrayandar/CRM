@@ -90,7 +90,9 @@ enum PaymentLabel {
   Other
 }
 
-/** What a Task or Activity is attached to — a lightweight polymorphic reference. */
+/**
+ * What a Task or Activity is attached to — a lightweight polymorphic reference.
+ */
 enum SubjectType {
   lead
   contact
@@ -102,6 +104,15 @@ enum PlanTier {
   starter
   pro
   enterprise
+}
+
+/// Per-org record visibility for Members. ALL (default, today's only behavior) means every
+/// Member sees every record, same as before this existed. OWN restricts a Member to records they
+/// own (leads/contacts/deals) or are assigned/created (tasks) — never Admins, who always see
+/// everything regardless of this setting. See lib/scope.ts.
+enum RepVisibility {
+  ALL
+  OWN
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +139,11 @@ model Organization {
   /// relabels every amount in the app — it never converts stored values, which stay the same
   /// number regardless of currency (see the confirmation copy in the Settings UI).
   currency String @default("USD")
+
+  /// Admin-only, changed in Settings with a confirmation (see PROGRESS.md's visibility design).
+  /// Not yet read or written by any code path as of this column's introduction — every org is
+  /// ALL until the Settings switch ships.
+  repVisibility RepVisibility @default(ALL)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -156,13 +172,14 @@ model Owner {
   /// to Owner is ON DELETE RESTRICT, so a real delete would throw for anyone who ever created a
   /// record or logged an activity — in practice, every real member. Soft-deleting also keeps
   /// historical activity/ownership attribution intact instead of erasing who actually did what.
-  active      Boolean @default(true)
+  active Boolean @default(true)
 
-  leads      Lead[]
-  contacts   Contact[]
-  deals      Deal[]
-  tasks      Task[]
-  activities Activity[]
+  leads           Lead[]
+  contacts        Contact[]
+  deals           Deal[]
+  tasks           Task[]
+  tasksCreated    Task[]     @relation("TaskCreatedBy")
+  activities      Activity[]
   paymentsCreated Payment[]
 
   createdAt DateTime @default(now())
@@ -245,13 +262,13 @@ model Lead {
 }
 
 model Contact {
-  id      String @id @default(cuid())
-  orgId   String
-  name    String
-  title   String
-  email   String
-  phone   String
-  tags    String[]
+  id    String   @id @default(cuid())
+  orgId String
+  name  String
+  title String
+  email String
+  phone String
+  tags  String[]
 
   company   Company @relation(fields: [companyId], references: [id])
   companyId String
@@ -284,11 +301,11 @@ model Contact {
 }
 
 model Deal {
-  id       String   @id @default(cuid())
+  id       String     @id @default(cuid())
   orgId    String
   name     String
   value    Int
-  priority Priority @default(medium)
+  priority Priority   @default(medium)
   source   LeadSource
 
   company   Company @relation(fields: [companyId], references: [id])
@@ -408,12 +425,21 @@ model Task {
   /// Optional longer note; added alongside task editing — nothing else used this column before.
   description String?
   dueDate     DateTime
-  done     Boolean  @default(false)
-  priority Priority @default(medium)
-  type     TaskType @default(todo)
+  done        Boolean  @default(false)
+  priority    Priority @default(medium)
+  type        TaskType @default(todo)
 
   owner   Owner  @relation(fields: [ownerId], references: [id])
   ownerId String
+
+  /// Who created this task — distinct from `owner` (the assignee), which can be reassigned.
+  /// Nullable for now: backfilled for existing rows (to `ownerId`, the closest available
+  /// approximation — see the migration), but not yet populated on new rows by any code path, so
+  /// a real NOT NULL constraint would break task creation before that write path is updated. Will
+  /// be required once OWN-mode visibility actually uses it ("assigned to them or created by
+  /// them" — see lib/scope.ts).
+  createdBy   Owner?  @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  createdById String?
 
   // Polymorphic "related to" reference (lead | contact | deal), denormalized
   // with a label so list views don't need a join to render (mirrors the
@@ -433,6 +459,7 @@ model Task {
 
   @@index([orgId])
   @@index([orgId, ownerId])
+  @@index([orgId, createdById])
   @@index([orgId, done, dueDate])
   @@map("tasks")
 }
@@ -448,6 +475,14 @@ model Activity {
   actor   Owner  @relation(fields: [actorId], references: [id])
   actorId String
 
+  /// Denormalized at write time from the subject's current `ownerId` (or `actorId` for a
+  /// standalone activity with no subject) — a cache of "who this activity currently belongs to
+  /// for OWN-mode visibility," not a stable FK (deliberately a plain scalar, not a relation: a
+  /// reassignment cascades this column with a bulk UPDATE, which a relation would complicate).
+  /// Nullable for now: backfilled for existing rows (see the migration), but not yet populated on
+  /// new rows by any code path — see Task.createdById's identical note.
+  ownerId String?
+
   // Polymorphic "subject" reference (lead | contact | deal), denormalized
   // with a label (mirrors the frontend's `Activity.subject` shape).
   subjectType  SubjectType?
@@ -462,6 +497,7 @@ model Activity {
 
   @@index([orgId])
   @@index([orgId, at])
+  @@index([orgId, ownerId, at])
   @@index([leadId])
   @@index([contactId])
   @@index([dealId])

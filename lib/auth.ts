@@ -6,6 +6,7 @@ import { upsertOrg, getOrgByClerkId } from '@lib/data/organizations'
 import { getOwnerByClerkUserId, upsertOwnerFromClerk } from '@lib/data/owners'
 import { ensureDefaultStages } from '@lib/data/stages'
 import { ownerRoleFromClerk } from '@lib/roles'
+import { computeScopeOwnerId } from '@lib/scope'
 
 /**
  * Resolves the current request's Clerk auth into our internal
@@ -56,7 +57,19 @@ export async function resolveAuth() {
     })
   }
 
-  return { orgId: org.id, owner, clerkOrgId, clerkUserId: userId }
+  return {
+    orgId: org.id,
+    owner,
+    clerkOrgId,
+    clerkUserId: userId,
+    // Always null today — see requireAuth()'s identical field for why.
+    scopeOwnerId: computeScopeOwnerId({
+      repVisibility: org.repVisibility,
+      ownerId: owner.id,
+      ownerRole: owner.role,
+      sessionOrgRole: orgRole,
+    }),
+  }
 }
 
 /**
@@ -85,6 +98,15 @@ export async function requireAuth() {
     sessionOrgRole: orgRole,
     clerkUserId: userId,
     clerkOrgId,
+    // Always null today: every org defaults to RepVisibility.ALL and no Settings switch exists
+    // yet to change that (see lib/scope.ts). Nothing reads this field yet either — computed here
+    // now so Stage 1's enforcement work has one call site to wire, not one per action.
+    scopeOwnerId: computeScopeOwnerId({
+      repVisibility: org.repVisibility,
+      ownerId: owner.id,
+      ownerRole: owner.role,
+      sessionOrgRole: orgRole,
+    }),
   }
 }
 
