@@ -29,7 +29,7 @@ vi.mock('@clerk/nextjs/server', () => ({
 import { prisma } from '@lib/prisma'
 import { getLeadById, listLeads } from '@lib/data/leads'
 import { getContactById, listContacts } from '@lib/data/contacts'
-import { getDealById, listDeals } from '@lib/data/deals'
+import { getDealById, listDeals, getPipelineTotals } from '@lib/data/deals'
 import { getTaskById, listTasks } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { listCompanies } from '@lib/data/companies'
@@ -47,6 +47,7 @@ interface RepFixture {
   org: Awaited<ReturnType<typeof prisma.organization.create>>
   repA: Awaited<ReturnType<typeof prisma.owner.create>>
   repB: Awaited<ReturnType<typeof prisma.owner.create>>
+  admin: Awaited<ReturnType<typeof prisma.owner.create>>
   company: Awaited<ReturnType<typeof prisma.company.create>>
   leadA: Awaited<ReturnType<typeof prisma.lead.create>>
   leadB: Awaited<ReturnType<typeof prisma.lead.create>>
@@ -87,6 +88,18 @@ beforeAll(async () => {
       name: 'Rep B',
       email: `rep-b-${RUN}@example.com`,
       role: 'Member',
+    },
+  })
+  // A real Admin in this same OWN-mode org — the two-source check in lib/scope.ts only ever
+  // unscopes when BOTH the DB role and the live session claim "Admin", so the conversion
+  // owner-move test (reachable only by an unscoped caller) logs in as this owner, not repA/repB.
+  const admin = await prisma.owner.create({
+    data: {
+      orgId: org.id,
+      clerkUserId: `test-own-admin-${RUN}`,
+      name: 'Admin',
+      email: `admin-${RUN}@example.com`,
+      role: 'Admin',
     },
   })
   // Shared across both reps, deliberately — company identity is org-wide, not per-owner.
@@ -135,7 +148,7 @@ beforeAll(async () => {
     data: { orgId: org.id, title: 'Task B', dueDate: new Date(), ownerId: repB.id, createdById: repB.id },
   })
 
-  F = { org, repA, repB, company, leadA, leadB, contactA, contactB, dealA, dealB, taskA, taskB, stage, otherStage }
+  F = { org, repA, repB, admin, company, leadA, leadB, contactA, contactB, dealA, dealB, taskA, taskB, stage, otherStage }
 })
 
 afterAll(async () => {
@@ -156,6 +169,9 @@ afterAll(async () => {
  *  this session to repA.id (see lib/scope.ts's two-source check: repA fails both sources). */
 function loginAsRepA() {
   mockAuth.mockResolvedValue({ userId: F.repA.clerkUserId, orgId: F.org.clerkOrgId, orgRole: 'org:member' })
+}
+function loginAsAdmin() {
+  mockAuth.mockResolvedValue({ userId: F.admin.clerkUserId, orgId: F.org.clerkOrgId, orgRole: 'org:admin' })
 }
 
 const scopeA = (): Scope => ({ orgId: F.org.id, scopeOwnerId: F.repA.id })
@@ -196,12 +212,42 @@ describe('lib/data: OWN-mode reads/writes are scoped by owner, same rejection as
     expect(ids).not.toContain(F.taskB.id)
     expect(ids).toContain(F.taskA.id)
   })
+  it('listLeads\' search param still excludes another rep\'s matching record, not just the unfiltered list', async () => {
+    // Both reps get a record matching the same distinctive search term — proves the exclusion is
+    // actually enforced on the search path itself, not just incidentally true because the two
+    // reps' existing fixture names never collided.
+    const zA = await prisma.lead.create({
+      data: {
+        orgId: F.org.id, name: 'Zephyr Co Lead (A)', title: '', companyId: F.company.id,
+        email: `zephyr-a-${RUN}@example.com`, phone: '', source: 'Inbound', location: '', ownerId: F.repA.id,
+      },
+    })
+    const zB = await prisma.lead.create({
+      data: {
+        orgId: F.org.id, name: 'Zephyr Co Lead (B)', title: '', companyId: F.company.id,
+        email: `zephyr-b-${RUN}@example.com`, phone: '', source: 'Inbound', location: '', ownerId: F.repB.id,
+      },
+    })
+    const ids = (await listLeads(scopeA(), { search: 'Zephyr' })).map((l) => l.id)
+    expect(ids).toContain(zA.id) // sanity: the search itself works
+    expect(ids).not.toContain(zB.id)
+
+    await prisma.lead.deleteMany({ where: { id: { in: [zA.id, zB.id] } } })
+  })
   it('listActivities (org-wide feed) never includes another rep\'s activity', async () => {
     const activityB = await prisma.activity.create({
       data: { orgId: F.org.id, kind: 'note', title: 'rep B only', actorId: F.repB.id, ownerId: F.repB.id },
     })
     const ids = (await listActivities(scopeA())).map((a) => a.id)
     expect(ids).not.toContain(activityB.id)
+  })
+  it('getPipelineTotals (the one aggregate in this app) counts only the scoped caller\'s own deals', async () => {
+    const totals = await getPipelineTotals(scopeA())
+    const stageTotal = totals.find((t) => t.stageId === F.stage.id)!
+    // Both dealA (owned by repA) and dealB (owned by repB) sit in F.stage — a scoped repA must
+    // see exactly 1 deal / its own value in this stage's totals, not 2.
+    expect(stageTotal.count).toBe(1)
+    expect(stageTotal.totalValue).toBe(F.dealA.value)
   })
   it('listCompanies\' rollup counts for a scoped Member only reflect their own records, even though the company itself is shared', async () => {
     const companies = await listCompanies(F.org.id, { scopeOwnerId: F.repA.id })
@@ -416,5 +462,60 @@ describe('Reassignment: the former owner loses visibility across loadCrmData, cr
 
     await prisma.activity.deleteMany({ where: { orgId: F.org.id, contactId: contact.id } })
     await prisma.contact.delete({ where: { id: contact.id } })
+  })
+})
+
+describe('convertLeadToDeal: the owner-move-on-convert path (reachable only by an unscoped caller)', () => {
+  it('converting repA\'s lead to repB moves the lead\'s own ownerId and cascades its existing activities', async () => {
+    const lead = await prisma.lead.create({
+      data: {
+        orgId: F.org.id, name: 'Convert Me', title: '', companyId: F.company.id,
+        email: `convert-${RUN}@example.com`, phone: '', source: 'Inbound', location: '', ownerId: F.repA.id,
+      },
+    })
+    // A pre-existing activity on the lead, owned by repA — must cascade to repB on conversion.
+    const priorActivity = await prisma.activity.create({
+      data: {
+        orgId: F.org.id, kind: 'note', title: 'pre-conversion note', actorId: F.repA.id,
+        ownerId: F.repA.id, leadId: lead.id, subjectType: 'lead', subjectLabel: 'Convert Me',
+      },
+    })
+
+    // Only an unscoped caller (a real Admin) can reach this path at all — a scoped Member's
+    // convertLeadAction is restricted by assertOwnerInScope to converting to themselves only (see
+    // the scoped-mutation matrix above, which proves repA can't even target repB's own lead this
+    // way). Logging in as the org's Admin here is what makes `input.ownerId !== lead.ownerId`
+    // reachable in the first place.
+    loginAsAdmin()
+    const result = await actions.convertLeadAction(lead.id, {
+      ownerId: F.repB.id,
+      contactId: randomUUID(),
+      activityId: randomUUID(),
+    })
+
+    const updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })
+    expect(updatedLead.ownerId).toBe(F.repB.id)
+    expect(updatedLead.status).toBe('qualified')
+
+    const newContact = await prisma.contact.findUniqueOrThrow({ where: { id: result.contactId } })
+    expect(newContact.ownerId).toBe(F.repB.id)
+
+    const cascadedPrior = await prisma.activity.findUniqueOrThrow({ where: { id: priorActivity.id } })
+    expect(cascadedPrior.ownerId).toBe(F.repB.id)
+
+    const conversionActivity = await prisma.activity.findFirst({
+      where: { orgId: F.org.id, leadId: lead.id, kind: 'created' },
+    })
+    expect(conversionActivity?.ownerId).toBe(F.repB.id)
+
+    // And now logged in as repA (the former owner, scoped) — the converted lead and its activity
+    // are gone from repA's own view, same rule as the plain-reassignment test above.
+    loginAsRepA()
+    const asFormerOwner = await loadCrmData(scopeA(), F.repA.id, false)
+    expect(asFormerOwner.leads.some((l) => l.id === lead.id)).toBe(false)
+
+    await prisma.activity.deleteMany({ where: { orgId: F.org.id, leadId: lead.id } })
+    await prisma.contact.delete({ where: { id: result.contactId } })
+    await prisma.lead.delete({ where: { id: lead.id } })
   })
 })

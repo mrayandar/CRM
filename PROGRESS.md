@@ -2,6 +2,180 @@
 
 > Living context file. Updated at the end of every task.
 
+## Stage 1a verification report + pg_trgm drift fixed permanently (Oct 23 2026)
+
+Requested before starting Stage 1b: an evidence-backed report on Stage 1a's five claims, plus a
+permanent fix for the pg_trgm migration-drift trap flagged (but not fixed) in Stage 0 commit 3.
+**No Stage 1b (UI gating) work started.**
+
+### Part 1 — Stage 1a report, with evidence
+
+**1. First run of the existing suite after `Scope` was threaded through, before any OWN-mode
+behavior existed.** `tests/integration/own-mode.test.ts` did not exist yet at this point — only
+`lib/data/*.ts`, `lib/actions/crm.ts`, `lib/actions/payments.ts`, `lib/data-loader.ts`, and both
+routes had been changed. Captured output:
+```
+ Test Files  10 passed (10)
+      Tests  215 passed (215)
+   Start at  21:49:08
+   Duration  439.44s (tests 99%)
+```
+215/215, same total as before Scope was threaded through at all — the required checkpoint.
+
+**2. How the OWN-mode matrix is generated, demonstrated live.** `own-mode.test.ts` builds a
+`covered` set from three explicit object literals — `SCOPED_MUTATION_ACTIONS` (9 entries),
+`SCOPED_CREATE_ACTIONS` (3 entries), and `EXEMPT_ACTIONS` (14 entries, each with a one-line
+reason) — then asserts it against `Object.keys(actions).filter(k => typeof actions[k] ===
+'function')`, i.e. every real function export of `lib/actions/crm.ts` (26 actions today). This
+covers every server action in the file and, transitively, both route handlers (`GET
+/api/crm-refetch`, `GET /api/activities`) since they're exercised by name in separate describe
+blocks, not folded into this count.
+
+Demonstrated by temporarily adding a 27th export to `lib/actions/crm.ts`:
+```ts
+export async function dummyDemoAction() {
+  return null
+}
+```
+Running just the exhaustiveness test:
+```
+ ❯ lib/actions/crm: OWN-mode matrix is exhaustive over every exported action (1)
+   × every export is covered by the mutation matrix, the creation matrix, or an explicit exemption
+AssertionError: expected [ 'dummyDemoAction' ] to deeply equal []
+- []
++ ["dummyDemoAction"]
+```
+It fails immediately, naming the exact uncovered export. Removed the dummy
+(`git diff --stat lib/actions/crm.ts` showed empty afterward — confirmed no trace left), reran the
+same test: 1 passed.
+
+**3. The two items "not enforced exactly as planned," verbatim from the Stage 1a report:**
+> - **Task-activity ownership on edit** wasn't in the original plan explicitly: when `updateTask`
+>   writes its "edited" activity and the task has a `relatedTo` subject, `Activity.ownerId` is set
+>   to that subject's *current* owner (queried fresh inside the transaction), not the task's own
+>   assignee — consistent with every other activity's "denormalized from the subject" rule, but
+>   this required one extra query inside `updateTask`'s transaction that wasn't in the original
+>   sketch.
+>   **Risk**: none identified beyond the extra round trip itself — it's strictly more correct than
+>   the alternative (stamping the assignee), and the extra query is the same shape as the one
+>   already added to every other reassignment path.
+> - **One flaky transaction timeout, not a logic bug**: the reassignment test's `updateContact`
+>   call (`findFirst` → `update` → `cascadeActivityOwner` → `activity.create`, all in one
+>   transaction) occasionally hit Prisma's default 5000ms interactive-transaction timeout on a cold
+>   Neon connection in this dev environment (confirmed by re-running: failed once at 9.4s elapsed
+>   cold, passed immediately after on a warm connection).
+>   **Risk**: real, but environment-dependent, not logic-dependent — every multi-step write
+>   transaction in this app (not just the ones touched in Stage 1a) is one extra round-trip away
+>   from this same timeout under slow-connection conditions. Re-confirmed present in this session:
+>   the full combined suite (`own-mode.test.ts` + the pre-existing suite) passed cleanly end to end
+>   on both full runs this session, with no recurrence — consistent with "cold-connection-only,"
+>   not a reliably reproducible failure. **Not fixed** — raising Prisma's `maxWait`/`timeout` or
+>   restructuring these transactions needs the user's sign-off, since it's a cross-cutting change,
+>   not scoped to Stage 1a's files.
+
+**4. Reassignment and conversion, test results.** Both pass; evidence from this session's full
+run of `own-mode.test.ts` (33/33):
+- `Reassignment: the former owner loses visibility across loadCrmData, crm-refetch, and GET
+  /api/activities` — reassigns a contact from repA to repB via `updateContactAction`, then,
+  still logged in as repA: `loadCrmData` excludes the contact, the live `GET /api/crm-refetch`
+  response excludes it, and `GET /api/activities` for that contact 404s.
+- `convertLeadToDeal: the owner-move-on-convert path (reachable only by an unscoped caller)` —
+  new test, added for this report (not present in the original Stage 1a commit). Logs in as a
+  real Admin in the same OWN-mode org (the only way to reach `input.ownerId !== lead.ownerId` at
+  all — a scoped Member's `convertLeadAction` is restricted to converting to themselves, already
+  covered by the scoped-creation-equivalent rejection in the mutation matrix), converts repA's
+  lead to repB, and asserts: the lead's own `ownerId` moved to repB, a pre-existing activity on the
+  lead cascaded to repB's `ownerId`, the new contact is owned by repB, the new "converted..."
+  activity is owned by repB, and — switching back to repA — the converted lead no longer appears
+  in repA's own `loadCrmData`.
+
+**5. Red-team pass — as a scoped Member, every path tried:**
+- **By-id actions** (updateLead/Contact/Deal/Task, setLeadStatus, moveDeal, toggleTask, deleteTask,
+  convertLead) — rejected, matrix-proven.
+- **Creation with another rep's `ownerId`** (createLead/Contact/Deal) — rejected, matrix-proven.
+- **Lists** (leads/contacts/deals/tasks/activities) — zero out-of-scope rows, proven.
+- **Search** — added a new test this session (`listLeads' search param still excludes another
+  rep's matching record`): two leads sharing the term "Zephyr," one per rep — the scoped search
+  returns only the caller's own match. `contacts.ts`/`deals.ts` use the identical
+  `scope.scopeOwnerId ? {ownerId} : ownerId ? {ownerId} : {}` where-clause shape for their own
+  `search` option, proven once directly for leads and not independently re-tested for the other
+  two, since the enforcement is the same code pattern, not a separately-derived one.
+- **Aggregates** — added a new test this session: `getPipelineTotals` (the one real aggregate
+  query in the app, currently unused by any screen) counts only the scoped caller's own deals per
+  stage, confirmed against two reps' deals in the same stage.
+- **Export (CSV)** — traced, not independently tested: `exportCsv()` (`src/lib/utils.ts`) runs
+  entirely client-side over whatever `useCrm()` already holds, which comes from `loadCrmData`
+  (already scoped). There is no separate server-side export endpoint — nothing to attack
+  independently of the already-scoped initial load.
+- **Command palette** — same reasoning: indexes the client's already-loaded (already-scoped)
+  state; no separate query.
+- **`GET /api/activities` / `GET /api/crm-refetch`** — scoped, proven (including the 404-on-
+  another-rep's-subject case and the reassignment test above).
+- **Every other API route** — `app/api/webhooks/clerk/route.ts` is the only other route in the
+  app; it's Clerk's own webhook, not reachable by an in-app caller with a session at all, and
+  carries no record-by-id path.
+
+**One real latent gap found, not exploitable today but worth flagging for 1b:**
+`getCompanyDetail(orgId, id, scopeOwnerId?)` (`lib/data/companies.ts`) defaults to **unscoped**
+nested `leads`/`contacts`/`deals` arrays when its optional third parameter is omitted — unlike
+every other scoped function in this app, which fails toward "more restrictive" by default, this
+one fails toward "show everything" when a caller forgets the parameter. It is **not reachable by
+any real request today** — grepped the whole repo; its only callers are `lib/data-loader.ts`
+(which doesn't call it; it calls `listCompanies` instead) and the test suite. It exists for the
+Company detail screen, which currently reads its data from the client's already-loaded (already
+-scoped) state rather than calling this function directly. Flagging rather than fixing
+unprompted, since it's dead code in production right now and changing its default signature is a
+design call, not a bug fix — worth deciding explicitly before or during 1b, whenever a real
+caller for this function is wired up.
+
+### Part 2 — pg_trgm migration drift, fixed permanently
+
+Checked directly: Prisma 6.19.3 (this repo's installed version) supports declaring a GIN index
+with the `gin_trgm_ops` operator class natively in `schema.prisma` — `extendedIndexes` is no
+longer preview-gated at this version, confirmed by `prisma validate` accepting the syntax with no
+`previewFeatures` entry needed for it. `postgresqlExtensions` (for declaring the `pg_trgm`
+extension itself) is still preview-gated and needed `previewFeatures = ["postgresqlExtensions"]`.
+
+Added to `prisma/schema.prisma`:
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm]
+}
+```
+and, on `Lead`/`Contact`/`Deal`/`Company`, the exact six indexes the raw-SQL migration
+(`20261023110512_pg_trgm_search_indexes`) already created, each pinned with an explicit `map:` to
+the index name that migration gave it (so Prisma recognizes them as the *same* index, not a
+same-purpose duplicate to create alongside the old one):
+```prisma
+@@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "leads_name_trgm_idx")
+@@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "leads_email_trgm_idx")
+// ...and the matching one/two per model on Contact, Deal, Company
+```
+
+**Verified, in order:**
+1. `npx prisma validate` — valid.
+2. `npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script` → `-- This is an empty migration.` (zero drift, either direction).
+3. `npx prisma migrate status` → `Database schema is up to date!`
+4. `npx prisma migrate dev --name trgm_declared_in_schema` → `Already in sync, no schema change or pending migration was found.` — no new migration file was even created, because none was needed; the DB already physically has these indexes, this change only makes `schema.prisma` describe reality correctly.
+5. `npx prisma generate` and `npx tsc --noEmit` both clean after regenerating the client.
+
+The original raw-SQL migration file is untouched (migration history is never rewritten). The
+"must stay" warning comment in the follow-up migration
+(`20261023161534_org_timezone_configured_flag`) is now historical — the drift it warned about
+can't recur, since `schema.prisma` and the database agree.
+
+### Test total: 248/248 (215 pre-existing, unchanged + 33 in `own-mode.test.ts` — 30 from the
+original Stage 1a commit + 3 added for this report: the search-scoping test, the
+`getPipelineTotals` aggregate test, and the conversion owner-move test)
+
+`tsc --noEmit` clean. **Still waiting for go-ahead on Stage 1b** — not started.
+
 ## Scale/visibility redesign, Stage 1a of 11 (data-layer + action enforcement, OWN-mode test matrix — still no UI change) (Oct 23 2026)
 
 Per the approved plan: `Scope` replaces the bare `orgId` on every exported function in

@@ -11,12 +11,14 @@
 // a valid Organization exists before any data query runs).
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm]
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +237,7 @@ model Company {
 
   @@index([orgId])
   @@index([orgId, name])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "companies_name_trgm_idx")
   @@map("companies")
 }
 
@@ -274,6 +277,8 @@ model Lead {
   @@index([orgId, ownerId])
   @@index([orgId, lastTouchedAt])
   @@index([orgId, companyId])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "leads_name_trgm_idx")
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "leads_email_trgm_idx")
   @@map("leads")
 }
 
@@ -313,6 +318,8 @@ model Contact {
   @@index([orgId, ownerId])
   @@index([orgId, lastInteractionAt])
   @@index([orgId, companyId])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "contacts_name_trgm_idx")
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "contacts_email_trgm_idx")
   @@map("contacts")
 }
 
@@ -355,6 +362,7 @@ model Deal {
   @@index([orgId, stageId])
   @@index([orgId, ownerId])
   @@index([orgId, companyId])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "deals_name_trgm_idx")
   @@map("deals")
 }
 
