@@ -537,7 +537,11 @@ function RepVisibilitySection() {
 
 function TeamSection() {
   const { user: clerkUser } = useUser()
-  const { persist } = useCrm()
+  const { persist, currentUser } = useCrm()
+  // Invite/role-change/remove/revoke are all admin-only — Clerk itself also rejects these for a
+  // Member (see PROGRESS.md's Stage 1c follow-up for what that live-browser check confirmed), but
+  // a Member should never see controls that would just fail, so they're hidden here too.
+  const isAdmin = currentUser.role === 'Admin'
   const { organization, memberships, invitations, isLoaded } = useOrganization({
     memberships: { pageSize: 50 },
     invitations: { status: ['pending'], pageSize: 50 },
@@ -562,10 +566,14 @@ function TeamSection() {
     setInviting(true)
     setInviteError(null)
     try {
-      await inviteMemberAction({
+      const result = await inviteMemberAction({
         emailAddress: inviteEmail.trim(),
         role: inviteRole,
       })
+      if (!result.ok) {
+        setInviteError('Only admins can invite teammates.')
+        return
+      }
       setInviteOpen(false)
       setInviteEmail('')
       if (invitations?.revalidate) invitations.revalidate()
@@ -637,14 +645,16 @@ function TeamSection() {
           title="Team members"
           subtitle={`${totalSeats} ${totalSeats === 1 ? 'member' : 'members'} in this organization`}
           action={
-            <Button
-              variant="primary"
-              size="xs"
-              icon={<Plus size={12} />}
-              onClick={() => setInviteOpen(true)}
-            >
-              Invite
-            </Button>
+            isAdmin ? (
+              <Button
+                variant="primary"
+                size="xs"
+                icon={<Plus size={12} />}
+                onClick={() => setInviteOpen(true)}
+              >
+                Invite
+              </Button>
+            ) : undefined
           }
         />
         <TableShell className="[&_table]:min-w-[560px]">
@@ -678,23 +688,27 @@ function TeamSection() {
                   </Td>
                   <Td className="text-ink-500">{email}</Td>
                   <Td>
-                    <Select
-                      value={membership.role}
-                      onChange={(e) =>
-                        handleRoleChange(
-                          memberId,
-                          e.target.value as 'org:admin' | 'org:member',
-                        )
-                      }
-                      className="h-7 w-[110px] text-[12px]"
-                      disabled={isYou}
-                    >
-                      <option value="org:admin">Admin</option>
-                      <option value="org:member">Member</option>
-                    </Select>
+                    {isAdmin ? (
+                      <Select
+                        value={membership.role}
+                        onChange={(e) =>
+                          handleRoleChange(
+                            memberId,
+                            e.target.value as 'org:admin' | 'org:member',
+                          )
+                        }
+                        className="h-7 w-[110px] text-[12px]"
+                        disabled={isYou}
+                      >
+                        <option value="org:admin">Admin</option>
+                        <option value="org:member">Member</option>
+                      </Select>
+                    ) : (
+                      <Badge tone="neutral">{membership.role === 'org:admin' ? 'Admin' : 'Member'}</Badge>
+                    )}
                   </Td>
                   <Td align="right">
-                    {!isYou && memberId && (
+                    {isAdmin && !isYou && memberId && (
                       <IconButton
                         label={`Remove ${name}`}
                         variant="danger"
@@ -738,13 +752,15 @@ function TeamSection() {
                   </Td>
                   <Td className="text-ink-500">{formatDate(invitation.createdAt.toISOString())}</Td>
                   <Td align="right">
-                    <IconButton
-                      label={`Revoke invitation to ${invitation.emailAddress}`}
-                      variant="danger"
-                      onClick={() => handleRevoke(invitation)}
-                    >
-                      <UserX size={13} />
-                    </IconButton>
+                    {isAdmin && (
+                      <IconButton
+                        label={`Revoke invitation to ${invitation.emailAddress}`}
+                        variant="danger"
+                        onClick={() => handleRevoke(invitation)}
+                      >
+                        <UserX size={13} />
+                      </IconButton>
+                    )}
                   </Td>
                 </Tr>
               ))}

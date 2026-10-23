@@ -2,6 +2,113 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fixed: Members hitting a raw production error on every admin-only action (Oct 24 2026)
+
+A Member who tried to invite a teammate got Next's generic "An error occurred in the Server
+Components render" in production — the admin-only role check was correctly rejecting them, but
+by *throwing*, which Next.js redacts to that generic message for any Server Action in production.
+
+### 1. Confirmed the cause from the server logs, before changing anything
+
+Reproduced live (real dev server, real Member session, real invite attempt) and read the
+terminal:
+```
+⨯ Error: Admins only
+    at requireAdmin (lib\auth.ts:121:39)
+    at async inviteMemberAction (lib\actions\crm.ts:208:47)
+  digest: '1332033175'
+}
+ POST /settings?section=team 500 in 2014ms
+```
+The digest traces exactly to `requireAdmin()`'s throw inside `inviteMemberAction` — confirmed,
+not a different failure. Dev mode passes the real message through (which is why the modal showed
+"Admins only" inline, not yet the generic one); production redacts it to the generic message.
+
+### 2. Every admin-gated action now returns a typed result, never throws for the permission check
+
+New `lib/actions/shared.ts`: `tryAdminSession(check)` runs `requireAdmin`/
+`requireLiveAdminAccess`/`requirePaymentWriteAccess` and returns `null` instead of letting the
+throw escape; `FORBIDDEN = { ok: false, error: 'forbidden' }` is the typed result every action
+returns in that case. Deliberately narrow — only the auth check itself is caught; a later
+validation throw (e.g. "Invalid email", "Unsupported currency") still throws exactly as before,
+unchanged.
+
+All 16 actions converted: `inviteMemberAction`, `updateQuotaAction`, `updateCurrencyAction`,
+`updateOrgTimezoneAction`, `createStageAction`/`renameStageAction`/`reorderStageAction`/
+`deleteStageAction`, `deleteCompanyAction`, `updateRepVisibilityAction`, and all 6 payment actions
+(`createPaymentAction`, `updatePaymentAction`, `splitPaymentAction`, `markPaymentPaidAction`,
+`cancelPaymentAction`, `deletePaymentAction`).
+
+Client side, a new `FriendlyActionError` class (`src/store/persistRun.ts`) is how a specific,
+already-safe-to-show message ("Only admins can invite teammates.") reaches `persist()`'s toast
+without ever risking a redacted server message leaking through: `persist()`'s `onFailure` now
+receives the caught error and shows `err.message` only when it's a `FriendlyActionError`,
+otherwise the caller's own fixed generic message — so an *unexpected* throw from `run` (which
+could be anything, including a production-redacted one) is never shown verbatim. Every client
+wrapper that calls one of the 16 actions now checks `result.ok` and throws a `FriendlyActionError`
+with its own specific message when it's false; `deleteCompanyAction`/`deleteStageAction`/
+`deletePaymentAction` (which already returned `{ok,error}` rather than going through `persist()`)
+map the `'forbidden'` code to a friendly sentence directly instead of showing the raw code.
+
+**Tests**: every existing test that previously asserted `.rejects.toThrow(/Admins only/|/Forbidden/)`
+for one of these 16 actions now asserts the typed `{ ok: false, error: 'forbidden' }` result
+instead (found and fixed ~20 such assertions across `cross-tenant.test.ts` — several only
+surfaced via `tsc`, a couple only at actual test-run time since they didn't touch the result's
+shape). Added net-new coverage where a Member-rejection test didn't already exist for a given
+action (`splitPaymentAction` already had one in a different describe block; added the others
+inline). Every one of the 16 now has a test proving: a Member gets `{ ok: false, error:
+'forbidden' }` (not a throw), and nothing was written to the database.
+
+### 3. Hid every control a Member can't use
+
+`Settings → Team`: the "Invite" button, the per-member role `<Select>` (now a plain read-only
+`Badge`), the "Remove" button, and the "Revoke" button on pending invitations are all gated on
+`currentUser.role === 'Admin'` now — previously none of them were, so a Member saw the *entire*
+admin team-management UI, all of it non-functional for them.
+
+Re-checked every other admin-only control from the Stage 1c audit, all already correctly gated:
+workspace currency/timezone/quota inputs (disabled, with a "Only admins can..." note), the
+`RepVisibilitySection` switch (already read-only for a non-admin), `StageManager` (already
+read-only), `CompanyDetail`'s Delete button (already hidden). Nothing further needed there.
+
+### 4. Confirmed Clerk itself independently rejects role change / remove / revoke
+
+Role change, member removal, and invitation revocation go through Clerk's own client SDK
+(`organization.updateMember()`/`removeMember()`/`Invitation.revoke()`), not one of our Server
+Actions — checked live, as the real Member, calling these directly (bypassing our now-hidden UI
+entirely) via `window.Clerk`:
+```
+updateMember (role change) as Member: { ok: false, status: 403, message: "Current user is missing an organization permission." }
+removeMember as Member:               { ok: false, status: 403, message: "Current user is missing an organization permission." }
+Invitation.revoke() as Member:        { ok: false, status: 403, message: "Current user is missing an organization permission." }
+```
+Clerk rejects all three with a 403 before our app is even involved — confirmed the target
+membership's role was unchanged afterward. What a Member sees when this happens: nothing, now —
+the controls that would trigger these calls are hidden, so a Member never reaches Clerk's
+rejection in the first place; if they somehow did (e.g. a stale cached page), Clerk's own error
+would surface, not a crash — the SDK call rejects cleanly with a normal JS error object, not an
+uncaught server-side throw.
+
+### 5. Live-verified, as the real Member and the real Admin
+
+14/14 checks, real dev server, real sessions, no shortcuts:
+- **As Jordan (Member)**: Team page loads cleanly; no "An error occurred in the Server Components
+  render" anywhere; no raw "Admins only" text either; no Invite button; no role-change `<select>`;
+  no Remove/Revoke icon buttons; zero uncaught page errors in the browser console. On the
+  Workspace tab: currency select disabled, and the "Only admins can set the quarterly quota" /
+  "...change record visibility" / "...change the workspace time zone" notes all render.
+- **As the real Admin**: Invite button present, role-change `<select>` present for every
+  teammate. (The dev Clerk instance was at its 5-membership/invitation cap from earlier test
+  runs, so an actual end-to-end send wasn't repeated live here — already proven by the automated
+  suite's `a real admin can invite a new member with either role` test, which does send one.)
+
+### Test total: 273/273 (272 pre-existing + net 1 new — most of the ~20 touched assertions were
+
+existing tests rewritten in place from "expect a throw" to "expect a typed result," not additions;
+one genuinely new test was added, `splitPaymentAction returns a friendly { ok: false } result...`,
+alongside the pre-existing one in a different describe block). `tsc --noEmit` and `next build`
+both clean.
+
 ## Stage 1c: the OWN-mode switch is live (Oct 24 2026)
 
 Five items, done in order, with a required gate: the full matrix had to pass before the switch

@@ -29,7 +29,7 @@ import type {
 } from '@/data/types'
 import { initialsOf, shouldPromptWonPaymentSetup } from '@/lib/utils'
 import { resolveBrowserTimezone, resolveOrgTimezone } from '@lib/timezones'
-import { runPersist } from '@/store/persistRun'
+import { runPersist, FriendlyActionError } from '@/store/persistRun'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
   createLeadAction,
@@ -528,9 +528,9 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
             run,
             rollback,
             onSuccess,
-            onFailure: () => {
+            onFailure: (err) => {
               if (activity) removeActivity(activity.id)
-              notifyError(failureMessage)
+              notifyError(err instanceof FriendlyActionError ? err.message : failureMessage)
             },
           })
           if (!ok) return
@@ -1067,7 +1067,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       const prev = quarterlyQuota
       setQuarterlyQuota(quota)
       persist(
-        () => updateQuotaAction({ quarterlyQuota: quota }),
+        async () => {
+          const result = await updateQuotaAction({ quarterlyQuota: quota })
+          if (!result.ok) throw new FriendlyActionError('Only admins can set the quarterly quota.')
+        },
         () => setQuarterlyQuota(prev),
         undefined,
         "Couldn't save the quota, please try again.",
@@ -1081,7 +1084,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       const prev = orgCurrency
       setOrgCurrency(currency)
       persist(
-        () => updateCurrencyAction({ currency }),
+        async () => {
+          const result = await updateCurrencyAction({ currency })
+          if (!result.ok) throw new FriendlyActionError('Only admins can change the workspace currency.')
+        },
         () => setOrgCurrency(prev),
         undefined,
         "Couldn't save the currency, please try again.",
@@ -1095,7 +1101,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       const prev = orgTimezone
       setOrgTimezone(timezone)
       persist(
-        () => updateOrgTimezoneAction({ timezone }),
+        async () => {
+          const result = await updateOrgTimezoneAction({ timezone })
+          if (!result.ok) throw new FriendlyActionError('Only admins can change the workspace time zone.')
+        },
         () => setOrgTimezone(prev),
         undefined,
         "Couldn't save the workspace time zone, please try again.",
@@ -1112,6 +1121,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       beginMutation()
       try {
         const result = await updateRepVisibilityAction(next)
+        if (!result.ok) return { ok: false, error: 'Only admins can change record visibility.' }
         setRepVisibility(result.repVisibility)
         setRepVisibilityChangedBy(currentUser.id)
         setRepVisibilityChangedAt(result.changedAt)
@@ -1222,7 +1232,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     async (companyId: string): Promise<{ ok: true } | { ok: false; error: string }> => {
       beginMutation()
       try {
-        await deleteCompanyAction(companyId)
+        const result = await deleteCompanyAction(companyId)
+        if (!result.ok) return { ok: false, error: 'Only admins can delete companies.' }
         setCompanies((prev) => prev.filter((c) => c.id !== companyId))
         return { ok: true }
       } catch (err) {
@@ -1249,7 +1260,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         return next.map((s, i) => ({ ...s, order: i }))
       })
       persist(
-        () => createStageAction({ id, label: trimmed }),
+        async () => {
+          const result = await createStageAction({ id, label: trimmed })
+          if (!result.ok) throw new FriendlyActionError('Only admins can add pipeline stages.')
+        },
         () => setStages((prev) => prev.filter((s) => s.id !== id)),
         undefined,
         "Couldn't add the stage, please try again.",
@@ -1265,7 +1279,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       const prevStages = stages
       setStages((prev) => prev.map((s) => (s.id === stageId ? { ...s, label: trimmed } : s)))
       persist(
-        () => renameStageAction(stageId, trimmed),
+        async () => {
+          const result = await renameStageAction(stageId, trimmed)
+          if (!result.ok) throw new FriendlyActionError('Only admins can rename pipeline stages.')
+        },
         () => setStages(prevStages),
         undefined,
         "Couldn't rename the stage, please try again.",
@@ -1291,7 +1308,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         })
       })
       persist(
-        () => reorderStageAction(stageId, direction),
+        async () => {
+          const result = await reorderStageAction(stageId, direction)
+          if (!result.ok) throw new FriendlyActionError('Only admins can reorder pipeline stages.')
+        },
         () => setStages(prevStages),
         undefined,
         "Couldn't reorder the stage, please try again.",
@@ -1307,7 +1327,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     async (stageId: string): Promise<{ ok: true } | { ok: false; error: string }> => {
       beginMutation()
       try {
-        await deleteStageAction(stageId)
+        const result = await deleteStageAction(stageId)
+        if (!result.ok) return { ok: false, error: 'Only admins can delete pipeline stages.' }
         setStages((prev) => prev.filter((s) => s.id !== stageId))
         return { ok: true }
       } catch (err) {
@@ -1610,15 +1631,17 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       }
       setPayments((prev) => [payment, ...prev])
       persist(
-        () =>
-          createPaymentAction({
+        async () => {
+          const result = await createPaymentAction({
             id,
             dealId: input.dealId,
             amount: input.amount,
             label: input.label,
             dueDate: input.dueDate,
             note: input.note,
-          }),
+          })
+          if (!result.ok) throw new FriendlyActionError('Only admins can add payments.')
+        },
         () => setPayments((prev) => prev.filter((p) => p.id !== id)),
         undefined,
         "Couldn't save the payment, please try again.",
@@ -1649,14 +1672,16 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       setPayments((prev) => prev.map((p) => (p.id === paymentId ? next : p)))
 
       persist(
-        () =>
-          updatePaymentAction({
+        async () => {
+          const result = await updatePaymentAction({
             id: paymentId,
             amount: input.amount,
             label: input.label,
             dueDate: input.dueDate,
             note: input.note,
-          }),
+          })
+          if (!result.ok) throw new FriendlyActionError('Only admins can edit payments.')
+        },
         () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
         undefined,
         "Couldn't save the changes, please try again.",
@@ -1675,6 +1700,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
           dealId,
           parts: parts.map((p, i) => ({ id: ids[i]!, percent: p.percent, label: p.label, dueDate: p.dueDate })),
         })
+        if (!result.ok) throw new Error('Only admins can split payments into installments.')
         const created: Payment[] = parts.map((p, i) => ({
           id: ids[i]!,
           dealId,
@@ -1702,7 +1728,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       setPayments((prev) => prev.map((p) => (p.id === paymentId ? { ...p, status: 'paid', paidAt: now } : p)))
 
       persist(
-        () => markPaymentPaidAction(paymentId),
+        async () => {
+          const result = await markPaymentPaidAction(paymentId)
+          if (!result.ok) throw new FriendlyActionError('Only admins can mark payments as paid.')
+        },
         () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
         undefined,
         "Couldn't mark the payment as paid, please try again.",
@@ -1720,7 +1749,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       setPayments((prev) => prev.map((p) => (p.id === paymentId ? { ...p, status: 'cancelled' } : p)))
 
       persist(
-        () => cancelPaymentAction(paymentId),
+        async () => {
+          const result = await cancelPaymentAction(paymentId)
+          if (!result.ok) throw new FriendlyActionError('Only admins can cancel payments.')
+        },
         () => setPayments((prev) => prev.map((p) => (p.id === paymentId ? payment : p))),
         undefined,
         "Couldn't cancel the payment, please try again.",
@@ -1737,7 +1769,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       beginMutation()
       try {
         const result = await deletePaymentAction(paymentId)
-        if (result.ok) setPayments((prev) => prev.filter((p) => p.id !== paymentId))
+        if (!result.ok) return { ok: false, error: result.error === 'forbidden' ? 'Only admins can delete payments.' : result.error }
+        setPayments((prev) => prev.filter((p) => p.id !== paymentId))
         return result
       } finally {
         endMutation()

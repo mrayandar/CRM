@@ -9,12 +9,25 @@
  * fires after a deal is confirmed moved into a Won stage (src/store/crm.tsx's moveDeal/
  * updateDeal/addDeal) — without worrying it'll fire on a rolled-back change.
  */
+/**
+ * Thrown deliberately, client-side, from inside a `run` callback when a Server Action returned a
+ * typed `{ ok: false, error: 'forbidden' }` result instead of throwing (see
+ * `lib/actions/shared.ts`'s `tryAdminSession`) — `message` is a specific, already-safe-to-show
+ * string ("Only admins can ..."), never a raw Server Action error. `persist()` shows this message
+ * verbatim; every other thrown error still gets the caller's own fixed, generic `failureMessage`.
+ * The distinction matters because a *different*, unexpected throw from `run` could be a
+ * production-redacted Next.js message ("An error occurred in the Server Components render") —
+ * never safe to show as-is — so only this one recognized, deliberately-constructed error type is
+ * trusted to speak for itself.
+ */
+export class FriendlyActionError extends Error {}
+
 export interface RunPersistArgs {
   /** Null means "nothing to persist" (mirrors persist()'s own convention for a standalone activity log) — `onSuccess` still runs. */
   run: (() => Promise<unknown>) | null
   rollback: () => void
   onSuccess?: () => void
-  onFailure?: () => void
+  onFailure?: (err: unknown) => void
 }
 
 /** Returns true if `run` succeeded (or was null), false if it threw and rollback ran. */
@@ -22,9 +35,9 @@ export async function runPersist({ run, rollback, onSuccess, onFailure }: RunPer
   if (run) {
     try {
       await run()
-    } catch {
+    } catch (err) {
       rollback()
-      onFailure?.()
+      onFailure?.(err)
       return false
     }
   }

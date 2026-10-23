@@ -21,6 +21,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { requirePaymentWriteAccess } from '@lib/auth'
+import { tryAdminSession, FORBIDDEN, type ForbiddenResult } from '@lib/actions/shared'
 import { getDealById } from '@lib/data/deals'
 import {
   getPaymentById,
@@ -67,8 +68,10 @@ export async function createPaymentAction(input: {
   label: PaymentLabel
   dueDate?: string
   note?: string
-}) {
-  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+}): Promise<{ ok: true; id: string } | ForbiddenResult> {
+  const session = await tryAdminSession(requirePaymentWriteAccess)
+  if (!session) return FORBIDDEN
+  const { orgId, ownerId: actorId } = session
   assertClientId(input.id)
   assertValidAmount(input.amount)
   assertValidLabel(input.label)
@@ -89,7 +92,7 @@ export async function createPaymentAction(input: {
     deal.name,
   )
   revalidatePath('/', 'layout')
-  return { id: payment.id }
+  return { ok: true, id: payment.id }
 }
 
 export async function updatePaymentAction(input: {
@@ -98,8 +101,10 @@ export async function updatePaymentAction(input: {
   label: PaymentLabel
   dueDate?: string
   note?: string
-}) {
-  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+}): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requirePaymentWriteAccess)
+  if (!session) return FORBIDDEN
+  const { orgId, ownerId: actorId } = session
   assertValidAmount(input.amount)
   assertValidLabel(input.label)
 
@@ -114,6 +119,7 @@ export async function updatePaymentAction(input: {
 
   await dbUpdatePayment(orgId, input.id, { amount: input.amount, label: input.label, dueDate, note }, actorId, deal.name)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 /**
@@ -125,8 +131,10 @@ export async function updatePaymentAction(input: {
 export async function splitPaymentAction(input: {
   dealId: string
   parts: Array<{ id: string; percent: number; label: PaymentLabel; dueDate?: string }>
-}) {
-  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+}): Promise<{ ok: true; payments: Array<{ id: string; amount: number }> } | ForbiddenResult> {
+  const session = await tryAdminSession(requirePaymentWriteAccess)
+  if (!session) return FORBIDDEN
+  const { orgId, ownerId: actorId } = session
 
   if (!Array.isArray(input.parts) || input.parts.length < 2) {
     throw new Error('Need at least two installments to split a payment')
@@ -158,11 +166,13 @@ export async function splitPaymentAction(input: {
 
   const created = await dbCreatePaymentsSplit(orgId, deal.id, rows, actorId, deal.name)
   revalidatePath('/', 'layout')
-  return { payments: created.map((p) => ({ id: p.id, amount: p.amount })) }
+  return { ok: true, payments: created.map((p) => ({ id: p.id, amount: p.amount })) }
 }
 
-export async function markPaymentPaidAction(paymentId: string) {
-  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+export async function markPaymentPaidAction(paymentId: string): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requirePaymentWriteAccess)
+  if (!session) return FORBIDDEN
+  const { orgId, ownerId: actorId } = session
   const payment = await getPaymentById(orgId, paymentId)
   if (!payment) throw new Error('Payment not found')
   const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)
@@ -170,10 +180,13 @@ export async function markPaymentPaidAction(paymentId: string) {
 
   await dbMarkPaymentPaid(orgId, paymentId, actorId, deal.name)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
-export async function cancelPaymentAction(paymentId: string) {
-  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+export async function cancelPaymentAction(paymentId: string): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requirePaymentWriteAccess)
+  if (!session) return FORBIDDEN
+  const { orgId, ownerId: actorId } = session
   const payment = await getPaymentById(orgId, paymentId)
   if (!payment) throw new Error('Payment not found')
   const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)
@@ -181,13 +194,16 @@ export async function cancelPaymentAction(paymentId: string) {
 
   await dbCancelPayment(orgId, paymentId, actorId, deal.name)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 /** Blocked server-side (dbDeletePayment throws) while the payment is `paid` — the caller must
  *  Cancel it instead. Returned, not thrown-and-caught-generically, because the client needs this
  *  specific message, same {ok, error} shape as deleteCompanyAction/deleteStageAction. */
 export async function deletePaymentAction(paymentId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
+  const session = await tryAdminSession(requirePaymentWriteAccess)
+  if (!session) return { ok: false, error: 'forbidden' }
+  const { orgId, ownerId: actorId } = session
   const payment = await getPaymentById(orgId, paymentId)
   if (!payment) throw new Error('Payment not found')
   const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)

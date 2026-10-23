@@ -53,6 +53,13 @@ import type { Scope } from '@lib/scope'
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 
+/** Narrows an admin-only action's typed result to its `ok: true` branch — every such action now
+ *  returns `{ ok: false, error: 'forbidden' }` instead of throwing (see lib/actions/shared.ts),
+ *  so a test that expects success must assert that explicitly rather than just awaiting. */
+function expectOk<T extends { ok: boolean }>(result: T): asserts result is T & { ok: true } {
+  if (!result.ok) throw new Error(`expected { ok: true }, got ${JSON.stringify(result)}`)
+}
+
 interface Fixture {
   org: Awaited<ReturnType<typeof prisma.organization.create>>
   owner: Awaited<ReturnType<typeof prisma.owner.create>>
@@ -957,7 +964,8 @@ describe('org currency: tenant isolation and admin-only enforcement', () => {
     })
     mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
 
-    await expect(actions.updateCurrencyAction({ currency: 'PKR' })).rejects.toThrow(/Admins only/)
+    const result = await actions.updateCurrencyAction({ currency: 'PKR' })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
 
     const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
     expect(org?.currency).toBe('USD') // rejected before any write
@@ -994,7 +1002,8 @@ describe('updateQuotaAction: org-wide setting, admin-only (found during a role-r
     })
     mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
 
-    await expect(actions.updateQuotaAction({ quarterlyQuota: 999_000 })).rejects.toThrow(/Admins only/)
+    const result = await actions.updateQuotaAction({ quarterlyQuota: 999_000 })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
 
     const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
     expect(org?.quarterlyQuota).toBeNull() // rejected before any write
@@ -1018,9 +1027,8 @@ describe('inviteMemberAction: admin-only (found during a role-rule audit — pre
     const createInvitation = vi.fn()
     mockClerkClient.mockResolvedValue({ organizations: { createOrganizationInvitation: createInvitation } })
 
-    await expect(
-      actions.inviteMemberAction({ emailAddress: 'new-admin@example.com', role: 'org:admin' }),
-    ).rejects.toThrow(/Admins only/)
+    const result = await actions.inviteMemberAction({ emailAddress: 'new-admin@example.com', role: 'org:admin' })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
     expect(createInvitation).not.toHaveBeenCalled()
 
     await prisma.owner.delete({ where: { id: member.id } })
@@ -1031,12 +1039,14 @@ describe('inviteMemberAction: admin-only (found during a role-rule audit — pre
     const createInvitation = vi.fn().mockResolvedValue({})
     mockClerkClient.mockResolvedValue({ organizations: { createOrganizationInvitation: createInvitation } })
 
-    await actions.inviteMemberAction({ emailAddress: 'new-admin@example.com', role: 'org:admin' })
+    const first = await actions.inviteMemberAction({ emailAddress: 'new-admin@example.com', role: 'org:admin' })
+    expectOk(first)
     expect(createInvitation).toHaveBeenCalledWith(
       expect.objectContaining({ organizationId: B.org.clerkOrgId, emailAddress: 'new-admin@example.com', role: 'org:admin' }),
     )
 
-    await actions.inviteMemberAction({ emailAddress: 'new-member@example.com', role: 'org:member' })
+    const second = await actions.inviteMemberAction({ emailAddress: 'new-member@example.com', role: 'org:member' })
+    expectOk(second)
     expect(createInvitation).toHaveBeenCalledWith(
       expect.objectContaining({ organizationId: B.org.clerkOrgId, emailAddress: 'new-member@example.com', role: 'org:member' }),
     )
@@ -1076,7 +1086,8 @@ describe('Role-rule audit: actions confirmed Member-accessible by design (pinned
     const renamed = await prisma.company.findUnique({ where: { id: created.id } })
     expect(renamed?.name).toBe(`Member Co Renamed ${RUN}`)
 
-    await expect(actions.deleteCompanyAction(created.id)).rejects.toThrow(/Admins only/)
+    const deleteResult = await actions.deleteCompanyAction(created.id)
+    expect(deleteResult).toEqual({ ok: false, error: 'forbidden' })
     expect(await prisma.company.findUnique({ where: { id: created.id } })).not.toBeNull()
 
     // Clean up as the real admin — the Member-level delete above was correctly rejected.
@@ -1087,12 +1098,12 @@ describe('Role-rule audit: actions confirmed Member-accessible by design (pinned
 
   it('a Member cannot create/rename/reorder/delete a pipeline stage — structural, org-wide, admin-only (Stage 1c fix; was Member-accessible before)', async () => {
     const stageId = randomUUID()
-    await expect(actions.createStageAction({ id: stageId, label: `Member Stage ${RUN}` })).rejects.toThrow(/Admins only/)
+    expect(await actions.createStageAction({ id: stageId, label: `Member Stage ${RUN}` })).toEqual({ ok: false, error: 'forbidden' })
     expect(await prisma.pipelineStage.findUnique({ where: { id: stageId } })).toBeNull()
 
-    await expect(actions.renameStageAction(B.stage.id, 'Hijacked by Member')).rejects.toThrow(/Admins only/)
-    await expect(actions.reorderStageAction(B.stage.id, 'up')).rejects.toThrow(/Admins only/)
-    await expect(actions.deleteStageAction(B.stage.id)).rejects.toThrow(/Admins only/)
+    expect(await actions.renameStageAction(B.stage.id, 'Hijacked by Member')).toEqual({ ok: false, error: 'forbidden' })
+    expect(await actions.reorderStageAction(B.stage.id, 'up')).toEqual({ ok: false, error: 'forbidden' })
+    expect(await actions.deleteStageAction(B.stage.id)).toEqual({ ok: false, error: 'forbidden' })
     const stageUntouched = await prisma.pipelineStage.findUniqueOrThrow({ where: { id: B.stage.id } })
     expect(stageUntouched.label).not.toBe('Hijacked by Member')
   })
@@ -1162,7 +1173,8 @@ describe('org timezone: the Stage 0 follow-up fix — timezoneConfigured only ev
     })
     mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
 
-    await expect(actions.updateOrgTimezoneAction({ timezone: 'Asia/Karachi' })).rejects.toThrow(/Admins only/)
+    const result = await actions.updateOrgTimezoneAction({ timezone: 'Asia/Karachi' })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
 
     const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
     expect(org?.timezone).toBe('UTC')
@@ -1380,6 +1392,7 @@ describe('requireLiveAdminAccess / updateRepVisibilityAction: Stage 1c switch, l
     loginAs(A)
     mockLiveRole(A, 'org:admin')
     const result = await actions.updateRepVisibilityAction('OWN')
+    expectOk(result)
     expect(result.repVisibility).toBe('OWN')
 
     const org = await prisma.organization.findUniqueOrThrow({ where: { id: A.org.id } })
@@ -1412,7 +1425,8 @@ describe('requireLiveAdminAccess / updateRepVisibilityAction: Stage 1c switch, l
     })
     mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
 
-    await expect(actions.updateRepVisibilityAction('OWN')).rejects.toThrow(/Admins only/)
+    const result = await actions.updateRepVisibilityAction('OWN')
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
     const org = await prisma.organization.findUniqueOrThrow({ where: { id: B.org.id } })
     expect(org.repVisibility).toBe('ALL')
 
@@ -1428,7 +1442,8 @@ describe('requireLiveAdminAccess / updateRepVisibilityAction: Stage 1c switch, l
     expect(stillAdminInOurDb?.role).toBe('Admin') // DB is stale on purpose for this test
 
     mockLiveRole(A, 'org:member') // demoted, live
-    await expect(actions.updateRepVisibilityAction('ALL')).rejects.toThrow(/Forbidden/)
+    const result = await actions.updateRepVisibilityAction('ALL')
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
 
     const org = await prisma.organization.findUniqueOrThrow({ where: { id: A.org.id } })
     expect(org.repVisibility).toBe('OWN') // never flipped back
@@ -1496,34 +1511,60 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
     await expect(requirePaymentAccess()).rejects.toThrow(/Admins only/)
   })
 
-  it('createPaymentAction rejects', async () => {
-    await expect(
-      paymentActions.createPaymentAction({
-        id: randomUUID(),
-        dealId: B.deal.id,
-        amount: 100,
-        label: 'Other',
+  it('createPaymentAction returns a friendly { ok: false } result, not a throw, and writes nothing', async () => {
+    const before = await prisma.payment.count({ where: { orgId: B.org.id } })
+    const result = await paymentActions.createPaymentAction({
+      id: randomUUID(),
+      dealId: B.deal.id,
+      amount: 100,
+      label: 'Other',
       dueDate: new Date().toISOString(),
-      }),
-    ).rejects.toThrow(/Admins only/)
+    })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
+    expect(await prisma.payment.count({ where: { orgId: B.org.id } })).toBe(before)
   })
 
-  it('updatePaymentAction rejects', async () => {
-    await expect(
-      paymentActions.updatePaymentAction({ id: B.payment.id, amount: 200, label: 'Other', dueDate: new Date().toISOString() }),
-    ).rejects.toThrow(/Admins only/)
+  it('updatePaymentAction returns a friendly { ok: false } result, not a throw, and writes nothing', async () => {
+    const before = await prisma.payment.findUniqueOrThrow({ where: { id: B.payment.id } })
+    const result = await paymentActions.updatePaymentAction({
+      id: B.payment.id,
+      amount: 200,
+      label: 'Other',
+      dueDate: new Date().toISOString(),
+    })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: B.payment.id } })).amount).toBe(before.amount)
   })
 
-  it('markPaymentPaidAction rejects', async () => {
-    await expect(paymentActions.markPaymentPaidAction(B.payment.id)).rejects.toThrow(/Admins only/)
+  it('splitPaymentAction returns a friendly { ok: false } result, not a throw, and writes nothing', async () => {
+    const before = await prisma.payment.count({ where: { orgId: B.org.id } })
+    const result = await paymentActions.splitPaymentAction({
+      dealId: B.deal.id,
+      parts: [
+        { id: randomUUID(), percent: 50, label: 'Advance' },
+        { id: randomUUID(), percent: 50, label: 'Final' },
+      ],
+    })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
+    expect(await prisma.payment.count({ where: { orgId: B.org.id } })).toBe(before)
   })
 
-  it('cancelPaymentAction rejects', async () => {
-    await expect(paymentActions.cancelPaymentAction(B.payment.id)).rejects.toThrow(/Admins only/)
+  it('markPaymentPaidAction returns a friendly { ok: false } result, not a throw, and writes nothing', async () => {
+    const result = await paymentActions.markPaymentPaidAction(B.payment.id)
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: B.payment.id } })).status).not.toBe('paid')
   })
 
-  it('deletePaymentAction rejects (throws, rather than returning {ok:false} — the role gate runs before the pending-only check)', async () => {
-    await expect(paymentActions.deletePaymentAction(B.payment.id)).rejects.toThrow(/Admins only/)
+  it('cancelPaymentAction returns a friendly { ok: false } result, not a throw, and writes nothing', async () => {
+    const result = await paymentActions.cancelPaymentAction(B.payment.id)
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: B.payment.id } })).status).not.toBe('cancelled')
+  })
+
+  it('deletePaymentAction returns a friendly { ok: false, error: \'forbidden\' } result — the role gate runs before the pending-only check, but as a typed result either way, never a throw', async () => {
+    const result = await paymentActions.deletePaymentAction(B.payment.id)
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
+    expect(await prisma.payment.findUnique({ where: { id: B.payment.id } })).not.toBeNull()
   })
 
   it("never received any Payment rows or payment-kind activities in this member's loaded data", async () => {
@@ -1544,6 +1585,7 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
       label: 'Other',
       dueDate: new Date().toISOString(),
     })
+    expectOk(created)
 
     const privileged = await loadCrmData(scopeB(), B.owner.id, true)
     const dealPrivileged = privileged.deals.find((d) => d.id === B.deal.id)
@@ -1578,6 +1620,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       label: 'Other',
       dueDate: new Date().toISOString(),
     })
+    expectOk(created)
 
     await paymentActions.markPaymentPaidAction(created.id)
     const paidRow = await getPaymentById(A.org.id, created.id)
@@ -1602,6 +1645,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       label: 'Other',
       dueDate: new Date().toISOString(),
     })
+    expectOk(created)
     const result = await paymentActions.deletePaymentAction(created.id)
     expect(result).toEqual({ ok: true })
     expect(await getPaymentById(A.org.id, created.id)).toBeNull()
@@ -1615,6 +1659,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       label: 'Other',
       dueDate: new Date().toISOString(),
     })
+    expectOk(created)
     await paymentActions.cancelPaymentAction(created.id)
     const cancelledRow = await getPaymentById(A.org.id, created.id)
     expect(cancelledRow?.status).toBe('cancelled')
@@ -1633,6 +1678,7 @@ describe('lib/actions/payments: a payment that was ever paid can never be delete
       label: 'Other',
       dueDate: new Date().toISOString(),
     })
+    expectOk(created)
     await paymentActions.markPaymentPaidAction(created.id)
     await paymentActions.cancelPaymentAction(created.id)
 
@@ -1662,6 +1708,7 @@ describe('activity leak: payment-kind activities and Payment rows never reach a 
       label: 'Other',
       dueDate: new Date().toISOString(),
     })
+    expectOk(created)
     paymentId = created.id
   })
   afterAll(async () => {
@@ -1722,15 +1769,14 @@ describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
     })
     mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' })
 
-    await expect(
-      paymentActions.splitPaymentAction({
-        dealId: B.deal.id,
-        parts: [
-          { id: randomUUID(), percent: 50, label: 'Advance' },
-          { id: randomUUID(), percent: 50, label: 'Final' },
-        ],
-      }),
-    ).rejects.toThrow(/Admins only/)
+    const result = await paymentActions.splitPaymentAction({
+      dealId: B.deal.id,
+      parts: [
+        { id: randomUUID(), percent: 50, label: 'Advance' },
+        { id: randomUUID(), percent: 50, label: 'Final' },
+      ],
+    })
+    expect(result).toEqual({ ok: false, error: 'forbidden' })
 
     await prisma.owner.delete({ where: { id: member.id } })
   })
@@ -1787,6 +1833,7 @@ describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
         { id: ids[2]!, percent: 30, label: 'Final' },
       ],
     })
+    expectOk(result)
     expect(result.payments).toHaveLength(3)
     const total = result.payments.reduce((s, p) => s + p.amount, 0)
     expect(total).toBe(deal.value)
@@ -1870,6 +1917,7 @@ describe('splitPaymentAction: refuses a second split (or any split) on a deal th
         { id: randomUUID(), percent: 50, label: 'Final' },
       ],
     })
+    expectOk(first)
     expect(first.payments).toHaveLength(2)
 
     await expect(

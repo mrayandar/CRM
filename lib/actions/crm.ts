@@ -5,6 +5,7 @@ import { headers } from 'next/headers'
 import { Prisma } from '@prisma/client'
 import { clerkClient } from '@clerk/nextjs/server'
 import { requireAuth, requireAdmin, requireLiveAdminAccess } from '@lib/auth'
+import { tryAdminSession, FORBIDDEN, type ForbiddenResult } from '@lib/actions/shared'
 import type { Scope } from '@lib/scope'
 import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone, updateRepVisibility } from '@lib/data/organizations'
 import { isValidIanaTimezone } from '@lib/timezones'
@@ -180,10 +181,12 @@ export async function updateCompanyAction(input: {
  * reassigning first), unlike editing one's fields, which stays open to any Member. Creating one
  * also stays open to any Member — see createCompanyAction.
  */
-export async function deleteCompanyAction(companyId: string) {
-  const { orgId } = await requireAdmin()
-  await dbDeleteCompany(orgId, companyId)
+export async function deleteCompanyAction(companyId: string): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
+  await dbDeleteCompany(session.orgId, companyId)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 const ORG_ROLES = ['org:admin', 'org:member'] as const
@@ -204,8 +207,12 @@ const ORG_ROLES = ['org:admin', 'org:member'] as const
  * client-chosen value (an Admin may legitimately invite either role), but only an Admin can reach
  * this action at all now.
  */
-export async function inviteMemberAction(input: { emailAddress: string; role: 'org:admin' | 'org:member' }) {
-  const { clerkUserId: userId, clerkOrgId } = await requireAdmin()
+export async function inviteMemberAction(
+  input: { emailAddress: string; role: 'org:admin' | 'org:member' },
+): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
+  const { clerkUserId: userId, clerkOrgId } = session
 
   const email = input.emailAddress.trim()
   if (!email || email.length > 320 || !EMAIL_RE.test(email)) throw new Error('Invalid email')
@@ -224,6 +231,7 @@ export async function inviteMemberAction(input: { emailAddress: string; role: 'o
     redirectUrl: `${protocol}://${host}/sign-up`,
   })
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 export async function moveDealAction(dealId: string, stageId: string) {
@@ -868,13 +876,15 @@ export async function updateProfileAction(input: { name: string; timezone: strin
   revalidatePath('/', 'layout')
 }
 
-export async function updateOrgTimezoneAction(input: { timezone: string }) {
-  const { orgId } = await requireAdmin()
+export async function updateOrgTimezoneAction(input: { timezone: string }): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
   const timezone = input.timezone.trim()
   if (!isValidIanaTimezone(timezone)) throw new Error('Invalid time zone')
 
-  await updateOrgTimezone(orgId, timezone)
+  await updateOrgTimezone(session.orgId, timezone)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 const REP_VISIBILITIES: RepVisibility[] = ['ALL', 'OWN']
@@ -894,13 +904,16 @@ const REP_VISIBILITIES: RepVisibility[] = ['ALL', 'OWN']
  * `repVisibility` changes in the data it receives (see that component), so there's nothing extra
  * to invalidate here.
  */
-export async function updateRepVisibilityAction(repVisibility: RepVisibility) {
-  const session = await requireLiveAdminAccess()
+export async function updateRepVisibilityAction(
+  repVisibility: RepVisibility,
+): Promise<{ ok: true; repVisibility: RepVisibility; changedAt: string } | ForbiddenResult> {
+  const session = await tryAdminSession(requireLiveAdminAccess)
+  if (!session) return FORBIDDEN
   if (!REP_VISIBILITIES.includes(repVisibility)) throw new Error('Invalid visibility setting')
 
   const updated = await updateRepVisibility(session.orgId, repVisibility, session.ownerId)
   revalidatePath('/', 'layout')
-  return { repVisibility: updated.repVisibility, changedAt: updated.repVisibilityChangedAt!.toISOString() }
+  return { ok: true, repVisibility: updated.repVisibility, changedAt: updated.repVisibilityChangedAt!.toISOString() }
 }
 
 /**
@@ -910,16 +923,18 @@ export async function updateRepVisibilityAction(repVisibility: RepVisibility) {
  * admin-gated org-level setting. The quota is exactly that: org-wide, not per-rep, same category
  * as currency and timezone.
  */
-export async function updateQuotaAction(input: { quarterlyQuota: number | null }) {
-  const { orgId } = await requireAdmin()
+export async function updateQuotaAction(input: { quarterlyQuota: number | null }): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
 
   const quota = input.quarterlyQuota
   if (quota !== null && (!Number.isInteger(quota) || quota < 0 || quota > 1_000_000_000)) {
     throw new Error('Invalid quota')
   }
 
-  await updateOrgQuota(orgId, quota)
+  await updateOrgQuota(session.orgId, quota)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 /**
@@ -927,15 +942,17 @@ export async function updateQuotaAction(input: { quarterlyQuota: number | null }
  * role). `orgId` comes from `requireAuth()`'s own resolved org, same as updateQuotaAction — there's
  * no separate id to tenant-check, the org row itself is the boundary.
  */
-export async function updateCurrencyAction(input: { currency: string }) {
-  const { orgId } = await requireAdmin()
+export async function updateCurrencyAction(input: { currency: string }): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
 
   if (!CURRENCY_CODES.includes(input.currency as (typeof CURRENCY_CODES)[number])) {
     throw new Error('Unsupported currency')
   }
 
-  await updateOrgCurrency(orgId, input.currency)
+  await updateOrgCurrency(session.orgId, input.currency)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 /**
@@ -946,35 +963,43 @@ export async function updateCurrencyAction(input: { currency: string }) {
  * unlike moving an individual deal between existing stages (moveDealAction), which stays open to
  * any Member.
  */
-export async function createStageAction(input: { id: string; label: string }) {
-  const { orgId } = await requireAdmin()
+export async function createStageAction(input: { id: string; label: string }): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
   assertClientId(input.id)
   const label = input.label.trim()
   if (!label || label.length > 100) throw new Error('Stage name is required')
-  await guardAgainstIdCollision(() => dbCreateStage(orgId, { id: input.id, label }))
+  await guardAgainstIdCollision(() => dbCreateStage(session.orgId, { id: input.id, label }))
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
-export async function renameStageAction(stageId: string, label: string) {
-  const { orgId } = await requireAdmin()
+export async function renameStageAction(stageId: string, label: string): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
   const trimmed = label.trim()
   if (!trimmed || trimmed.length > 100) throw new Error('Stage name is required')
   // dbRenameStage does its own findFirst({id, orgId}) check — same tenant-check convention as
   // every other update in lib/data/*.ts.
-  await dbRenameStage(orgId, stageId, trimmed)
+  await dbRenameStage(session.orgId, stageId, trimmed)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
-export async function reorderStageAction(stageId: string, direction: 'up' | 'down') {
-  const { orgId } = await requireAdmin()
-  await dbReorderStage(orgId, stageId, direction)
+export async function reorderStageAction(stageId: string, direction: 'up' | 'down'): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
+  await dbReorderStage(session.orgId, stageId, direction)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
-export async function deleteStageAction(stageId: string) {
-  const { orgId } = await requireAdmin()
-  await dbDeleteStage(orgId, stageId)
+export async function deleteStageAction(stageId: string): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
+  await dbDeleteStage(session.orgId, stageId)
   revalidatePath('/', 'layout')
+  return { ok: true }
 }
 
 export async function addNoteAction(
