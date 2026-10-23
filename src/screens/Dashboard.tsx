@@ -53,14 +53,16 @@ export function Dashboard() {
     stageById,
     quarterlyQuota,
     orgCurrency,
-    orgTimezone,
+    effectiveOrgTimezone,
     payments,
     canAccessPayments,
   } = useCrm()
   // Personal day boundaries (tasks due today/overdue) use the viewer's own timezone, falling
   // back to the browser's resolved zone while it's unset (prompted for in Settings, never
   // silently assumed to be UTC). Every other date-boundary rule here is an org-wide business
-  // period and uses orgTimezone instead — see lib/timePeriods.ts.
+  // period and uses effectiveOrgTimezone instead — the org's configured zone once an admin has
+  // set one, otherwise this same viewer fallback (never a silent, un-chosen "UTC") — see
+  // resolveOrgTimezone in lib/timezones.ts.
   const viewerTimezone = currentUser.timezone ?? resolveBrowserTimezone()
   const [newDealOpen, setNewDealOpen] = useState(false)
   const [taskScope, setTaskScope] = useState<'mine' | 'team'>('mine')
@@ -75,15 +77,15 @@ export function Dashboard() {
   const weightedTotal = sum(openDeals.map(weightedValue))
 
   const wonDeals = deals.filter((d) => stageById(d.stageId).isWon)
-  const wonThisMonth = wonDeals.filter((d) => isThisMonth(d.closeDate, orgTimezone))
-  const wonLastMonth = wonDeals.filter((d) => isMonthsAgo(d.closeDate, 1, orgTimezone))
+  const wonThisMonth = wonDeals.filter((d) => isThisMonth(d.closeDate, effectiveOrgTimezone))
+  const wonLastMonth = wonDeals.filter((d) => isMonthsAgo(d.closeDate, 1, effectiveOrgTimezone))
   const wonThisMonthValue = sum(wonThisMonth.map((d) => d.value))
   const wonDelta = momDelta(wonThisMonthValue, sum(wonLastMonth.map((d) => d.value)))
 
   // The quota (Settings -> Workspace) is explicitly quarterly, so it's compared against
   // quarter-to-date revenue, not the month-to-date figure the tile's headline value shows.
   const wonThisQuarterValue = sum(
-    wonDeals.filter((d) => isInCurrentQuarter(d.closeDate, orgTimezone)).map((d) => d.value),
+    wonDeals.filter((d) => isInCurrentQuarter(d.closeDate, effectiveOrgTimezone)).map((d) => d.value),
   )
   const quotaProgress = quarterlyQuota ? Math.min((wonThisQuarterValue / quarterlyQuota) * 100, 999) : null
 
@@ -95,8 +97,8 @@ export function Dashboard() {
 
   // Real month-over-month conversion trend — only shown when both months actually had closed
   // deals to compute a rate from; otherwise there's nothing honest to compare.
-  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate, orgTimezone))
-  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1, orgTimezone))
+  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate, effectiveOrgTimezone))
+  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1, effectiveOrgTimezone))
   const conversionThisMonth = closedThisMonth.length
     ? (closedThisMonth.filter((d) => stageById(d.stageId).isWon).length / closedThisMonth.length) * 100
     : null
@@ -127,7 +129,7 @@ export function Dashboard() {
   const untouchedLeads = leads.filter((l) => l.status === 'new')
 
   const closingSoon = sortBy(
-    openDeals.filter((d) => isClosingSoon(d, orgTimezone)),
+    openDeals.filter((d) => isClosingSoon(d, effectiveOrgTimezone)),
     (d) => new Date(d.closeDate).getTime(),
   ).slice(0, 5)
 
@@ -137,7 +139,7 @@ export function Dashboard() {
   })
   const maxStageValue = Math.max(...stageRows.map((r) => r.value), 1)
 
-  const monthlyRevenue = monthlyWonRevenue(wonDeals, orgTimezone, 6)
+  const monthlyRevenue = monthlyWonRevenue(wonDeals, effectiveOrgTimezone, 6)
   const hasRevenueHistory = monthlyRevenue.some((m) => m.value > 0)
   const chartData = monthlyRevenue.map((m, i) => ({
     label: m.month,
@@ -444,7 +446,7 @@ export function Dashboard() {
                 queries Payment rows for them), so this renders nothing and has nothing to render
                 from even if the gate were somehow bypassed client-side. */}
             {canAccessPayments && (
-              <PaymentsSummaryCard payments={payments} orgCurrency={orgCurrency} orgTimezone={orgTimezone} />
+              <PaymentsSummaryCard payments={payments} orgCurrency={orgCurrency} orgTimezone={effectiveOrgTimezone} />
             )}
 
             <Card>

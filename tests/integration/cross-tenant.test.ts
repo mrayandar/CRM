@@ -963,6 +963,60 @@ describe('org currency: tenant isolation and admin-only enforcement', () => {
   })
 })
 
+describe('org timezone: the Stage 0 follow-up fix — timezoneConfigured only ever becomes true via a real admin save', () => {
+  it('a brand-new org reads as "UTC, not configured" — never a deliberate choice', async () => {
+    const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(org?.timezone).toBe('UTC')
+    expect(org?.timezoneConfigured).toBe(false)
+  })
+
+  it('updateOrgTimezoneAction sets both the zone and timezoneConfigured, admin-only, scoped to the caller\'s own org', async () => {
+    loginAs(A) // A.owner is an Admin
+    const beforeB = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(beforeB?.timezoneConfigured).toBe(false)
+
+    await actions.updateOrgTimezoneAction({ timezone: 'Asia/Karachi' })
+
+    const afterA = await prisma.organization.findUnique({ where: { id: A.org.id } })
+    const afterB = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(afterA?.timezone).toBe('Asia/Karachi')
+    expect(afterA?.timezoneConfigured).toBe(true)
+    expect(afterB?.timezone).toBe('UTC') // untouched
+    expect(afterB?.timezoneConfigured).toBe(false)
+
+    // Revert so this fixture org doesn't confuse any other test in this file.
+    await prisma.organization.update({ where: { id: A.org.id }, data: { timezone: 'UTC', timezoneConfigured: false } })
+  })
+
+  it('updateOrgTimezoneAction rejects a non-admin (Member) caller, and never flips the flag', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-tz-member-${RUN}`,
+        name: 'TZ Member Owner',
+        email: `tz-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+
+    await expect(actions.updateOrgTimezoneAction({ timezone: 'Asia/Karachi' })).rejects.toThrow(/Admins only/)
+
+    const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(org?.timezone).toBe('UTC')
+    expect(org?.timezoneConfigured).toBe(false)
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it('updateOrgTimezoneAction rejects an invalid IANA id even for an admin', async () => {
+    loginAs(B)
+    await expect(actions.updateOrgTimezoneAction({ timezone: 'Not/AZone' })).rejects.toThrow(/Invalid time zone/)
+    const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(org?.timezoneConfigured).toBe(false)
+  })
+})
+
 describe('requirePaymentAccess: stricter than requireAdmin — built for payments, not currency', () => {
   it('allows an active Admin through', async () => {
     loginAs(A) // A.owner is Admin + active by construction (makeFixture)

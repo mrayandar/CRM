@@ -28,6 +28,7 @@ import type {
   Task,
 } from '@/data/types'
 import { initialsOf, shouldPromptWonPaymentSetup } from '@/lib/utils'
+import { resolveBrowserTimezone, resolveOrgTimezone } from '@lib/timezones'
 import { runPersist } from '@/store/persistRun'
 import { ToastViewport, type ToastItem } from '@/components/ui/Toast'
 import {
@@ -235,10 +236,18 @@ interface CrmState {
   /** Org-level display currency (ISO 4217, e.g. "USD"), set from Settings -> Workspace, admin-only.
    *  Relabels every amount in the app — never converts stored values. */
   orgCurrency: string
-  /** Real IANA zone id, set from Settings -> Workspace, admin-only — org-wide business periods
-   *  (won this month, quarter-to-date quota, monthly charts, MoM, closing in 30 days) are
-   *  computed in this zone. See lib/timePeriods.ts. */
+  /** Real IANA zone id, set from Settings -> Workspace, admin-only — the raw stored value.
+   *  Callers computing an org-wide business period should use `effectiveOrgTimezone` instead,
+   *  not this directly — this is only trustworthy once `orgTimezoneConfigured` is true. */
   orgTimezone: string
+  /** False until an admin has actually saved a workspace time zone. See
+   *  Organization.timezoneConfigured's doc comment. */
+  orgTimezoneConfigured: boolean
+  /** The zone every org-wide business-period calculation (won this month, quota progress,
+   *  monthly charts, MoM, closing in 30 days — see lib/timePeriods.ts) should actually use —
+   *  `orgTimezone` once an admin has configured it, otherwise the viewer's own resolved zone
+   *  (never a silent, un-chosen "UTC"). See resolveOrgTimezone in lib/timezones.ts. */
+  effectiveOrgTimezone: string
   updateOrgTimezone: (timezone: string) => void
   /** Always "ALL" today — see lib/data-loader.ts's identical field. */
   repVisibility: 'ALL' | 'OWN'
@@ -386,6 +395,16 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
   const [orgTimezone, setOrgTimezone] = useState<string>(initialData.orgTimezone)
+  const [orgTimezoneConfigured, setOrgTimezoneConfigured] = useState<boolean>(initialData.orgTimezoneConfigured)
+  const effectiveOrgTimezone = useMemo(
+    () =>
+      resolveOrgTimezone({
+        orgTimezone,
+        orgTimezoneConfigured,
+        viewerTimezone: currentUser.timezone ?? resolveBrowserTimezone(),
+      }),
+    [orgTimezone, orgTimezoneConfigured, currentUser.timezone],
+  )
   const [repVisibility, setRepVisibility] = useState<'ALL' | 'OWN'>(initialData.repVisibility)
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -1743,6 +1762,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     setQuarterlyQuota(fresh.quarterlyQuota)
     setOrgCurrency(fresh.orgCurrency)
     setOrgTimezone(fresh.orgTimezone)
+    setOrgTimezoneConfigured(fresh.orgTimezoneConfigured)
     setRepVisibility(fresh.repVisibility)
     setOrgName(fresh.orgName)
   }, [])
@@ -1819,6 +1839,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       quarterlyQuota,
       orgCurrency,
       orgTimezone,
+      orgTimezoneConfigured,
+      effectiveOrgTimezone,
       updateOrgTimezone,
       repVisibility,
       orgName,
@@ -1877,6 +1899,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       quarterlyQuota,
       orgCurrency,
       orgTimezone,
+      orgTimezoneConfigured,
+      effectiveOrgTimezone,
       updateOrgTimezone,
       repVisibility,
       orgName,

@@ -2,16 +2,32 @@
  * Timezone-aware day/month/quarter boundary math — shared, dependency-free (pure `Intl`, no new
  * library), importable from both server and client code like lib/timezones.ts.
  *
- * Every date column in this app is one of two kinds, and that distinction is exactly why this
- * module exists:
- *  - a calendar date (Task.dueDate, Payment.dueDate, a still-open Deal's closeDate): compared as
- *    a date, in a specific zone's calendar — never shifted by the instant's own clock time, and
- *    never compared in a different zone than the one the comparison cares about.
- *  - an instant (createdAt, updatedAt, paidAt, Activity.at, a Won/Lost deal's closeDate once
- *    stamped): a real moment in time. "Which day/month/quarter did this fall in" still needs a
- *    zone to answer (midnight is a different instant in every zone), but the underlying value
- *    itself isn't "shifted" — it's a fixed point, we're just asking which local calendar box it
- *    landed in for a given viewer.
+ * Every `DateTime` column in prisma/schema.prisma, and which of the two kinds it is:
+ *
+ *  - **Calendar date** — a date someone chose or expects, compared as a date in a specific
+ *    zone's calendar, never shifted by a clock time it doesn't really have:
+ *    - `Task.dueDate` — when a task is due.
+ *    - `Payment.dueDate` — when a payment is expected (nullable: null means "awaiting milestone,"
+ *      tied to work completing rather than a date — never compared at all).
+ *    - `Deal.closeDate` **while the deal is still open** — see below, it changes kind.
+ *
+ *  - **Instant** — a real moment something happened. "Which day/month/quarter did this fall in"
+ *    still needs a zone to answer (midnight is a different instant in every zone), but the
+ *    underlying value itself isn't "shifted" — it's a fixed point; the question is only which
+ *    local calendar box it landed in for a given viewer:
+ *    - `Owner.createdAt`/`updatedAt`, `Company.createdAt`/`updatedAt`,
+ *      `Lead.createdAt`, `Contact.createdAt`, `Deal.createdAt`/`updatedAt`,
+ *      `Payment.createdAt`/`updatedAt`, `Task.createdAt`/`updatedAt` — ordinary row timestamps.
+ *    - `Lead.lastTouchedAt`, `Contact.lastInteractionAt` — bumped by `lib/data/activities.ts`'s
+ *      `logActivity` whenever an activity is logged against that record; display-only
+ *      ("2h ago"-style), never fed into any of this module's functions.
+ *    - `Payment.paidAt` — stamped once, when a payment transitions to `paid`; never cleared even
+ *      if later cancelled (see `cancelPayment` in `lib/data/payments.ts`) — `receivedTotal`
+ *      excludes a cancelled payment by its `status`, never by this field.
+ *    - `Activity.at` — when the activity happened; feeds the dashboard's recent-activity feed and
+ *      a record's own timeline (`GET /api/activities`), neither of which currently buckets by
+ *      day/month, so nothing here calls into this module for it yet.
+ *    - `Deal.closeDate` **once the deal is Won or Lost** — see below.
  *
  * `Deal.closeDate` is the one column that's genuinely both, depending on the deal's own state:
  * while open, it holds an *expected* close date — a calendar date, not yet a real event, entered

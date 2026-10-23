@@ -34,7 +34,7 @@ interface NavEntry {
 }
 
 export function Sidebar() {
-  const { leads, tasks, deals, contacts, stageById, canAccessPayments, currentUser, orgTimezone } = useCrm()
+  const { leads, tasks, deals, contacts, stageById, canAccessPayments, currentUser, effectiveOrgTimezone } = useCrm()
   const viewerTimezone = currentUser.timezone ?? resolveBrowserTimezone()
 
   const newLeads = leads.filter((l) => l.status === 'new').length
@@ -42,7 +42,7 @@ export function Sidebar() {
   const openTasks = tasks.filter((t) => !t.done).length
   // Same definition Dashboard's "Closing in 30 days" card uses: any open deal due within 30
   // days (including already-overdue ones, same as that card).
-  const closingSoon = deals.filter((d) => !stageById(d.stageId).isClosed && isClosingSoon(d, orgTimezone)).length
+  const closingSoon = deals.filter((d) => !stageById(d.stageId).isClosed && isClosingSoon(d, effectiveOrgTimezone)).length
   const champions = contacts.filter((c) => c.lifecycle === 'Champion').length
 
   const primary: NavEntry[] = [

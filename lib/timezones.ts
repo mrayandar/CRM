@@ -45,3 +45,21 @@ export function isValidIanaTimezone(tz: unknown): tz is string {
 export function resolveBrowserTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone
 }
+
+/**
+ * The zone every org-wide business-period calculation (won this month, quota progress, monthly
+ * charts, MoM, closing in 30 days — see lib/timePeriods.ts) must actually use. `orgTimezone`
+ * itself is only trustworthy once `orgTimezoneConfigured` is true (an admin has actually saved
+ * one) — until then it's just the raw "UTC" column default, and using it would silently shift
+ * every pre-existing org's month/day boundaries the moment this feature shipped, with no admin
+ * having chosen anything. While unconfigured, this falls back to the *viewer's own* resolved
+ * zone (their Owner.timezone, or the browser's if that's unset too) — the exact behavior every
+ * org had before Organization.timezone existed at all.
+ */
+export function resolveOrgTimezone(input: {
+  orgTimezone: string
+  orgTimezoneConfigured: boolean
+  viewerTimezone: string
+}): string {
+  return input.orgTimezoneConfigured ? input.orgTimezone : input.viewerTimezone
+}

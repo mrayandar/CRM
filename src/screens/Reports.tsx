@@ -26,7 +26,7 @@ import { isMonthsAgo, isThisMonth, monthlyWonRevenue } from '@lib/timePeriods'
 const SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 
 export function Reports() {
-  const { deals, leads, owners, stages, stageById, orgCurrency, orgTimezone } = useCrm()
+  const { deals, leads, owners, stages, stageById, orgCurrency, effectiveOrgTimezone } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
@@ -42,12 +42,12 @@ export function Reports() {
 
   // Real month-over-month comparisons — each is null (rendered as no delta badge) unless both
   // the current and prior calendar month actually have the data needed to compare.
-  const wonThisMonth = won.filter((d) => isThisMonth(d.closeDate, orgTimezone))
-  const wonLastMonth = won.filter((d) => isMonthsAgo(d.closeDate, 1, orgTimezone))
+  const wonThisMonth = won.filter((d) => isThisMonth(d.closeDate, effectiveOrgTimezone))
+  const wonLastMonth = won.filter((d) => isMonthsAgo(d.closeDate, 1, effectiveOrgTimezone))
   const revenueDelta = momDelta(sum(wonThisMonth.map((d) => d.value)), sum(wonLastMonth.map((d) => d.value)))
 
-  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate, orgTimezone))
-  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1, orgTimezone))
+  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate, effectiveOrgTimezone))
+  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1, effectiveOrgTimezone))
   const winRateThisMonth = closedThisMonth.length
     ? (closedThisMonth.filter((d) => stageById(d.stageId).isWon).length / closedThisMonth.length) * 100
     : null
@@ -162,7 +162,7 @@ export function Reports() {
     )
   }
 
-  const monthlyRevenue = monthlyWonRevenue(won, orgTimezone, 6)
+  const monthlyRevenue = monthlyWonRevenue(won, effectiveOrgTimezone, 6)
   const hasRevenueHistory = monthlyRevenue.some((m) => m.value > 0)
   const chartData = monthlyRevenue.map((m, i) => ({
     label: m.month,

@@ -89,11 +89,12 @@ export function updateOrgCurrency(orgId: string, currency: string) {
 }
 
 /** Sets the org's business-period timezone (won this month, quarter-to-date quota, monthly
- *  charts, MoM, closing in 30 days — see lib/timePeriods.ts). Same orgId/admin-only reasoning as
- *  updateOrgCurrency. */
+ *  charts, MoM, closing in 30 days — see lib/timePeriods.ts) AND marks it as a real, deliberate
+ *  choice (`timezoneConfigured: true`) — the only way that flag ever becomes true. Same
+ *  orgId/admin-only reasoning as updateOrgCurrency. */
 export function updateOrgTimezone(orgId: string, timezone: string) {
   return prisma.organization.update({
     where: { id: orgId },
-    data: { timezone },
+    data: { timezone, timezoneConfigured: true },
   })
 }

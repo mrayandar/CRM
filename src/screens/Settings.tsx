@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useSearchParams } from '@/lib/router-compat'
-import { Check, Plus, Loader2, UserX, X } from 'lucide-react'
+import { Check, Plus, Loader2, TriangleAlert, UserX, X } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
@@ -34,6 +34,7 @@ export function Settings() {
     orgCurrency,
     updateCurrency,
     orgTimezone,
+    orgTimezoneConfigured,
     updateOrgTimezone,
     orgName,
   } = useCrm()
@@ -53,10 +54,13 @@ export function Settings() {
   const [quotaInput, setQuotaInput] = useState(formatQuota(quarterlyQuota))
   const [currencyInput, setCurrencyInput] = useState(orgCurrency)
   const [confirmCurrencyOpen, setConfirmCurrencyOpen] = useState(false)
-  // Pre-fills with the browser's resolved zone only while the org is still at the untouched
-  // "UTC" default — an admin's real, deliberate choice of UTC is never overwritten on reload.
+  // Pre-fills with the browser's resolved zone only while no admin has ever configured one yet
+  // (orgTimezoneConfigured false) — a real, deliberate choice of UTC is never overwritten on
+  // reload. Until this is saved once, org-wide figures elsewhere in the app (Dashboard, Reports,
+  // the sidebar) fall back to each viewer's own time zone instead of trusting the raw "UTC"
+  // default — see effectiveOrgTimezone/resolveOrgTimezone.
   const [orgTimezoneInput, setOrgTimezoneInput] = useState(
-    orgTimezone === 'UTC' ? resolveBrowserTimezone() : orgTimezone,
+    orgTimezoneConfigured ? orgTimezone : resolveBrowserTimezone(),
   )
 
   const isAdmin = currentUser.role === 'Admin'
@@ -77,7 +81,8 @@ export function Settings() {
   }
 
   const saveOrgTimezone = () => updateOrgTimezone(orgTimezoneInput)
-  const cancelOrgTimezone = () => setOrgTimezoneInput(orgTimezone === 'UTC' ? resolveBrowserTimezone() : orgTimezone)
+  const cancelOrgTimezone = () =>
+    setOrgTimezoneInput(orgTimezoneConfigured ? orgTimezone : resolveBrowserTimezone())
 
   const saveQuota = () => {
     const digits = quotaInput.replace(/[^0-9]/g, '')
@@ -242,6 +247,15 @@ export function Settings() {
                           </>
                         )}
                       </div>
+                      {!orgTimezoneConfigured && (
+                        <p className="mt-1.5 flex items-start gap-1.5 rounded-[6px] bg-subtle px-2 py-1.5 text-[11.5px] text-ink-600">
+                          <TriangleAlert size={13} className="mt-px shrink-0 text-ink-400" />
+                          Set your workspace time zone — until you do, won-this-month, quota
+                          progress, monthly charts, and closing-in-30-days each fall back to
+                          whichever time zone the person looking at them happens to be in, not one
+                          shared number for the whole team.
+                        </p>
+                      )}
                       <p className="mt-1 text-[11px] text-ink-400">
                         Used for org-wide numbers: won this month, quota progress, monthly charts,
                         and closing in 30 days. Your own time zone (above) only affects your task

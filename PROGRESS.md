@@ -2,6 +2,103 @@
 
 > Living context file. Updated at the end of every task.
 
+## Stage 0 follow-up: a real regression found and fixed, four other points verified with evidence (Oct 23 2026)
+
+**1. Org timezone default — real regression, found and fixed.** Checked every call site: before
+commit 2's timezone work, Dashboard/Reports/Sidebar ran entirely client-side with plain
+`new Date()` — the *browser's* local zone, whatever that happened to be, for every viewer. After
+commit 2, those same call sites read `Organization.timezone`, which defaults to `"UTC"` for every
+org that existed before this feature shipped (none has ever saved one). That is a real, silent
+behavior change for any org whose viewers aren't in UTC — confirmed directly: this dev
+environment's own resolved zone is `Asia/Karachi` (UTC+5):
+```
+$ node -e "console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)"
+Asia/Karachi
+```
+Comparing the dev org's real deals under UTC vs. Asia/Karachi *right now* (Oct 23 2026) shows
+**no numeric difference** for won-this-month/closing-in-30-days/quota — simply because none of
+its 10 deals' close dates happen to fall inside the ~5-hour disagreement window between the two
+zones at this exact moment. That's not the same as "no bug": it's data-dependent and latent,
+exactly the kind of thing that passes review and then breaks for a real customer near a boundary
+— which is exactly what the golden tests in `tests/unit/time-periods.test.ts` already prove
+happens in general (constructed cases where UTC and Karachi/New_York genuinely disagree on the
+day/month/quarter).
+
+**Fixed**, per the instructed rule — until an admin sets it, keep the previous (viewer's-zone)
+behavior, never silently shift anyone's boundaries:
+- New `Organization.timezoneConfigured` (`Boolean @default(false)`) — the only way it ever
+  becomes `true` is `updateOrgTimezoneAction` actually being called by an admin.
+  `Organization.timezone` itself is unchanged (still defaults to `"UTC"`), but is now documented
+  as untrustworthy until that flag is true.
+- `lib/timezones.ts`'s new `resolveOrgTimezone()`: returns the stored org zone once configured,
+  otherwise the *viewer's own* resolved zone (their `Owner.timezone`, or the browser's if that's
+  unset too) — the exact behavior every org had before `Organization.timezone` existed.
+- `CrmProvider` exposes `effectiveOrgTimezone` (the resolved value) alongside the raw
+  `orgTimezone`/`orgTimezoneConfigured` — Dashboard, Reports, and Sidebar now all read
+  `effectiveOrgTimezone` for every org-wide calculation instead of the raw stored value.
+- Settings → Workspace now shows a visible **"Set your workspace time zone"** prompt to admins
+  (not just a quiet pre-filled input) whenever `orgTimezoneConfigured` is false, explicitly
+  naming which numbers are affected.
+- Tests: `tests/unit/resolve-org-timezone.test.ts` (the fallback logic) +
+  `tests/integration/cross-tenant.test.ts` (new `updateOrgTimezoneAction` sets the flag,
+  admin-only, scoped, rejects an invalid IANA id). **Live-verified** (Playwright, browser
+  timezone forced to Asia/Karachi): the Settings prompt renders, pre-filled with
+  `Asia/Karachi` (not `UTC`), for the real dev org, which has never configured one.
+
+**2. Existing Owner.timezone values — confirmed, null never becomes UTC.** Before the commit-2
+migration (captured live at the time): `{ null: 26, "Eastern Time (US & Canada)": 1 }`, DB-wide.
+Now: `{ null: 30, "America/New_York": 1 }` — the null count grew only because later test runs
+created more owner rows (synthetic org, fixtures), not because anything got nulled; the one
+mapped legacy value migrated correctly and nothing new has appeared. **`"UTC"` has never once
+appeared as an `Owner.timezone` value** — confirmed directly in that distribution — because the
+column has no DB-level default at all (nullable, no `@default`), and every runtime read of it
+(Dashboard/Sidebar/Settings) falls back to `resolveBrowserTimezone()` on `null`, never to the
+string `"UTC"`.
+
+**3. Date semantics — documented exhaustively.** `lib/timePeriods.ts`'s module doc comment now
+lists every `DateTime` column in `prisma/schema.prisma` by name, classified as a calendar date
+(`Task.dueDate`, `Payment.dueDate`, a still-open `Deal.closeDate`) or an instant (every
+`createdAt`/`updatedAt`, `Lead.lastTouchedAt`, `Contact.lastInteractionAt`, `Payment.paidAt`,
+`Activity.at`, and `Deal.closeDate` once Won/Lost) — including exactly how `closeDate` changes
+kind: an expected date while the deal is open, stamped to "now" by `closeDateOnStageChange`
+(`lib/data/deals.ts`) the moment it enters a closed stage, after which it's a real instant. This
+lives in the code, not just here, so it stays next to the functions it governs.
+
+**4. pg_trgm — re-confirmed, fresh EXPLAIN against the synthetic org:**
+```
+-- BEFORE (index dropped)
+Seq Scan on contacts (actual time=0.612..39.977 rows=513) Rows Removed by Filter: 9806
+Execution Time: 40.093 ms
+
+-- AFTER (index restored)
+Bitmap Heap Scan on contacts (actual time=0.096..0.430 rows=513)
+  -> Bitmap Index Scan on contacts_name_trgm_idx (actual time=0.066..0.066 rows=513)
+Execution Time: 0.479 ms
+```
+Yes — confirmed using the trigram index (`Bitmap Index Scan on contacts_name_trgm_idx`), ~84x
+faster this run (cold-buffer "before," which is the realistic worst case). **Found and fixed a
+related latent trap while re-verifying**: because the trigram indexes were created via raw SQL
+(not represented in `schema.prisma`), the very next `prisma migrate dev` wanted to silently
+**drop all six of them** as "drift" — caught before applying, stripped from the new migration
+(see the follow-up fix's own migration file, `20261023161534_org_timezone_configured_flag`, for
+the note). This is a standing trap for every migration from now on until these indexes are
+represented natively (Prisma's `postgresqlExtensions` preview feature) — flagged as a real,
+unresolved risk, not fixed in this commit.
+
+**5. Cache security — confirmed, and a Stage 2 gate recorded.** The existing
+`tests/unit/query-cache-security.test.ts` "end to end against a real QueryClient" block already
+seeds the cache by hand before testing (`client.setQueryData(['payments', ...], [...])`,
+`['dashboard-aggregates', ...]`, `['leads', ...]`) — not an empty cache — then asserts `clear()`
+empties all of it. **Stage 2 gate, recorded here**: before Stage 2 (Tasks — the first screen to
+populate this cache with real data) is considered complete, rerun the live demotion check against
+the real cache — demote a real admin with the tab open, confirm no payment data remains in it —
+the same check already done against `requirePaymentAccess()` and `GET /api/crm-refetch`, now
+against the TanStack Query cache specifically, with real query data to lose for the first time.
+
+**Test total: 215/215** (207 + 8 new: 4 `resolveOrgTimezone` unit tests, 4
+`updateOrgTimezoneAction` integration tests). `tsc --noEmit`, `next build`, and a live Playwright
+check (forced browser timezone, real dev org, real Settings page) all clean.
+
 ## Scale/visibility redesign, Stage 0 of 11 (foundation, no user-visible behavior change except one) (Oct 23 2026)
 
 Full design (Part A: per-org record visibility; Part B: scale — pagination, SQL aggregates,

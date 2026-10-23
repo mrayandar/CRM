@@ -56,8 +56,14 @@ export interface CrmInitialData {
   orgCurrency: string
   /** Real IANA zone id (e.g. "Asia/Karachi") — org-wide business periods (won this month,
    *  quarter-to-date quota, monthly charts, month-over-month, closing in 30 days) are computed
-   *  in this zone, never the viewer's own. See lib/timePeriods.ts. */
+   *  in this zone, but ONLY once `orgTimezoneConfigured` is true — see that field. */
   orgTimezone: string
+  /** False until an admin actually saves a workspace time zone — see
+   *  Organization.timezoneConfigured's doc comment for the regression this prevents (every
+   *  pre-existing org silently computing its business periods in UTC the moment this feature
+   *  shipped). While false, callers must fall back to the viewer's own timezone instead of
+   *  trusting `orgTimezone`'s default. */
+  orgTimezoneConfigured: boolean
   /** Always "ALL" today — no Settings switch exists yet to change it (Stage 1). Exposed now so
    *  the query-cache security guard (lib/queryCacheSecurity.ts) already watches it; nothing else
    *  reads or writes this. */
@@ -134,6 +140,7 @@ export async function loadCrmData(
     quarterlyQuota: org?.quarterlyQuota ?? null,
     orgCurrency: org?.currency ?? 'USD',
     orgTimezone: org?.timezone ?? DEFAULT_ORG_TIMEZONE,
+    orgTimezoneConfigured: org?.timezoneConfigured ?? false,
     repVisibility: org?.repVisibility ?? 'ALL',
     orgName: org?.name ?? '',
   }
