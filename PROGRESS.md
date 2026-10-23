@@ -2,6 +2,72 @@
 
 > Living context file. Updated at the end of every task.
 
+## Two follow-ups on GET /api/activities: a real de-dup bug fixed properly, status codes split (Oct 23 2026)
+
+**1. De-duplication was content-based and had a real, confirmable bug.** Testing it directly: two
+identical calls logged back to back (same kind/title/body, no note) both showed fine immediately
+— but logging a *new* call when an *older*, already-fetched identical call existed on the record
+made the new optimistic row silently vanish, because the merge matched on content
+(`kind|actorId|title|body`) and the old persisted row already "claimed" that content. Fixed
+properly rather than patched around: activities now get a client-generated id end to end, the same
+pattern already used for leads/contacts/deals/tasks.
+
+- `logActivityAction` and `addNoteAction` (`lib/actions/crm.ts`) now take an `id` param, validated
+  with the same `assertClientId` used everywhere else, and save the row under that id
+  (`lib/data/activities.ts`'s `logActivity`/`dbLogActivity` already accepted an optional `id` in
+  its Prisma input — nothing to change there).
+- Every other activity-creating action that embeds its own activity inline in a transaction —
+  `createLeadAction`/`createContactAction`/`createDealAction` (the "created X" activity, plus the
+  optional note on lead creation), `updateLeadAction`/`updateContactAction`/`updateDealAction` (the
+  "edited" activity), `convertLeadAction` (the "converted X" activity), and `updateTaskAction` (the
+  "edited" activity, when the task has a related subject) — now takes and uses a client id the
+  same way.
+- `src/store/crm.tsx`: every optimistic `Activity` the client creates now gets `newEntityId()`
+  (a real UUID) instead of the old local counter (`nextId('a')`, now deleted along with the
+  `sequence` variable — fully unused once every call site switched over), and every action call
+  that creates an activity passes that same id through.
+- `src/screens/RecordDetail.tsx`'s merge logic moved to a new, unit-tested pure function —
+  `mergeTimeline()` in `src/store/activityTimeline.ts` (same "extract it so it's testable without
+  a DOM harness" pattern as `livePoll.ts`/`persistRun.ts`) — and now de-dupes by id only.
+
+**Tests**: `tests/unit/activity-timeline.test.ts` (new) covers both scenarios named in the report —
+two identical activities back to back before either is persisted, and a new one logged against an
+already-persisted identical one — plus a reload/collapse check and a stability check. An
+integration test in `tests/integration/cross-tenant.test.ts` calls `logActivityAction` three times
+with identical content and distinct client ids, then fetches the real route, confirming all three
+rows exist distinctly server-side (not just in the client's merge logic). **Live-verified**: two
+identical "Call" clicks on a real contact both showed immediately and survived a real page reload,
+and a third identical call logged against the by-then-persisted pair was not swallowed.
+
+**2. Status codes split: 401 only for a missing session, 404 for everything else.** Previously
+`GET /api/activities` returned a uniform 401 for every failure, mirroring `crm-refetch`'s
+philosophy — reasonable there (whole-org load, "fail quietly either way" is fine), but wrong here,
+where 401 implies "your session expired" and a cross-tenant/nonexistent record is a different kind
+of failure entirely. Now: a cross-tenant subject, a nonexistent one, or bad/missing params all
+return 404 with no existence leak between them (still can't tell which); 401 is reserved for
+exactly one case, `requireAuth()` throwing.
+`app/api/activities/route.ts` splits into two `try/catch` blocks — one around `requireAuth()`
+alone (→ 401), one around everything after it (→ 404) — so the status code is a direct function of
+which stage failed, not a single catch-all.
+
+The client (`useRecordTimeline` in `RecordDetail.tsx`) was checked and confirmed to have no
+redirect or sign-out logic on any failure to begin with — a failed fetch here was already just a
+silently-swallowed error, never anything that could tear down a session. What changed is the UI:
+a failure (404 or otherwise) now surfaces an explicit "Couldn't load activity/notes" state with a
+"Try again" button (`retry()` on the hook, which just re-runs the fetch), replacing the ambiguous
+fallback to "No activity yet" that made a load failure look identical to genuinely-empty history.
+
+**Tests**: the existing `GET /api/activities` describe block's status-code tests were split
+accordingly — 401 only for no session; 404 for a cross-tenant subject, a nonexistent one (new
+case), and bad/missing params; a new 404-specific `Cache-Control` test. **Live-verified**: fetching
+a nonexistent subject id from a signed-in browser session returns 404 with the right header,
+doesn't navigate away from the page, and the session (`window.Clerk.session`) is still intact
+afterward — confirming structurally and empirically that this route failing is never what decides
+a user is logged out.
+
+All 174 tests pass (166 pre-existing + 5 new unit + 3 net-new integration). `tsc --noEmit` and
+`next build` both clean.
+
 ## Fixed a live bug: record timelines were incomplete beyond the org's 50 most-recent activities (Oct 23 2026)
 
 Found while measuring payload size for the scale/visibility design work (see the design

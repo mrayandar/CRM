@@ -16,6 +16,13 @@ import { mapActivity } from '@lib/mappers'
  * A Route Handler, not a Server Action, for the same measured reason GET /api/crm-refetch is one
  * — see that route's doc comment. `requireAuth()` + `canAccessPayments()` gives this identical
  * role/tenant gating to first load, by construction, same as that route.
+ *
+ * Status codes, unlike crm-refetch's uniform 401: 401 means only "no valid session" — the one
+ * case a client should treat as its own auth having gone stale. Everything else (a cross-tenant
+ * subject, one that doesn't exist, bad params, or any other failure once a session is confirmed)
+ * is a 404. The two are never distinguished further within each bucket — a cross-tenant subject
+ * and a nonexistent one both just 404, so a client can't use this to probe which ids exist in
+ * another org.
  */
 export const dynamic = 'force-dynamic'
 
@@ -29,9 +36,15 @@ function isSubjectType(value: string | null): value is SubjectType {
 }
 
 export async function GET(request: Request) {
+  let orgId: string
   try {
-    const { orgId } = await requireAuth()
+    ;({ orgId } = await requireAuth())
+  } catch {
+    // The one case that gets a 401 — no valid session, same meaning as crm-refetch's 401.
+    return NextResponse.json({ error: 'unauthenticated' }, { status: 401, headers: NO_STORE_HEADERS })
+  }
 
+  try {
     const params = new URL(request.url).searchParams
     const subjectType = params.get('subjectType')
     const subjectId = params.get('subjectId')
@@ -40,7 +53,7 @@ export async function GET(request: Request) {
 
     // The subject must belong to this org — same scoped by-id read, same rejection as a
     // cross-tenant id, as everywhere else in the app. Never leaks "found in another org" vs.
-    // "doesn't exist at all": both just fall through to the catch below.
+    // "doesn't exist at all": both just fall through to the catch below as the same 404.
     const subject =
       subjectType === 'lead'
         ? await getLeadById(orgId, subjectId)
@@ -61,9 +74,6 @@ export async function GET(request: Request) {
       { headers: NO_STORE_HEADERS },
     )
   } catch {
-    // Never leaks why — bad/missing params, no session, a cross-tenant or nonexistent subject,
-    // and any other failure all just mean "the client should fail quietly and retry later," same
-    // philosophy as GET /api/crm-refetch.
-    return NextResponse.json({ error: 'unavailable' }, { status: 401, headers: NO_STORE_HEADERS })
+    return NextResponse.json({ error: 'not_found' }, { status: 404, headers: NO_STORE_HEADERS })
   }
 }

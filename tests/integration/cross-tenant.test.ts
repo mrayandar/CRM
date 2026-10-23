@@ -242,12 +242,13 @@ describe('lib/data: writes reject a record id from another org', () => {
         A.lead.id,
         { name: 'x', title: '', email: '', phone: '', companyId: B.company.id, source: 'Inbound', ownerId: B.owner.id },
         B.owner.id,
+        randomUUID(),
       ),
     ).rejects.toThrow()
   })
   it('convertLeadToDeal throws', async () => {
     await expect(
-      convertLeadToDeal(B.org.id, A.lead.id, { ownerId: B.owner.id, actorId: B.owner.id }),
+      convertLeadToDeal(B.org.id, A.lead.id, { ownerId: B.owner.id, actorId: B.owner.id, activityId: randomUUID() }),
     ).rejects.toThrow()
   })
   it('updateContact throws', async () => {
@@ -257,6 +258,7 @@ describe('lib/data: writes reject a record id from another org', () => {
         A.contact.id,
         { name: 'x', title: '', email: '', phone: '', companyId: B.company.id, ownerId: B.owner.id },
         B.owner.id,
+        randomUUID(),
       ),
     ).rejects.toThrow()
   })
@@ -278,6 +280,7 @@ describe('lib/data: writes reject a record id from another org', () => {
           companyId: B.company.id,
         },
         B.owner.id,
+        randomUUID(),
       ),
     ).rejects.toThrow()
   })
@@ -352,6 +355,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         source: 'Inbound',
         status: 'new',
         ownerId: A.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Owner not found/)
   })
@@ -366,6 +370,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         companyId: B.company.id,
         title: '',
         ownerId: A.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Owner not found/)
   })
@@ -382,6 +387,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         ownerId: A.owner.id,
         source: 'Inbound',
         priority: 'low',
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Owner not found/)
   })
@@ -398,6 +404,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         ownerId: B.owner.id,
         source: 'Inbound',
         priority: 'low',
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Stage not found/)
   })
@@ -415,6 +422,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         contactId: A.contact.id,
         source: 'Inbound',
         priority: 'low',
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Contact not found/)
   })
@@ -430,6 +438,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         companyId: B.company.id,
         source: 'Inbound',
         ownerId: B.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow()
     expect((await prisma.lead.findUnique({ where: { id: A.lead.id } }))?.name).toBe(A.lead.name)
@@ -449,6 +458,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         companyId: B.company.id,
         source: 'Inbound',
         ownerId: A.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Owner not found/)
   })
@@ -463,6 +473,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         phone: '',
         companyId: B.company.id,
         ownerId: B.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow()
     expect((await prisma.contact.findUnique({ where: { id: A.contact.id } }))?.name).toBe(A.contact.name)
@@ -478,6 +489,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
         companyId: B.company.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow()
     expect((await prisma.deal.findUnique({ where: { id: A.deal.id } }))?.name).toBe(A.deal.name)
@@ -496,6 +508,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
         companyId: B.company.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Stage not found/)
   })
@@ -514,6 +527,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         ownerId: B.owner.id,
         contactId: A.contact.id,
         companyId: B.company.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Contact not found/)
   })
@@ -537,7 +551,11 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
 
   it('convertLeadAction rejects a lead id from another org', async () => {
     await expect(
-      actions.convertLeadAction(A.lead.id, { ownerId: B.owner.id, contactId: crypto.randomUUID() }),
+      actions.convertLeadAction(A.lead.id, {
+        ownerId: B.owner.id,
+        contactId: crypto.randomUUID(),
+        activityId: crypto.randomUUID(),
+      }),
     ).rejects.toThrow()
     expect((await prisma.lead.findUnique({ where: { id: A.lead.id } }))?.status).toBe('new')
   })
@@ -547,7 +565,11 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
       data: { orgId: B.org.id, name: 'B-own-lead-2', title: '', companyId: B.company.id, email: '', phone: '', source: 'Inbound', location: '', ownerId: B.owner.id },
     })
     await expect(
-      actions.convertLeadAction(own.id, { ownerId: A.owner.id, contactId: crypto.randomUUID() }),
+      actions.convertLeadAction(own.id, {
+        ownerId: A.owner.id,
+        contactId: crypto.randomUUID(),
+        activityId: crypto.randomUUID(),
+      }),
     ).rejects.toThrow(/Owner not found/)
   })
 
@@ -560,6 +582,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         ownerId: B.owner.id,
         contactId: crypto.randomUUID(),
         dealId: crypto.randomUUID(),
+        activityId: crypto.randomUUID(),
         deal: { name: 'x', value: 100, stageId: A.stage.id, closeDate: new Date().toISOString(), priority: 'low' },
       }),
     ).rejects.toThrow(/Stage not found/)
@@ -648,19 +671,27 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
   })
 
   it('logActivityAction rejects a subject lead from another org', async () => {
-    await expect(actions.logActivityAction('note', 'x', { type: 'lead', id: A.lead.id, label: 'x' })).rejects.toThrow()
+    await expect(
+      actions.logActivityAction(crypto.randomUUID(), 'note', 'x', { type: 'lead', id: A.lead.id, label: 'x' }),
+    ).rejects.toThrow()
   })
 
   it('logActivityAction rejects a subject contact from another org', async () => {
-    await expect(actions.logActivityAction('note', 'x', { type: 'contact', id: A.contact.id, label: 'x' })).rejects.toThrow()
+    await expect(
+      actions.logActivityAction(crypto.randomUUID(), 'note', 'x', { type: 'contact', id: A.contact.id, label: 'x' }),
+    ).rejects.toThrow()
   })
 
   it('logActivityAction rejects a subject deal from another org', async () => {
-    await expect(actions.logActivityAction('note', 'x', { type: 'deal', id: A.deal.id, label: 'x' })).rejects.toThrow()
+    await expect(
+      actions.logActivityAction(crypto.randomUUID(), 'note', 'x', { type: 'deal', id: A.deal.id, label: 'x' }),
+    ).rejects.toThrow()
   })
 
   it('addNoteAction rejects a subject from another org', async () => {
-    await expect(actions.addNoteAction({ type: 'lead', id: A.lead.id, label: 'x' }, 'body')).rejects.toThrow()
+    await expect(
+      actions.addNoteAction(crypto.randomUUID(), { type: 'lead', id: A.lead.id, label: 'x' }, 'body'),
+    ).rejects.toThrow()
   })
 
   it('renameStageAction rejects a stage id from another org', async () => {
@@ -699,6 +730,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         source: 'Inbound',
         status: 'new',
         ownerId: B.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Company not found/)
   })
@@ -713,6 +745,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         companyId: A.company.id,
         title: '',
         ownerId: B.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Company not found/)
   })
@@ -729,6 +762,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         ownerId: B.owner.id,
         source: 'Inbound',
         priority: 'low',
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Company not found/)
   })
@@ -747,6 +781,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         companyId: A.company.id,
         source: 'Inbound',
         ownerId: B.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Company not found/)
   })
@@ -764,6 +799,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         phone: '',
         companyId: A.company.id,
         ownerId: B.owner.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Company not found/)
   })
@@ -781,6 +817,7 @@ describe('server actions: reject a client-supplied ownerId/contactId/stageId fro
         closeDate: new Date().toISOString(),
         ownerId: B.owner.id,
         companyId: A.company.id,
+        activityId: crypto.randomUUID(),
       }),
     ).rejects.toThrow(/Company not found/)
   })
@@ -1689,22 +1726,35 @@ describe('GET /api/activities: one record\'s own paginated history, scoped and r
     expect(headers.get('Cache-Control')).toBe('private, no-store')
   })
 
-  it('returns 401 (never redirects) when there is no valid session', async () => {
+  it('also sets Cache-Control: private, no-store on a 404', async () => {
+    loginAs(A)
+    const { status, headers } = await callActivitiesRoute({ subjectType: 'lead', subjectId: B.lead.id })
+    expect(status).toBe(404)
+    expect(headers.get('Cache-Control')).toBe('private, no-store')
+  })
+
+  it('returns 401 (never redirects) when there is no valid session — the only case that gets a 401', async () => {
     mockAuth.mockResolvedValue({ userId: null, orgId: null })
     const { status } = await callActivitiesRoute({ subjectType: 'lead', subjectId: A.lead.id })
     expect(status).toBe(401)
   })
 
-  it('rejects a subject id that belongs to another org, same as a cross-tenant id elsewhere', async () => {
+  it('returns 404 (not 401) for a subject id that belongs to another org, same uniform treatment as a cross-tenant id elsewhere', async () => {
     loginAs(B) // B's own valid session...
     const { status } = await callActivitiesRoute({ subjectType: 'lead', subjectId: A.lead.id }) // ...A's lead
-    expect(status).toBe(401)
+    expect(status).toBe(404)
   })
 
-  it('rejects an unknown subjectType and a missing subjectId', async () => {
+  it('returns 404 (not 401) for a subject id that does not exist at all — same status as a cross-tenant one, no existence leak', async () => {
     loginAs(A)
-    expect((await callActivitiesRoute({ subjectType: 'bogus', subjectId: A.lead.id })).status).toBe(401)
-    expect((await callActivitiesRoute({ subjectType: 'lead', subjectId: '' })).status).toBe(401)
+    const { status } = await callActivitiesRoute({ subjectType: 'lead', subjectId: crypto.randomUUID() })
+    expect(status).toBe(404)
+  })
+
+  it('returns 404 (not 401) for an unknown subjectType and a missing subjectId — a valid session, just bad params', async () => {
+    loginAs(A)
+    expect((await callActivitiesRoute({ subjectType: 'bogus', subjectId: A.lead.id })).status).toBe(404)
+    expect((await callActivitiesRoute({ subjectType: 'lead', subjectId: '' })).status).toBe(404)
   })
 
   it('a record with 120 activities in an org shows all of them across pages, newest first', async () => {
@@ -1760,6 +1810,56 @@ describe('GET /api/activities: one record\'s own paginated history, scoped and r
 
     await prisma.lead.delete({ where: { id: lead.id } })
   })
+
+  it(
+    'two activities logged back to back with identical kind/title/body stay two distinct rows, ' +
+      'never collapsed into one — the real fix behind mergeTimeline\'s id-only de-dup: logActivityAction ' +
+      'now takes a client-generated id and saves the row under it (same pattern as leads/contacts/deals/tasks)',
+    async () => {
+      const lead = await prisma.lead.create({
+        data: {
+          orgId: A.org.id,
+          name: 'Identical Calls Lead',
+          title: '',
+          companyId: A.company.id,
+          email: `identical-calls-${RUN}@example.com`,
+          phone: '',
+          source: 'Inbound',
+          location: '',
+          ownerId: A.owner.id,
+        },
+      })
+      loginAs(A)
+      const subject = { type: 'lead' as const, id: lead.id, label: lead.name }
+      const id1 = crypto.randomUUID()
+      const id2 = crypto.randomUUID()
+      await actions.logActivityAction(id1, 'call', 'called Identical Calls Lead', subject)
+      await actions.logActivityAction(id2, 'call', 'called Identical Calls Lead', subject)
+
+      const { status, body } = await callActivitiesRoute({ subjectType: 'lead', subjectId: lead.id })
+      expect(status).toBe(200)
+      const ids = body.activities.map((a: { id: string }) => a.id)
+      // Both real rows exist, under the exact ids the caller asked for — nothing merged them,
+      // nothing silently dropped one as a "duplicate".
+      expect(ids).toContain(id1)
+      expect(ids).toContain(id2)
+      expect(new Set(ids).size).toBe(ids.length)
+
+      // And logging a THIRD identical call when the first two are already persisted doesn't get
+      // swallowed either — the exact "an older identical call already exists" case.
+      const id3 = crypto.randomUUID()
+      await actions.logActivityAction(id3, 'call', 'called Identical Calls Lead', subject)
+      const after = await callActivitiesRoute({ subjectType: 'lead', subjectId: lead.id })
+      const idsAfter = after.body.activities.map((a: { id: string }) => a.id)
+      expect(idsAfter).toContain(id1)
+      expect(idsAfter).toContain(id2)
+      expect(idsAfter).toContain(id3)
+      expect(new Set(idsAfter).size).toBe(idsAfter.length)
+
+      await prisma.activity.deleteMany({ where: { orgId: A.org.id, leadId: lead.id } })
+      await prisma.lead.delete({ where: { id: lead.id } })
+    },
+  )
 
   it("a Member never gets payment-kind activities on a deal's timeline", async () => {
     await prisma.activity.create({

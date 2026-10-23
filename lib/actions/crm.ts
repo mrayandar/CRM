@@ -183,9 +183,14 @@ export async function createLeadAction(input: {
   status: LeadStatus
   ownerId: string
   notes?: string
+  /** Client-generated id for the "created lead" activity (see logActivityAction's `id` param). */
+  activityId: string
+  /** Same, for the optional note activity — only used when `notes` is set. */
+  noteActivityId?: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
   assertClientId(input.id)
+  assertClientId(input.activityId)
 
   const name = input.name.trim()
   const email = input.email.trim()
@@ -197,6 +202,7 @@ export async function createLeadAction(input: {
   if (notes && notes.length > 5000) throw new Error('Notes are too long')
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
   if (!LEAD_STATUSES.includes(input.status)) throw new Error('Invalid status')
+  if (notes) assertClientId(input.noteActivityId)
 
   // ownerId and companyId come from the client — both must belong to this org before connecting them.
   const owner = await getOwnerById(orgId, input.ownerId)
@@ -219,6 +225,7 @@ export async function createLeadAction(input: {
     activities: {
       create: [
         {
+          id: input.activityId,
           orgId,
           kind: 'created',
           title: `created lead ${name}`,
@@ -228,6 +235,7 @@ export async function createLeadAction(input: {
         ...(notes
           ? [
               {
+                id: input.noteActivityId,
                 orgId,
                 kind: 'note' as const,
                 title: `added a note on ${name}`,
@@ -252,9 +260,12 @@ export async function createContactAction(input: {
   companyId: string
   title: string
   ownerId: string
+  /** Client-generated id for the "created contact" activity (see logActivityAction's `id` param). */
+  activityId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
   assertClientId(input.id)
+  assertClientId(input.activityId)
 
   const name = input.name.trim()
   const title = input.title.trim()
@@ -291,6 +302,7 @@ export async function createContactAction(input: {
     activities: {
       create: [
         {
+          id: input.activityId,
           orgId,
           kind: 'created',
           title: `created contact ${name}`,
@@ -313,8 +325,11 @@ export async function updateContactAction(input: {
   phone: string
   companyId: string
   ownerId: string
+  /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
+  activityId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.activityId)
 
   const name = input.name.trim()
   const title = input.title.trim()
@@ -344,6 +359,7 @@ export async function updateContactAction(input: {
     input.id,
     { name, title, email, phone, companyId: company.id, ownerId: owner.id },
     actorId,
+    input.activityId,
   )
   revalidatePath('/', 'layout')
 }
@@ -359,9 +375,12 @@ export async function createDealAction(input: {
   contactId?: string
   source: LeadSource
   priority: Priority
+  /** Client-generated id for the "created deal" activity (see logActivityAction's `id` param). */
+  activityId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
   assertClientId(input.id)
+  assertClientId(input.activityId)
 
   const name = input.name.trim()
   const closeDate = new Date(input.closeDate)
@@ -406,6 +425,7 @@ export async function createDealAction(input: {
     activities: {
       create: [
         {
+          id: input.activityId,
           orgId,
           kind: 'created',
           title: `created deal ${name}`,
@@ -429,8 +449,11 @@ export async function updateDealAction(input: {
   contactId?: string
   ownerId: string
   companyId: string
+  /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
+  activityId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.activityId)
 
   const name = input.name.trim()
   const closeDate = new Date(input.closeDate)
@@ -467,6 +490,7 @@ export async function updateDealAction(input: {
       companyId: company.id,
     },
     actorId,
+    input.activityId,
   )
   revalidatePath('/', 'layout')
 }
@@ -480,8 +504,11 @@ export async function updateLeadAction(input: {
   companyId: string
   source: LeadSource
   ownerId: string
+  /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
+  activityId: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
+  assertClientId(input.activityId)
 
   const name = input.name.trim()
   const title = input.title.trim()
@@ -504,6 +531,7 @@ export async function updateLeadAction(input: {
     input.id,
     { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id },
     actorId,
+    input.activityId,
   )
   revalidatePath('/', 'layout')
 }
@@ -520,6 +548,8 @@ export async function convertLeadAction(
     ownerId: string
     contactId: string
     dealId?: string
+    /** Client-generated id for the "converted..." activity (see logActivityAction's `id` param). */
+    activityId: string
     deal?: {
       name: string
       value: number
@@ -531,6 +561,7 @@ export async function convertLeadAction(
 ) {
   const { orgId, ownerId: actorId } = await requireAuth()
   assertClientId(input.contactId)
+  assertClientId(input.activityId)
   if (input.deal) assertClientId(input.dealId)
 
   // ownerId comes from the client — make sure it belongs to this org before using it.
@@ -545,6 +576,7 @@ export async function convertLeadAction(
     actorId,
     contactId: input.contactId,
     dealId: input.deal ? input.dealId : undefined,
+    activityId: input.activityId,
     deal:
       input.deal && stage
         ? {
@@ -633,8 +665,12 @@ export async function updateTaskAction(input: {
   priority: Priority
   type: TaskType
   ownerId: string
+  /** Client-generated id for the "edited" activity, when this task has a related subject (see
+   *  updateTask in lib/data/tasks.ts — omitted for a standalone task, same as that function). */
+  activityId?: string
 }) {
   const { orgId, ownerId: actorId } = await requireAuth()
+  if (input.activityId !== undefined) assertClientId(input.activityId)
 
   const title = input.title.trim()
   const description = input.description?.trim() || null
@@ -654,6 +690,7 @@ export async function updateTaskAction(input: {
     input.id,
     { title, description, dueDate, priority: input.priority, type: input.type, ownerId: owner.id },
     actorId,
+    input.activityId,
   )
   revalidatePath('/', 'layout')
 }
@@ -665,14 +702,17 @@ export async function deleteTaskAction(taskId: string) {
 }
 
 export async function logActivityAction(
+  id: string,
   kind: ActivityKind,
   title: string,
   subject?: { type: 'lead' | 'contact' | 'deal'; id: string; label: string },
   body?: string,
 ) {
   const { orgId, ownerId } = await requireAuth()
+  assertClientId(id)
   await assertSubjectInOrg(orgId, subject)
   await dbLogActivity(orgId, {
+    id,
     kind,
     title,
     body,
@@ -768,8 +808,9 @@ export async function deleteStageAction(stageId: string) {
 }
 
 export async function addNoteAction(
+  id: string,
   subject: { type: 'lead' | 'contact' | 'deal'; id: string; label: string },
   body: string,
 ) {
-  await logActivityAction('note', `added a note on ${subject.label}`, subject, body)
+  await logActivityAction(id, 'note', `added a note on ${subject.label}`, subject, body)
 }

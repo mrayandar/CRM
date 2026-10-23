@@ -126,7 +126,14 @@ export interface UpdateDealInput {
  * (via the shared closeDateOnStageChange), not a separately re-derived one — so a stage change made
  * through this edit modal behaves identically to one made by dragging the card.
  */
-export async function updateDeal(orgId: string, id: string, data: UpdateDealInput, actorId: string) {
+export async function updateDeal(
+  orgId: string,
+  id: string,
+  data: UpdateDealInput,
+  actorId: string,
+  /** Client-generated id for the "edited" activity — see updateLead's identical param. */
+  activityId: string,
+) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.deal.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Deal ${id} not found in org ${orgId}`)
@@ -165,6 +172,7 @@ export async function updateDeal(orgId: string, id: string, data: UpdateDealInpu
 
     await tx.activity.create({
       data: {
+        id: activityId,
         orgId,
         kind: 'edited',
         title: `edited ${updated.name}`,

@@ -87,7 +87,16 @@ export interface UpdateLeadInput {
  * differs) skips the write and the activity entirely, rather than bumping lastTouchedAt and logging
  * an empty "edited" entry for a save that changed nothing.
  */
-export async function updateLead(orgId: string, id: string, data: UpdateLeadInput, actorId: string) {
+export async function updateLead(
+  orgId: string,
+  id: string,
+  data: UpdateLeadInput,
+  actorId: string,
+  /** Client-generated id for the "edited" activity — see Activity's id param on logActivity for
+   *  why this matters: without it, a client that logs two edits with identical "Changed: ..."
+   *  text has no way to tell its own two distinct optimistic rows apart from one real row. */
+  activityId: string,
+) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.lead.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Lead ${id} not found in org ${orgId}`)
@@ -110,6 +119,7 @@ export async function updateLead(orgId: string, id: string, data: UpdateLeadInpu
 
     await tx.activity.create({
       data: {
+        id: activityId,
         orgId,
         kind: 'edited',
         title: `edited ${updated.name}`,
@@ -150,6 +160,8 @@ export async function convertLeadToDeal(
     /** Client-generated ids so the optimistic UI rows are the real rows. */
     contactId?: string
     dealId?: string
+    /** Client-generated id for the "converted..." activity — same reason as updateLead's. */
+    activityId: string
     /** Omit to convert to a Contact only. Provide to also open a Deal. */
     deal?: ConvertLeadDealInput
   },
@@ -203,6 +215,7 @@ export async function convertLeadToDeal(
 
     await tx.activity.create({
       data: {
+        id: input.activityId,
         orgId,
         kind: 'created',
         title: input.deal

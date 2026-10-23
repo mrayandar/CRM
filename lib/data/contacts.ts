@@ -79,6 +79,8 @@ export async function updateContact(
   id: string,
   data: UpdateContactInput,
   actorId: string,
+  /** Client-generated id for the "edited" activity — see updateLead's identical param. */
+  activityId: string,
 ) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.contact.findFirst({ where: { id, orgId } })
@@ -101,6 +103,7 @@ export async function updateContact(
 
     await tx.activity.create({
       data: {
+        id: activityId,
         orgId,
         kind: 'edited',
         title: `edited ${updated.name}`,

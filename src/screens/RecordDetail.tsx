@@ -16,6 +16,7 @@ import {
   Plus,
   Sparkles,
   StickyNote,
+  TriangleAlert,
 } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader, SectionLabel } from '@/components/ui/Card'
@@ -32,6 +33,7 @@ import { NewDealModal } from '@/components/common/NewDealModal'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { useCrm } from '@/store/crm'
+import { mergeTimeline } from '@/store/activityTimeline'
 import {
   LEAD_STATUS_LABEL,
   LEAD_STATUS_ORDER,
@@ -58,19 +60,20 @@ const LIFECYCLE_TONE: Record<Contact['lifecycle'], Tone> = {
   Churned: 'negative',
 }
 
-/** Matches an optimistic, locally-added activity (temp client id) against the real, persisted
- *  row GET /api/activities eventually returns for it (a different id — the server assigns its
- *  own). There's no shared id to match on, so this matches on content instead: kind + actor +
- *  title + body is specific enough that two genuinely different activities colliding on all four
- *  is not a real-world case this app needs to guard against. */
-const activityDedupeKey = (a: Activity) => `${a.kind}|${a.actorId}|${a.title}|${a.body ?? ''}`
-
 interface RecordTimelinePage {
   persisted: Activity[]
   nextCursor: string | null
   loading: boolean
   loadingMore: boolean
+  /** True on any non-200 (404 — a cross-tenant/nonexistent subject, or any other failure — or a
+   *  network error) or a genuinely unauthenticated 401. Deliberately NOT treated as a session
+   *  expiry: GET /api/activities failing never redirects or signs the user out — this flag only
+   *  ever drives an inline "couldn't load, try again" state on this one tab. A real session
+   *  problem already surfaces elsewhere (the next page navigation hits the (app) layout's own
+   *  auth check), so this route failing is never the place that decides the user is logged out. */
+  error: boolean
   loadMore: () => void
+  retry: () => void
 }
 
 /** One record's own activity history from GET /api/activities, paginated. Replaces filtering the
@@ -81,6 +84,8 @@ function useRecordTimeline(subjectType: 'lead' | 'contact', subjectId: string): 
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [error, setError] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
   const fetchPage = useCallback(
     async (cursor?: string) => {
@@ -96,6 +101,7 @@ function useRecordTimeline(subjectType: 'lead' | 'contact', subjectId: string): 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setError(false)
     setPersisted([])
     setNextCursor(null)
     fetchPage()
@@ -104,14 +110,16 @@ function useRecordTimeline(subjectType: 'lead' | 'contact', subjectId: string): 
         setPersisted(page.activities)
         setNextCursor(page.nextCursor)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
     return () => {
       cancelled = true
     }
-  }, [fetchPage])
+  }, [fetchPage, retryCount])
 
   const loadMore = useCallback(() => {
     if (!nextCursor || loadingMore) return
@@ -121,11 +129,13 @@ function useRecordTimeline(subjectType: 'lead' | 'contact', subjectId: string): 
         setPersisted((prev) => [...prev, ...page.activities])
         setNextCursor(page.nextCursor)
       })
-      .catch(() => {})
+      .catch(() => setError(true))
       .finally(() => setLoadingMore(false))
   }, [fetchPage, nextCursor, loadingMore])
 
-  return { persisted, nextCursor, loading, loadingMore, loadMore }
+  const retry = useCallback(() => setRetryCount((n) => n + 1), [])
+
+  return { persisted, nextCursor, loading, loadingMore, error, loadMore, retry }
 }
 
 export function LeadDetail() {
@@ -195,14 +205,15 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     nextCursor: timelineNextCursor,
     loading: timelineLoading,
     loadingMore: timelineLoadingMore,
+    error: timelineError,
     loadMore: loadMoreTimeline,
+    retry: retryTimeline,
   } = useRecordTimeline(type, record.id)
 
-  const timeline = useMemo(() => {
-    const persistedKeys = new Set(persistedTimeline.map(activityDedupeKey))
-    const pendingOnly = pendingLocal.filter((a) => !persistedKeys.has(activityDedupeKey(a)))
-    return sortBy([...persistedTimeline, ...pendingOnly], (a) => new Date(a.at).getTime(), 'desc')
-  }, [persistedTimeline, pendingLocal])
+  const timeline = useMemo(
+    () => mergeTimeline(persistedTimeline, pendingLocal),
+    [persistedTimeline, pendingLocal],
+  )
 
   const notes = timeline.filter((a) => a.kind === 'note')
   const recordTasks = tasks.filter((t) => t.relatedTo?.id === record.id)
@@ -584,7 +595,14 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
             {tab === 'activity' && (
               <div className="px-5 py-4">
                 {timeline.length === 0 ? (
-                  timelineLoading ? null : (
+                  timelineLoading ? null : timelineError ? (
+                    <EmptyState
+                      icon={<TriangleAlert size={16} />}
+                      title="Couldn't load activity"
+                      description="This record's history couldn't be loaded — it may no longer be available, or something went wrong."
+                      action={<Button variant="secondary" size="sm" onClick={retryTimeline}>Try again</Button>}
+                    />
+                  ) : (
                     <EmptyState
                       icon={<CalendarPlus size={16} />}
                       title="No activity yet"
@@ -596,8 +614,8 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                     <ActivityTimeline items={timeline} />
                     {timelineNextCursor && (
                       <div className="mt-3 text-center">
-                        <Button variant="secondary" size="sm" onClick={loadMoreTimeline} disabled={timelineLoadingMore}>
-                          {timelineLoadingMore ? 'Loading…' : 'Load more'}
+                        <Button variant="secondary" size="sm" onClick={timelineError ? retryTimeline : loadMoreTimeline} disabled={timelineLoadingMore}>
+                          {timelineLoadingMore ? 'Loading…' : timelineError ? 'Try again' : 'Load more'}
                         </Button>
                       </div>
                     )}
@@ -609,7 +627,14 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
             {tab === 'notes' && (
               <div className="px-5 py-4">
                 {notes.length === 0 ? (
-                  timelineLoading ? null : (
+                  timelineLoading ? null : timelineError ? (
+                    <EmptyState
+                      icon={<TriangleAlert size={16} />}
+                      title="Couldn't load notes"
+                      description="This record's history couldn't be loaded — it may no longer be available, or something went wrong."
+                      action={<Button variant="secondary" size="sm" onClick={retryTimeline}>Try again</Button>}
+                    />
+                  ) : (
                     <EmptyState
                       icon={<StickyNote size={16} />}
                       title="No notes yet"
@@ -621,8 +646,8 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
                     <ActivityTimeline items={notes} />
                     {timelineNextCursor && (
                       <div className="mt-3 text-center">
-                        <Button variant="secondary" size="sm" onClick={loadMoreTimeline} disabled={timelineLoadingMore}>
-                          {timelineLoadingMore ? 'Loading…' : 'Load more'}
+                        <Button variant="secondary" size="sm" onClick={timelineError ? retryTimeline : loadMoreTimeline} disabled={timelineLoadingMore}>
+                          {timelineLoadingMore ? 'Loading…' : timelineError ? 'Try again' : 'Load more'}
                         </Button>
                       </div>
                     )}

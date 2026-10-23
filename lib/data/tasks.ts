@@ -68,7 +68,17 @@ export interface UpdateTaskInput {
  * to. A standalone task with no `relatedTo` still gets the activity row (for the global "Recent
  * activity" feed), it just won't show up on any specific record's timeline.
  */
-export async function updateTask(orgId: string, id: string, data: UpdateTaskInput, actorId: string) {
+export async function updateTask(
+  orgId: string,
+  id: string,
+  data: UpdateTaskInput,
+  actorId: string,
+  /** Client-generated id for the "edited" activity, when the task has a `relatedTo` subject (the
+   *  only case the client has a matching local optimistic row for — see updateLead's identical
+   *  param). Omitted for a standalone task; the server still logs the activity either way, just
+   *  under its own generated id, since there's no optimistic row on the client to reconcile with. */
+  activityId?: string,
+) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.task.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Task ${id} not found in org ${orgId}`)
@@ -97,6 +107,7 @@ export async function updateTask(orgId: string, id: string, data: UpdateTaskInpu
 
     await tx.activity.create({
       data: {
+        id: activityId,
         orgId,
         kind: 'edited',
         title: `edited ${updated.title}`,

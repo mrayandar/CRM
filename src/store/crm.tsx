@@ -338,11 +338,10 @@ interface CrmState {
 
 const CrmContext = createContext<CrmState | null>(null)
 
-// Activities are display-only until the next load and are never referenced by id, so a local
-// counter is enough. Anything that *is* referenced by id (leads, contacts, deals, tasks) must use
-// a real UUID that the server stores as the row id — never a counter (see `newEntityId`).
-let sequence = 1000
-const nextId = (prefix: string) => `${prefix}${++sequence}`
+// Every optimistic row (leads, contacts, deals, tasks, and activities) uses a real UUID that the
+// server stores as the row id — so the optimistic row already is the real one, and (for
+// activities specifically) a later fetch of the same row can be matched by id rather than by
+// guessing from content.
 const newEntityId = () => crypto.randomUUID()
 
 const SAVE_FAILED = "Couldn't save change, please try again."
@@ -434,7 +433,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const addLocalActivity = useCallback(
     (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string): Activity => {
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind,
         title,
         body,
@@ -483,7 +482,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           if (!ok) return
           if (activity) {
             try {
-              await logActivityAction(activity.kind, activity.title, activity.subject, activity.body)
+              await logActivityAction(activity.id, activity.kind, activity.title, activity.subject, activity.body)
             } catch {
               removeActivity(activity.id)
               // Only the activity-log write failed; the change itself was saved.
@@ -590,11 +589,13 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         lastTouchedAt: now,
       }
       const subject: SubjectRef = { type: 'lead', id, label: name }
+      const noteActivityId = notes ? newEntityId() : undefined
+      const activityId = newEntityId()
       const optimisticActivities: Activity[] = [
-        ...(notes
-          ? [{ id: nextId('a'), kind: 'note' as const, title: `added a note on ${name}`, body: notes, at: now, actorId: currentUser.id, subject }]
+        ...(notes && noteActivityId
+          ? [{ id: noteActivityId, kind: 'note' as const, title: `added a note on ${name}`, body: notes, at: now, actorId: currentUser.id, subject }]
           : []),
-        { id: nextId('a'), kind: 'created', title: `created lead ${name}`, at: now, actorId: currentUser.id, subject },
+        { id: activityId, kind: 'created', title: `created lead ${name}`, at: now, actorId: currentUser.id, subject },
       ]
       const activityIds = new Set(optimisticActivities.map((a) => a.id))
 
@@ -603,8 +604,9 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
       beginMutation()
       try {
-        // The server stores the row under this same id, so the optimistic lead is already the real one.
-        await createLeadAction({ ...input, id, name, notes })
+        // The server stores the row (and its activities) under these same ids, so the optimistic
+        // rows are already the real ones.
+        await createLeadAction({ ...input, id, name, notes, activityId, noteActivityId })
         return lead
       } catch (err) {
         setLeads((prev) => prev.filter((l) => l.id !== id))
@@ -647,7 +649,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
       // Written to Postgres in the same nested create as the contact (see createContactAction).
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind: 'created',
         title: `created contact ${name}`,
         at: now,
@@ -672,6 +674,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           email: contact.email,
           phone: contact.phone,
           ownerId: input.ownerId,
+          activityId: activity.id,
         })
         if (!result.ok) {
           rollback()
@@ -722,7 +725,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       }
       // Written to Postgres in the same nested create as the deal (see createDealAction).
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind: 'created',
         title: `created deal ${name}`,
         at: now,
@@ -751,6 +754,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
             contactId: contact?.id,
             source,
             priority,
+            activityId: activity.id,
           }),
         () => {
           setDeals((prev) => prev.filter((d) => d.id !== id))
@@ -813,7 +817,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       // lib/data/leads.ts) — not routed through persist()'s post-success activity log, which would
       // write it a second time (the same duplicate-write bug addNote had before it was fixed).
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind: 'edited',
         title: `edited ${next.name}`,
         body: `Changed: ${changed.join(', ')}`,
@@ -826,7 +830,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       setActivities((prev) => [activity, ...prev])
 
       persist(
-        () => updateLeadAction({ id: leadId, ...input }),
+        () => updateLeadAction({ id: leadId, ...input, activityId: activity.id }),
         () => {
           setLeads((prev) => prev.map((l) => (l.id === leadId ? lead : l)))
           setActivities((prev) => prev.filter((a) => a.id !== activity.id))
@@ -876,7 +880,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       // lib/data/contacts.ts) — not routed through persist()'s post-success activity log, which
       // would write it a second time (the same duplicate-write bug addNote had before it was fixed).
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind: 'edited',
         title: `edited ${next.name}`,
         body: `Changed: ${changed.join(', ')}`,
@@ -889,7 +893,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       setActivities((prev) => [activity, ...prev])
 
       persist(
-        () => updateContactAction({ id: contactId, ...input }),
+        () => updateContactAction({ id: contactId, ...input, activityId: activity.id }),
         () => {
           setContacts((prev) => prev.map((c) => (c.id === contactId ? contact : c)))
           setActivities((prev) => prev.filter((a) => a.id !== activity.id))
@@ -955,7 +959,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       // lib/data/deals.ts) — not routed through persist()'s post-success activity log, which would
       // write it a second time (the same duplicate-write bug addNote had before it was fixed).
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind: 'edited',
         title: `edited ${next.name}`,
         body: `Changed: ${changed.join(', ')}`,
@@ -968,7 +972,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       setActivities((prev) => [activity, ...prev])
 
       persist(
-        () => updateDealAction({ id: dealId, ...input }),
+        () => updateDealAction({ id: dealId, ...input, activityId: activity.id }),
         () => {
           setDeals((prev) => prev.map((d) => (d.id === dealId ? deal : d)))
           setActivities((prev) => prev.filter((a) => a.id !== activity.id))
@@ -1302,7 +1306,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
           : null
       // Written to Postgres inside the same transaction as the contact/deal (see convertLeadToDeal).
       const activity: Activity = {
-        id: nextId('a'),
+        id: newEntityId(),
         kind: 'created',
         title: input.deal
           ? `converted ${lead.name} into ${input.deal.name}`
@@ -1335,6 +1339,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
             ownerId: input.ownerId,
             contactId,
             dealId: dealId ?? undefined,
+            activityId: activity.id,
             deal: input.deal
               ? {
                   name: input.deal.name,
@@ -1452,7 +1457,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       // nothing to optimistically show here either.
       const activity: Activity | null = task.relatedTo
         ? {
-            id: nextId('a'),
+            id: newEntityId(),
             kind: 'edited',
             title: `edited ${next.title}`,
             body: `Changed: ${changed.join(', ')}`,
@@ -1466,7 +1471,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       if (activity) setActivities((prev) => [activity, ...prev])
 
       persist(
-        () => updateTaskAction({ id: taskId, ...input }),
+        () => updateTaskAction({ id: taskId, ...input, activityId: activity?.id }),
         () => {
           setTasks((prev) => prev.map((t) => (t.id === taskId ? task : t)))
           if (activity) setActivities((prev) => prev.filter((a) => a.id !== activity.id))
@@ -1665,7 +1670,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
         )
       }
       persist(
-        () => addNoteAction(subject, body),
+        () => addNoteAction(activity.id, subject, body),
         () => {
           removeActivity(activity.id)
           if (prevContact) {
