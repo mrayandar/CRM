@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { Prisma } from '@prisma/client'
-import { auth, clerkClient } from '@clerk/nextjs/server'
+import { clerkClient } from '@clerk/nextjs/server'
 import { requireAuth, requireAdmin } from '@lib/auth'
 import type { Scope } from '@lib/scope'
 import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone } from '@lib/data/organizations'
@@ -190,10 +190,16 @@ const ORG_ROLES = ['org:admin', 'org:member'] as const
  * instead of this app's own sign-up flow. `redirectUrl` here is exactly the dashboard-level
  * setting middleware.ts's `signInUrl`/`signUpUrl` already pin for the ordinary sign-in/up flows —
  * organization invitations just aren't covered by those, and need their own.
+ *
+ * Admin-only via `requireAdmin()` — found and fixed during a role-rule audit: this previously
+ * checked only `auth()` for a valid session, with no role check at all, so any Member could
+ * invite a new member AND choose `role: 'org:admin'` for them — a Member could hand out Admin
+ * access to anyone, including themselves via a second account. `input.role` is still a
+ * client-chosen value (an Admin may legitimately invite either role), but only an Admin can reach
+ * this action at all now.
  */
 export async function inviteMemberAction(input: { emailAddress: string; role: 'org:admin' | 'org:member' }) {
-  const { userId, orgId: clerkOrgId } = await auth()
-  if (!userId || !clerkOrgId) throw new Error('Unauthorized')
+  const { clerkUserId: userId, clerkOrgId } = await requireAdmin()
 
   const email = input.emailAddress.trim()
   if (!email || email.length > 320 || !EMAIL_RE.test(email)) throw new Error('Invalid email')
@@ -865,8 +871,15 @@ export async function updateOrgTimezoneAction(input: { timezone: string }) {
   revalidatePath('/', 'layout')
 }
 
+/**
+ * Admin-only via `requireAdmin()` — found and fixed during a role-rule audit: this previously
+ * called `requireAuth()`, letting any Member set the org's quarterly quota, despite
+ * `updateCurrencyAction`'s own doc comment (below) already claiming parity with this one as an
+ * admin-gated org-level setting. The quota is exactly that: org-wide, not per-rep, same category
+ * as currency and timezone.
+ */
 export async function updateQuotaAction(input: { quarterlyQuota: number | null }) {
-  const { orgId } = await requireAuth()
+  const { orgId } = await requireAdmin()
 
   const quota = input.quarterlyQuota
   if (quota !== null && (!Number.isInteger(quota) || quota < 0 || quota > 1_000_000_000)) {

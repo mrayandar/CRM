@@ -27,7 +27,7 @@ import type { Deal, Payment, PipelineStage } from '@/data/types'
 import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, receivedTotal, sortBy, sum, weightedValue } from '@/lib/utils'
 
 export function Pipeline() {
-  const { deals, owners, ownerById, moveDeal, currentUser, stages, orgCurrency, payments, canAccessPayments } = useCrm()
+  const { deals, owners, ownerById, moveDeal, currentUser, stages, orgCurrency, payments, canAccessPayments, isScopedMember } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [query, setQuery] = useState('')
@@ -133,26 +133,34 @@ export function Pipeline() {
             placeholder="Search deals…"
             className="w-full sm:w-[250px]"
           />
-          <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
-            <option value="all">All owners</option>
-            {owners.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </Select>
-          <Segmented
-            value={scope}
-            onChange={setScope}
-            options={[
-              { value: 'all', label: 'All deals', count: deals.length },
-              {
-                value: 'mine',
-                label: 'My deals',
-                count: deals.filter((d) => d.ownerId === currentUser.id).length,
-              },
-            ]}
-          />
+          {/* Both hidden for a scoped Member — `deals` is already narrowed to their own records
+              server-side, so an owner filter or an all/my toggle would have nothing left to
+              filter. `owner` stays 'all' and `scope` stays 'all' in that case, which is already a
+              no-op against an already-scoped `deals` array. Admins and ALL-mode orgs keep both. */}
+          {!isScopedMember && (
+            <>
+              <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
+                <option value="all">All owners</option>
+                {owners.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </Select>
+              <Segmented
+                value={scope}
+                onChange={setScope}
+                options={[
+                  { value: 'all', label: 'All deals', count: deals.length },
+                  {
+                    value: 'mine',
+                    label: 'My deals',
+                    count: deals.filter((d) => d.ownerId === currentUser.id).length,
+                  },
+                ]}
+              />
+            </>
+          )}
           <span className="ml-auto hidden items-center gap-1.5 text-[11.5px] text-ink-400 md:flex">
             <GripVertical size={12} />
             Drag a card to move it between stages

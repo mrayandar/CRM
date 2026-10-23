@@ -151,7 +151,7 @@ export function mapStage(s: PrismaPipelineStage): PipelineStage {
   }
 }
 
-export function mapTask(t: PrismaTask): Task {
+export function mapTask(t: PrismaTask & { relatedToRedacted?: boolean }): Task {
   const relatedTo = t.relatedToType
     ? {
         type: t.relatedToType as 'lead' | 'contact' | 'deal',
@@ -169,6 +169,7 @@ export function mapTask(t: PrismaTask): Task {
     priority: t.priority,
     ownerId: t.ownerId,
     relatedTo,
+    relatedToRedacted: t.relatedToRedacted ?? false,
     type: t.type,
   }
 }

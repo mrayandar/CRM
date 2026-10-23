@@ -251,6 +251,15 @@ interface CrmState {
   updateOrgTimezone: (timezone: string) => void
   /** Always "ALL" today — see lib/data-loader.ts's identical field. */
   repVisibility: 'ALL' | 'OWN'
+  /** Null for an unscoped viewer (Admin, or the org is in ALL mode) — see lib/data-loader.ts's
+   *  identical field. Stage 1b's UI gating reads `isScopedMember` (derived from this), not
+   *  `repVisibility` + role on its own, so the UI can never show something more permissive than
+   *  what the server actually enforced. */
+  scopeOwnerId: string | null
+  /** `scopeOwnerId !== null` — true once this viewer is actually restricted to their own records.
+   *  Every Stage 1b UI gate (hiding the Mine/Team and all/my toggles, owner filter dropdowns, the
+   *  Tasks "Team" view, restricting the Reports leaderboard to one row) reads this single flag. */
+  isScopedMember: boolean
   /** Read-only — there's no "rename workspace" action in this app; see orgName's doc comment in
    *  lib/data-loader.ts for why it can lag a rename made directly in Clerk. */
   orgName: string
@@ -406,6 +415,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     [orgTimezone, orgTimezoneConfigured, currentUser.timezone],
   )
   const [repVisibility, setRepVisibility] = useState<'ALL' | 'OWN'>(initialData.repVisibility)
+  const [scopeOwnerId, setScopeOwnerId] = useState<string | null>(initialData.scopeOwnerId)
+  const isScopedMember = scopeOwnerId !== null
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
@@ -1419,9 +1430,14 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       if (!task) return
       const done = !task.done
       setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, done } : t)))
-      const activity = done
-        ? addLocalActivity('task', `completed ${task.title}`, task.relatedTo)
-        : undefined
+      // Skipped entirely (not just logged without a subject) when the parent is redacted — the
+      // task's own relatedTo is already undefined in that case, but logging even a subject-less
+      // "completed X" activity here would be a misleading record of an event whose real context
+      // the viewer can't see, for a parent that isn't actually subject-less.
+      const activity =
+        done && !task.relatedToRedacted
+          ? addLocalActivity('task', `completed ${task.title}`, task.relatedTo)
+          : undefined
       // Logging the "completed" activity also moves the parent's last-activity time (server side).
       const parent = done ? task.relatedTo : undefined
       const now = new Date().toISOString()
@@ -1764,6 +1780,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     setOrgTimezone(fresh.orgTimezone)
     setOrgTimezoneConfigured(fresh.orgTimezoneConfigured)
     setRepVisibility(fresh.repVisibility)
+    setScopeOwnerId(fresh.scopeOwnerId)
     setOrgName(fresh.orgName)
   }, [])
 
@@ -1843,6 +1860,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       effectiveOrgTimezone,
       updateOrgTimezone,
       repVisibility,
+      scopeOwnerId,
+      isScopedMember,
       orgName,
       ownerById,
       stageById,
@@ -1903,6 +1922,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       effectiveOrgTimezone,
       updateOrgTimezone,
       repVisibility,
+      scopeOwnerId,
+      isScopedMember,
       orgName,
       ownerById,
       stageById,

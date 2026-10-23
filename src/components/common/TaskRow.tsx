@@ -6,6 +6,7 @@ import { CalendarDays, Mail, MoreHorizontal, Phone, SquareCheck } from 'lucide-r
 import type { Task } from '@/data/types'
 import { cn, dueLabel } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/Field'
+import { Badge } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { IconButton, Button } from '@/components/ui/Button'
 import { MenuItem, Popover } from '@/components/ui/Menu'
@@ -86,6 +87,11 @@ export function TaskRow({
           >
             {task.relatedTo.label}
           </Link>
+        )}
+        {showRelated && !task.relatedTo && task.relatedToRedacted && (
+          <Badge tone="neutral" className="mt-0.5">
+            Restricted record
+          </Badge>
         )}
       </div>
 

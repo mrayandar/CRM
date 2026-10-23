@@ -21,6 +21,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 const { mockAuth, mockClerkClient } = vi.hoisted(() => ({ mockAuth: vi.fn(), mockClerkClient: vi.fn() }))
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
+// inviteMemberAction reads the request's `host` header to build the invitation's redirect URL —
+// outside a real Next.js request (as here) `headers()` throws unless mocked; a plain Headers
+// with no 'host' entry just falls through to inviteMemberAction's own 'localhost:3000' default.
+vi.mock('next/headers', () => ({ headers: async () => new Headers() }))
 vi.mock('@clerk/nextjs/server', () => ({
   auth: () => mockAuth(),
   clerkClient: () => mockClerkClient(),
@@ -30,7 +34,7 @@ import { prisma } from '@lib/prisma'
 import { getLeadById, listLeads, updateLeadStatus, updateLead, convertLeadToDeal } from '@lib/data/leads'
 import { getContactById, listContacts, updateContact, addContactTag } from '@lib/data/contacts'
 import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/deals'
-import { getCompanyById, getCompanyDetail, deleteCompany } from '@lib/data/companies'
+import { getCompanyById, deleteCompany } from '@lib/data/companies'
 import { getOwnerById, listOwners, deactivateOwner } from '@lib/data/owners'
 import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
 import { getPaymentById, listPayments } from '@lib/data/payments'
@@ -210,9 +214,6 @@ describe('lib/data: reads are scoped by orgId', () => {
   })
   it('getCompanyById returns null for another org\'s company', async () => {
     expect(await getCompanyById(B.org.id, A.company.id)).toBeNull()
-  })
-  it('getCompanyDetail returns null for another org\'s company', async () => {
-    expect(await getCompanyDetail(B.org.id, A.company.id)).toBeNull()
   })
   it('listLeads never includes another org\'s leads', async () => {
     expect((await listLeads(scopeB())).map((l) => l.id)).not.toContain(A.lead.id)
@@ -969,6 +970,130 @@ describe('org currency: tenant isolation and admin-only enforcement', () => {
     await expect(actions.updateCurrencyAction({ currency: 'XXX' })).rejects.toThrow(/Unsupported currency/)
     const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
     expect(org?.currency).toBe('USD')
+  })
+})
+
+describe('updateQuotaAction: org-wide setting, admin-only (found during a role-rule audit — previously called requireAuth(), letting any Member set it)', () => {
+  it('a real admin can set the org\'s quarterly quota', async () => {
+    loginAs(A)
+    await actions.updateQuotaAction({ quarterlyQuota: 500_000 })
+    const org = await prisma.organization.findUnique({ where: { id: A.org.id } })
+    expect(org?.quarterlyQuota).toBe(500_000)
+    await prisma.organization.update({ where: { id: A.org.id }, data: { quarterlyQuota: null } })
+  })
+
+  it('rejects a non-admin (Member) caller, and never writes the quota', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-quota-member-${RUN}`,
+        name: 'Member Owner',
+        email: `quota-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+
+    await expect(actions.updateQuotaAction({ quarterlyQuota: 999_000 })).rejects.toThrow(/Admins only/)
+
+    const org = await prisma.organization.findUnique({ where: { id: B.org.id } })
+    expect(org?.quarterlyQuota).toBeNull() // rejected before any write
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+})
+
+describe('inviteMemberAction: admin-only (found during a role-rule audit — previously checked only auth(), with no role check at all)', () => {
+  it('rejects a non-admin (Member) caller before ever reaching Clerk\'s API — including an attempt to invite someone as org:admin', async () => {
+    const member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-invite-member-${RUN}`,
+        name: 'Member Owner',
+        email: `invite-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+    mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId })
+    const createInvitation = vi.fn()
+    mockClerkClient.mockResolvedValue({ organizations: { createOrganizationInvitation: createInvitation } })
+
+    await expect(
+      actions.inviteMemberAction({ emailAddress: 'new-admin@example.com', role: 'org:admin' }),
+    ).rejects.toThrow(/Admins only/)
+    expect(createInvitation).not.toHaveBeenCalled()
+
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+
+  it('a real admin can invite a new member with either role', async () => {
+    loginAs(B) // B.owner is an Admin — see makeFixture
+    const createInvitation = vi.fn().mockResolvedValue({})
+    mockClerkClient.mockResolvedValue({ organizations: { createOrganizationInvitation: createInvitation } })
+
+    await actions.inviteMemberAction({ emailAddress: 'new-admin@example.com', role: 'org:admin' })
+    expect(createInvitation).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: B.org.clerkOrgId, emailAddress: 'new-admin@example.com', role: 'org:admin' }),
+    )
+
+    await actions.inviteMemberAction({ emailAddress: 'new-member@example.com', role: 'org:member' })
+    expect(createInvitation).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: B.org.clerkOrgId, emailAddress: 'new-member@example.com', role: 'org:member' }),
+    )
+  })
+
+  it('rejects an invalid role even for an admin', async () => {
+    loginAs(B)
+    await expect(
+      actions.inviteMemberAction({ emailAddress: 'x@example.com', role: 'org:superadmin' as never }),
+    ).rejects.toThrow(/Invalid role/)
+  })
+})
+
+describe('Role-rule audit: actions confirmed Member-accessible by design (pinned by test, not just code reading)', () => {
+  let member: Awaited<ReturnType<typeof prisma.owner.create>>
+
+  beforeAll(async () => {
+    member = await prisma.owner.create({
+      data: {
+        orgId: B.org.id,
+        clerkUserId: `test-clerk-rolerule-member-${RUN}`,
+        name: 'Role Rule Member',
+        email: `rolerule-member-${RUN}@example.com`,
+        role: 'Member',
+      },
+    })
+  })
+  afterAll(async () => {
+    await prisma.owner.delete({ where: { id: member.id } })
+  })
+  beforeEach(() => mockAuth.mockResolvedValue({ userId: member.clerkUserId, orgId: B.org.clerkOrgId, orgRole: 'org:member' }))
+
+  it('a Member can create/update/delete a Company — shared CRM entity management, not org-level configuration, same category as leads/contacts/deals', async () => {
+    const created = await actions.createCompanyAction({ id: randomUUID(), name: `Member Co ${RUN}` })
+    expect(created.existing).toBe(false)
+    await actions.updateCompanyAction({ id: created.id, name: `Member Co Renamed ${RUN}` })
+    const renamed = await prisma.company.findUnique({ where: { id: created.id } })
+    expect(renamed?.name).toBe(`Member Co Renamed ${RUN}`)
+    await actions.deleteCompanyAction(created.id)
+    expect(await prisma.company.findUnique({ where: { id: created.id } })).toBeNull()
+  })
+
+  it('a Member can create/rename/reorder/delete a pipeline stage — shared kanban structure, same UI/server treatment as Companies (StageManager.tsx has no role gate either)', async () => {
+    const stageId = randomUUID()
+    await actions.createStageAction({ id: stageId, label: `Member Stage ${RUN}` })
+    await prisma.pipelineStage.findUniqueOrThrow({ where: { id: stageId } })
+    await actions.renameStageAction(stageId, 'Renamed by Member')
+    await actions.reorderStageAction(stageId, 'up')
+    await actions.deleteStageAction(stageId)
+    expect(await prisma.pipelineStage.findUnique({ where: { id: stageId } })).toBeNull()
+  })
+
+  it('a Member can update their own profile (name/timezone) — never an org-wide setting', async () => {
+    await actions.updateProfileAction({ name: 'Role Rule Member (Updated)', timezone: 'Asia/Karachi' })
+    const updated = await prisma.owner.findUniqueOrThrow({ where: { id: member.id } })
+    expect(updated.name).toBe('Role Rule Member (Updated)')
+    expect(updated.timezone).toBe('Asia/Karachi')
   })
 })
 

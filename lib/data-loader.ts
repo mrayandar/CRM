@@ -69,6 +69,13 @@ export interface CrmInitialData {
    *  the query-cache security guard (lib/queryCacheSecurity.ts) already watches it; nothing else
    *  reads or writes this. */
   repVisibility: 'ALL' | 'OWN'
+  /** The exact same value the server used to scope this request's own leads/contacts/deals/
+   *  tasks/activities — null for an unscoped caller (Admin, or the org is in ALL mode), the
+   *  caller's own id once scoped. Stage 1b's UI gating reads this (never re-derives "am I scoped"
+   *  from `repVisibility` + role on its own) so the UI can never show something more permissive
+   *  than what the server actually enforced for this exact request. Always null today — no org
+   *  is in OWN mode yet. */
+  scopeOwnerId: string | null
   /** The org's own name, as stored in our DB (set once, at creation, from Clerk's org name — see
    *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
    *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
@@ -149,6 +156,7 @@ export async function loadCrmData(
     orgTimezone: org?.timezone ?? DEFAULT_ORG_TIMEZONE,
     orgTimezoneConfigured: org?.timezoneConfigured ?? false,
     repVisibility: org?.repVisibility ?? 'ALL',
+    scopeOwnerId: scope.scopeOwnerId,
     orgName: org?.name ?? '',
   }
 }

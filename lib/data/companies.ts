@@ -8,15 +8,18 @@ import { prisma } from '@lib/prisma'
 
 export interface ListCompaniesOptions {
   search?: string
-  /** Non-null for a scoped Member: company identity (name/website/industry/notes) stays org-wide
-   *  and unscoped — shared company names are not per-rep data — but the rollup `_count` below is
-   *  narrowed to just the records this caller owns, same rule as every other count in this app.
-   *  Kept as a plain optional param rather than a `Scope`, since this module's call sites
+  /** REQUIRED, not optional — an earlier version let this default to `undefined` when a caller
+   *  forgot it, which silently fell through to the unscoped branch below and returned every
+   *  rep's rollup counts. Every caller must now write `scopeOwnerId: null` explicitly for an
+   *  unscoped (Admin / ALL-mode) read, so "I forgot to scope this" can never compile. Company
+   *  identity (name/website/industry/notes) stays org-wide and unscoped regardless — shared
+   *  company names are not per-rep data — only the rollup `_count` below is narrowed. Kept as a
+   *  plain required field rather than a `Scope` object, since this module's call sites
    *  (companies aren't in Stage 1a's Scope-replacement list) still pass a bare orgId. */
-  scopeOwnerId?: string | null
+  scopeOwnerId: string | null
 }
 
-export function listCompanies(orgId: string, options: ListCompaniesOptions = {}) {
+export function listCompanies(orgId: string, options: ListCompaniesOptions) {
   const { search, scopeOwnerId } = options
   return prisma.company.findMany({
     where: {
@@ -38,20 +41,6 @@ export function listCompanies(orgId: string, options: ListCompaniesOptions = {})
 
 export function getCompanyById(orgId: string, id: string) {
   return prisma.company.findFirst({ where: { id, orgId } })
-}
-
-/** Full detail view: the company plus every Lead/Contact/Deal linked to it. `scopeOwnerId` (see
- *  ListCompaniesOptions' identical field) narrows the nested leads/contacts/deals to just this
- *  caller's own — the company row itself (name etc.) is still returned unscoped. */
-export function getCompanyDetail(orgId: string, id: string, scopeOwnerId?: string | null) {
-  return prisma.company.findFirst({
-    where: { id, orgId },
-    include: {
-      leads: { where: scopeOwnerId ? { ownerId: scopeOwnerId } : {}, include: { owner: true } },
-      contacts: { where: scopeOwnerId ? { ownerId: scopeOwnerId } : {}, include: { owner: true } },
-      deals: { where: scopeOwnerId ? { ownerId: scopeOwnerId } : {}, include: { owner: true, stage: true } },
-    },
-  })
 }
 
 /** Case-insensitive lookup within one org; used so the inline create-or-select picker doesn't

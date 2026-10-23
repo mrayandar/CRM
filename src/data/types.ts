@@ -116,6 +116,11 @@ export interface Task {
   priority: Priority
   ownerId: string
   relatedTo?: { type: 'lead' | 'contact' | 'deal'; id: string; label: string }
+  /** True when this task HAD a relatedTo subject, but the server redacted it because the parent's
+   *  current owner is outside the scoped viewer's visibility (see redactOutOfScopeParent in
+   *  lib/data/tasks.ts). Lets the UI distinguish "no parent" from "a parent exists but you can't
+   *  see which one" — always false for an unscoped (Admin / ALL-mode) viewer. */
+  relatedToRedacted?: boolean
   type: 'call' | 'email' | 'meeting' | 'todo'
 }
 

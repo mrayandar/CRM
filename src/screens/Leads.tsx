@@ -40,7 +40,7 @@ const SOURCES = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website
 
 export function Leads() {
   const navigate = useNavigate()
-  const { leads, owners, ownerById, setLeadStatus, updateLead, orgCurrency } = useCrm()
+  const { leads, owners, ownerById, setLeadStatus, updateLead, orgCurrency, isScopedMember } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [params, setParams] = useSearchParams()
@@ -151,14 +151,19 @@ export function Leads() {
             placeholder="Search leads by name, company, email…"
             className="w-full sm:w-[290px]"
           />
-          <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
-            <option value="all">All owners</option>
-            {owners.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </Select>
+          {/* Hidden for a scoped Member — `leads` is already narrowed to their own records
+              server-side, so this filter would have nothing left to filter. Admins and ALL-mode
+              orgs keep it. */}
+          {!isScopedMember && (
+            <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
+              <option value="all">All owners</option>
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </Select>
+          )}
           <Select value={source} onChange={(e) => setSource(e.target.value)} className="w-[140px]">
             <option value="all">All sources</option>
             {SOURCES.map((s) => (

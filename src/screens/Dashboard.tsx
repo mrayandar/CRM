@@ -56,6 +56,7 @@ export function Dashboard() {
     effectiveOrgTimezone,
     payments,
     canAccessPayments,
+    isScopedMember,
   } = useCrm()
   // Personal day boundaries (tasks due today/overdue) use the viewer's own timezone, falling
   // back to the browser's resolved zone while it's unset (prompted for in Settings, never
@@ -349,14 +350,20 @@ export function Dashboard() {
                 subtitle={`${overdueTasks.length + dueTodayTasks.length + upcomingTasks.length} open ${taskScope === 'mine' ? 'tasks assigned to you' : 'team tasks'} · overdue, due today, or due within 7 days`}
                 action={
                   <div className="flex items-center gap-2">
-                    <Segmented
-                      value={taskScope}
-                      onChange={setTaskScope}
-                      options={[
-                        { value: 'mine', label: 'Mine' },
-                        { value: 'team', label: 'Team' },
-                      ]}
-                    />
+                    {/* Hidden for a scoped Member — "Team" would be a filter they're not allowed
+                        to widen into anyway (see lib/scope.ts); `taskScope` already defaults to
+                        'mine' so hiding this control alone is enough, no separate force-override
+                        needed. Admins and ALL-mode orgs keep both options. */}
+                    {!isScopedMember && (
+                      <Segmented
+                        value={taskScope}
+                        onChange={setTaskScope}
+                        options={[
+                          { value: 'mine', label: 'Mine' },
+                          { value: 'team', label: 'Team' },
+                        ]}
+                      />
+                    )}
                     <Link to="/tasks">
                       <Button variant="ghost" size="xs">
                         All tasks

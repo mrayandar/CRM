@@ -33,7 +33,7 @@ const bucketOf = (task: Task): Bucket => {
 }
 
 export function Tasks() {
-  const { tasks, owners, currentUser, addTask } = useCrm()
+  const { tasks, owners, currentUser, addTask, isScopedMember } = useCrm()
   const [scope, setScope] = useState<'all' | 'mine'>('mine')
   const [owner, setOwner] = useState('all')
   const [draft, setDraft] = useState('')
@@ -79,22 +79,31 @@ export function Tasks() {
       }
       toolbar={
         <>
-          <Segmented
-            value={scope}
-            onChange={setScope}
-            options={[
-              { value: 'mine', label: 'My tasks' },
-              { value: 'all', label: 'Team tasks' },
-            ]}
-          />
-          <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
-            <option value="all">All assignees</option>
-            {owners.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </Select>
+          {/* Both hidden for a scoped Member — `tasks` is already narrowed server-side to what
+              they're allowed to see (assignee or creator; see taskVisibilityWhere in
+              lib/data/tasks.ts), so "Team tasks" / a specific assignee filter would show nothing
+              beyond what "My tasks" already does. `scope` defaults to 'mine', already a no-op
+              here. Admins and ALL-mode orgs keep both. */}
+          {!isScopedMember && (
+            <>
+              <Segmented
+                value={scope}
+                onChange={setScope}
+                options={[
+                  { value: 'mine', label: 'My tasks' },
+                  { value: 'all', label: 'Team tasks' },
+                ]}
+              />
+              <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
+                <option value="all">All assignees</option>
+                {owners.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </Select>
+            </>
+          )}
           <div className="ml-auto flex w-full items-center gap-2 sm:w-[320px]">
             <Input
               value={draft}

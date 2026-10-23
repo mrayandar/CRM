@@ -39,7 +39,7 @@ type View = 'company' | 'flat'
 
 export function Contacts() {
   const navigate = useNavigate()
-  const { contacts, owners, ownerById, orgCurrency } = useCrm()
+  const { contacts, owners, ownerById, orgCurrency, isScopedMember } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [params, setParams] = useSearchParams()
@@ -139,14 +139,19 @@ export function Contacts() {
             placeholder="Search contacts, companies, tags…"
             className="w-full sm:w-[290px]"
           />
-          <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
-            <option value="all">All owners</option>
-            {owners.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </Select>
+          {/* Hidden for a scoped Member — `contacts` is already narrowed to their own records
+              server-side, so this filter would have nothing left to filter. Admins and ALL-mode
+              orgs keep it. */}
+          {!isScopedMember && (
+            <Select value={owner} onChange={(e) => setOwner(e.target.value)} className="w-[150px]">
+              <option value="all">All owners</option>
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </Select>
+          )}
           <Select
             value={lifecycle}
             onChange={(e) => setLifecycle(e.target.value)}

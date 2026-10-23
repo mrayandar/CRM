@@ -27,7 +27,13 @@ function taskVisibilityWhere(scopeOwnerId: string): Prisma.TaskWhereInput {
 /** Nulls out a task's `relatedTo` fields when the parent lead/contact/deal's current owner isn't
  *  the scoped caller — the task itself passed its own (assignee-or-creator) visibility check, but
  *  that doesn't mean the caller may see which record it's attached to. Unscoped (Admin/ALL-mode)
- *  callers never redact: `parentOwnerId` is only meaningful once the caller is scoped. */
+ *  callers never redact: `parentOwnerId` is only meaningful once the caller is scoped.
+ *
+ * Always adds `relatedToRedacted: boolean` to the result, even when nothing was redacted — a
+ * redacted task and a genuinely standalone task (no `relatedTo` at all) would otherwise be
+ * indistinguishable to the client once `relatedToType` is nulled on both; `mapTask`
+ * (lib/mappers.ts) carries this flag through so the UI (TaskRow) can render a muted "restricted
+ * record" chip instead of silently treating a redacted parent as if the task had none. */
 function redactOutOfScopeParent<
   T extends {
     relatedToType: string | null
@@ -39,10 +45,11 @@ function redactOutOfScopeParent<
     contact?: { ownerId: string } | null
     deal?: { ownerId: string } | null
   },
->(task: T, scopeOwnerId: string | null): T {
-  if (!scopeOwnerId) return task
+>(task: T, scopeOwnerId: string | null): T & { relatedToRedacted: boolean } {
   const parentOwnerId = task.lead?.ownerId ?? task.contact?.ownerId ?? task.deal?.ownerId ?? null
-  if (!parentOwnerId || parentOwnerId === scopeOwnerId) return task
+  if (!scopeOwnerId || !parentOwnerId || parentOwnerId === scopeOwnerId) {
+    return { ...task, relatedToRedacted: false }
+  }
   return {
     ...task,
     relatedToType: null,
@@ -53,6 +60,7 @@ function redactOutOfScopeParent<
     lead: null,
     contact: null,
     deal: null,
+    relatedToRedacted: true,
   }
 }
 

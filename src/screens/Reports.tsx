@@ -26,7 +26,7 @@ import { isMonthsAgo, isThisMonth, monthlyWonRevenue } from '@lib/timePeriods'
 const SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 
 export function Reports() {
-  const { deals, leads, owners, stages, stageById, orgCurrency, effectiveOrgTimezone } = useCrm()
+  const { deals, leads, owners, stages, stageById, orgCurrency, effectiveOrgTimezone, currentUser, isScopedMember } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const openStages = sortBy(stages.filter((s) => !s.isClosed), (s) => s.order)
@@ -110,24 +110,28 @@ export function Reports() {
     [leads, deals, stageById],
   )
 
-  const leaderboard = useMemo(
-    () =>
-      sortBy(
-        owners.map((owner) => {
-          const ownerWon = won.filter((d) => d.ownerId === owner.id)
-          const ownerOpen = openDeals.filter((d) => d.ownerId === owner.id)
-          return {
-            owner,
-            wonValue: sum(ownerWon.map((d) => d.value)),
-            wonCount: ownerWon.length,
-            pipeline: sum(ownerOpen.map((d) => d.value)),
-            openCount: ownerOpen.length,
-          }
-        }),
-        (row) => -row.wonValue,
-      ),
-    [owners, won, openDeals],
-  )
+  const leaderboard = useMemo(() => {
+    // `owners` is the org's whole roster (intentionally unscoped — see lib/data/owners.ts), but
+    // `won`/`openDeals` are already narrowed to a scoped Member's own deals server-side. Without
+    // this, every teammate would still get a row here, just showing $0/0 — which reads as "they
+    // won nothing," not the truth ("you can't see their numbers"). Restricting the rows
+    // themselves to just the viewer's own is what the data actually supports for a scoped caller.
+    const rosterForLeaderboard = isScopedMember ? owners.filter((o) => o.id === currentUser.id) : owners
+    return sortBy(
+      rosterForLeaderboard.map((owner) => {
+        const ownerWon = won.filter((d) => d.ownerId === owner.id)
+        const ownerOpen = openDeals.filter((d) => d.ownerId === owner.id)
+        return {
+          owner,
+          wonValue: sum(ownerWon.map((d) => d.value)),
+          wonCount: ownerWon.length,
+          pipeline: sum(ownerOpen.map((d) => d.value)),
+          openCount: ownerOpen.length,
+        }
+      }),
+      (row) => -row.wonValue,
+    )
+  }, [owners, won, openDeals, isScopedMember, currentUser.id])
 
   const maxWon = Math.max(...leaderboard.map((r) => r.wonValue), 1)
   const maxSourcePipeline = Math.max(...bySource.map((r) => r.pipeline), 1)

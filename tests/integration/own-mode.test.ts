@@ -348,22 +348,25 @@ describe('lib/actions/crm: OWN-mode scoped-creation matrix — creating a record
  * (with a one-line reason each). A newly added action that isn't placed in one of the three fails
  * this test immediately, rather than shipping with silent OWN-mode gaps.
  */
+// Role each action requires, pinned by tests/integration/cross-tenant.test.ts's "Role-rule audit"
+// and admin-only describe blocks — see PROGRESS.md's role-rule audit entry for the full table.
+// 15 entries (a prior report miscounted this as 14 — corrected here).
 const EXEMPT_ACTIONS: Record<string, string> = {
-  createCompanyAction: 'companies are shared/org-wide identity, never per-owner (see lib/data/companies.ts)',
-  updateCompanyAction: 'same as createCompanyAction',
-  deleteCompanyAction: 'same as createCompanyAction',
-  inviteMemberAction: 'org-membership action, not a CRM record',
-  addTaskAction: 'task assignment is unrestricted even when scoped (see its own doc comment) — visibility, not assignability, is what OWN mode gates',
-  logActivityAction: 'delegates its subject-in-scope check to assertSubjectInScope, covered by its own direct test below',
-  addNoteAction: 'thin wrapper around logActivityAction',
-  updateProfileAction: 'the caller\'s own profile, not a scoped CRM record',
-  updateOrgTimezoneAction: 'org-level setting, admin-only, not a scoped CRM record',
-  updateQuotaAction: 'org-level setting, not a scoped CRM record',
-  updateCurrencyAction: 'org-level setting, admin-only, not a scoped CRM record',
-  createStageAction: 'pipeline stages are shared/org-wide, never per-owner',
-  renameStageAction: 'same as createStageAction',
-  reorderStageAction: 'same as createStageAction',
-  deleteStageAction: 'same as createStageAction',
+  createCompanyAction: 'Member or Admin — companies are shared/org-wide identity, never per-owner (see lib/data/companies.ts)',
+  updateCompanyAction: 'Member or Admin — same as createCompanyAction',
+  deleteCompanyAction: 'Member or Admin — same as createCompanyAction',
+  inviteMemberAction: 'Admin only — org-membership action; previously had no role check at all (fixed in the role-rule audit)',
+  addTaskAction: 'Member or Admin — task assignment is unrestricted even when scoped (see its own doc comment) — visibility, not assignability, is what OWN mode gates',
+  logActivityAction: 'Member or Admin — delegates its subject-in-scope check to assertSubjectInScope, covered by its own direct test below',
+  addNoteAction: 'Member or Admin — thin wrapper around logActivityAction',
+  updateProfileAction: 'Member or Admin — the caller\'s own profile, not an org-level setting',
+  updateOrgTimezoneAction: 'Admin only — org-level setting, not a scoped CRM record',
+  updateQuotaAction: 'Admin only — org-level setting; previously called requireAuth(), letting any Member set it (fixed in the role-rule audit)',
+  updateCurrencyAction: 'Admin only — org-level setting, not a scoped CRM record',
+  createStageAction: 'Member or Admin — pipeline stages are shared/org-wide, never per-owner',
+  renameStageAction: 'Member or Admin — same as createStageAction',
+  reorderStageAction: 'Member or Admin — same as createStageAction',
+  deleteStageAction: 'Member or Admin — same as createStageAction',
 }
 
 describe('lib/actions/crm: OWN-mode matrix is exhaustive over every exported action', () => {

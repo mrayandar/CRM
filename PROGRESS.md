@@ -2,6 +2,158 @@
 
 > Living context file. Updated at the end of every task.
 
+## Part 1 (role-rule audit + structural hardening) and Stage 1b (UI gating) (Oct 24 2026)
+
+Two parts, done in order, both reported with evidence. **No Stage 1c (the Settings switch
+itself) started.**
+
+### Part 1.1 — `getCompanyDetail` fail-open gap: deleted; `scopeOwnerId` made required
+
+Confirmed again (grepped the whole repo) that `getCompanyDetail` had zero production callers —
+`CompanyDetail` (`src/screens/CompanyDetail.tsx`) derives its leads/contacts/deals from the
+client's already-loaded, already-scoped `useCrm()` state (`leads.filter(l => l.companyId ===
+company.id)`, etc.), never calling this function. **Deleted it** rather than fixing its optional
+param, per the instruction ("delete the function if it has no caller").
+
+`listCompanies`'s `ListCompaniesOptions.scopeOwnerId` — the one real, called Scope-adjacent
+parameter left in `lib/data/companies.ts` — changed from optional (`scopeOwnerId?: string |
+null`) to **required** (`scopeOwnerId: string | null`), and the `options` parameter itself lost
+its `= {}` default. A caller now cannot compile without explicitly writing `scopeOwnerId: null`
+for an unscoped read — "I forgot to scope this" can no longer silently happen.
+
+New compile-time structural guard, `tests/types/scope-required.test.ts`: asserts every
+Scope-consuming export of `leads.ts`/`contacts.ts`/`deals.ts`/`tasks.ts`/`activities.ts` takes
+`Scope` as a **required** first parameter (`Parameters<F> extends [Scope, ...unknown[]]`, which is
+`false` for an optional leading element), asserts `companies.ts`'s `scopeOwnerId` key is required
+(not optional), and pins `payments.ts` as **confirmed scope-independent by design** (no export
+takes a Scope-shaped first parameter at all — Payments is gated by its own two-source Admin check,
+independent of `RepVisibility`). The real enforcement is `tsc --noEmit`, not the test runner: each
+assertion fails to *compile* the moment a signature regresses. **Demonstrated live**: temporarily
+made `getLeadById`'s `scope` parameter optional — `tsc --noEmit` failed at both the function's own
+now-unsafe body AND at `tests/types/scope-required.test.ts(54,16): error TS2344: Type 'false' does
+not satisfy the constraint 'true'` — reverted, confirmed clean again.
+
+### Part 1.2 — Exhaustiveness extended to `lib/actions/payments.ts` and every `app/api/**/route.ts`
+
+New `tests/integration/action-route-matrix.test.ts`. Route files are discovered from the real
+filesystem (`fs.readdirSync`, recursive), not hand-listed, so a new `app/api/**/route.ts` file with
+no bucket entry fails immediately — same guarantee `own-mode.test.ts`'s action matrix already
+gives `lib/actions/crm.ts`. Buckets: `scoped` (`activities/route.ts`, `crm-refetch/route.ts` — both
+already behaviorally proven elsewhere), `exempt` (all 6 `lib/actions/payments.ts` exports —
+admin-gated, independent of `RepVisibility`), `public` (`webhooks/clerk/route.ts` — Clerk's own
+signed webhook, no session/Scope involved at all).
+
+**Demonstrated live**: created `app/api/__dummy_demo_route/route.ts`, ran the route-coverage test
+— failed, naming it exactly (`expected ['__dummy_demo_route/route.ts'] to deeply equal []`) —
+deleted it, reran: 3/3 passed, `git status --short app/api` empty.
+
+### Part 1.3 — Role-rule audit: every action in `lib/actions/crm.ts`'s 15-entry exempt bucket
+
+**Correction**: the Stage 1a report said "14 exempt actions" — miscounted. There are **15**.
+Corrected in `own-mode.test.ts`'s `EXEMPT_ACTIONS` comment and here.
+
+| Action | Role required | Why |
+|---|---|---|
+| `createCompanyAction` / `updateCompanyAction` / `deleteCompanyAction` | Member or Admin | Companies are a shared CRM entity (like leads/contacts/deals), not org-level configuration — no role gate in the UI either (checked `Companies.tsx`/`CompanyDetail.tsx`), so this is consistent, not an oversight. **Pinned by a new test** (Member successfully creates/renames/deletes a company). |
+| `inviteMemberAction` | **Admin only — FIXED, was none at all** | Previously called bare `auth()` with no role check whatsoever: any Member could invite a new member AND choose `role: 'org:admin'` for them, handing out Admin access. Now `requireAdmin()`. New tests: a Member is rejected *before Clerk's API is ever called* (asserted via a mock spy never invoked) including an attempt to invite someone as `org:admin`; a real Admin can invite either role; an invalid role is still rejected even for an Admin. |
+| `addTaskAction` | Member or Admin | Task **assignment** is unrestricted by design even once scoped — only *visibility* (assignee-or-creator) is gated. Confirmed intentional via its own doc comment, not re-litigated here. |
+| `logActivityAction` / `addNoteAction` | Member or Admin | Delegates to `assertSubjectInScope` — a scoped Member can only attach an activity to a subject they can already see. |
+| `updateProfileAction` | Member or Admin | The caller's own profile only (`requireAuth()`'s own `ownerId`) — never a client-supplied target, never an org-wide setting. |
+| `updateOrgTimezoneAction` | Admin only | Already correctly gated (`requireAdmin()`) — confirmed, not a finding. |
+| `updateQuotaAction` | **Admin only — FIXED, was Member-accessible** | Previously called `requireAuth()`, letting any Member set the org's quarterly quota — found by noticing `updateCurrencyAction`'s own doc comment already (wrongly) claimed parity with this one as an admin-gated setting. Now `requireAdmin()`. New tests: a real Admin can set it; a Member is rejected and the quota is confirmed unwritten. |
+| `updateCurrencyAction` | Admin only | Already correctly gated — confirmed, not a finding. |
+| `createStageAction` / `renameStageAction` / `reorderStageAction` / `deleteStageAction` | Member or Admin | Pipeline stages are shared/org-wide structure, same category as Companies — `StageManager.tsx` has no role gate either, consistent across UI and server. **Pinned by a new test** (Member successfully creates/renames/reorders/deletes a stage). |
+
+Two real bugs found and fixed (`inviteMemberAction`, `updateQuotaAction`); nothing left for a
+"list for my decision" bucket — the two ambiguous-looking categories (Companies, pipeline stages)
+turned out to be consistently Member-accessible in both the UI and the server, not a mismatch, so
+there was no judgment call actually needed once checked.
+
+Fixing `inviteMemberAction` surfaced a test-environment gap: it was never actually exercised past
+its auth check before, so its real body's `headers()` call (for the invitation's redirect URL) hit
+`next/headers`'s "called outside a request scope" error under Vitest. Added `vi.mock('next/headers',
+...)` to `cross-tenant.test.ts`, same pattern as the existing `next/cache` mock.
+
+### Part 2 — Stage 1b: UI gating (no user-visible change while every org is in ALL mode)
+
+New client-visible field, `scopeOwnerId: string | null`, added to `CrmInitialData`
+(`lib/data-loader.ts`, set from `scope.scopeOwnerId`) and threaded into `CrmProvider`
+(`src/store/crm.tsx`), updated on every refetch exactly like `repVisibility`. A derived
+`isScopedMember = scopeOwnerId !== null` is what every gate below reads — never a role-based
+guess re-derived in the UI, so the UI can never show something more permissive than what the
+server actually enforced for this exact request.
+
+- **Dashboard** (`Dashboard.tsx`): the Task workload "Mine"/"Team" segmented toggle is hidden for
+  a scoped Member (`taskScope` already defaults to `'mine'`, so hiding it needs no force-override).
+- **Pipeline** (`Pipeline.tsx`): the "All owners" select and the "All deals"/"My deals" segmented
+  toggle are both hidden for a scoped Member.
+- **Tasks** (`Tasks.tsx`): the "My tasks"/"Team tasks" toggle and the "All assignees" select are
+  both hidden.
+- **Leads** / **Contacts** (`Leads.tsx`, `Contacts.tsx`): their "All owners" filter selects are
+  hidden.
+- **Reports leaderboard** (`Reports.tsx`): `owners` (the full roster) is filtered down to just
+  `currentUser` for a scoped Member before computing rows — previously every teammate still got a
+  row showing $0/0, which reads as "they won nothing" rather than the truth ("you can't see their
+  numbers"); now there's just the viewer's own row.
+- **TaskRow redacted-parent chip**: `lib/data/tasks.ts`'s `redactOutOfScopeParent` now always
+  returns an explicit `relatedToRedacted: boolean` (previously a redacted parent and a genuinely
+  standalone task were indistinguishable to the client — both just had `relatedTo: undefined`).
+  Threaded through `mapTask`/`Task` (`lib/mappers.ts`, `src/data/types.ts`). `TaskRow.tsx` renders
+  a muted `Badge` reading "Restricted record" in place of the parent link when this is true.
+- **Skipped "completed" activity on a redacted parent**: `toggleTask` in `src/store/crm.tsx` now
+  skips creating the "completed X" activity entirely (not just without a subject link) when
+  `task.relatedToRedacted` is true — logging even a subject-less version would misrepresent an
+  event whose real context the viewer can't see as if it had none.
+- **Companies / company picker**: confirmed unchanged by design and already correct from Stage
+  1a — `Companies.tsx` and `CompanyPicker.tsx` both read from the client's already-loaded
+  `useCrm().companies`, whose `_count` rollups already come from `listCompanies(scope.orgId, {
+  scopeOwnerId: scope.scopeOwnerId })`. Company *names* stay shared/org-wide (confirmed: every
+  company is still pickable), only the rollup counts are scoped (confirmed: see the live numbers
+  below).
+- **Sidebar counts**: confirmed unchanged by design — every count (`newLeads`, `overdueTasks`,
+  `openTasks`, `closingSoon`, `champions`) is derived purely from the client's `leads`/`tasks`/
+  `deals`/`contacts` arrays, which are already server-scoped. No code change was needed; this was
+  already correct by construction once Stage 1a scoped the data loader.
+- **Settings confirmation copy, written but not rendered**: new
+  `src/components/common/repVisibilityConfirmCopy.ts` — `REP_VISIBILITY_ENABLE_CONFIRM` /
+  `REP_VISIBILITY_DISABLE_CONFIRM` title/body/confirm-label text, for whoever wires the real
+  Settings switch in Stage 1c. Deliberately not imported or rendered anywhere yet — the switch
+  itself stays completely hidden, satisfying "no user-visible change" for every current org.
+
+### Live verification: Nexo Verified Org flipped to OWN, walked as Member then Admin, restored
+
+Flipped `Organization.repVisibility` to `'OWN'` directly via Prisma for the real dev org
+("Nexo Verified Org", id `cmui9z4s60005f8g8w9tchde5` — test-only, reverted at the end). Jordan
+Ellis (a real Member) owns 2 leads / 1 contact / 0 deals / 0 tasks there, against org totals of
+13 / 12 / 10 / 8 — a large enough gap that any leak would have been obvious. Minted fresh Clerk
+sign-in tickets and drove a real headless browser through every surface named above, plus
+`/payments`, the command palette, and both `GET /api/crm-refetch`/`GET /api/activities` read
+directly from the signed-in browser session (not just clicking through pages).
+
+**32/32 checks passed.** What each role actually saw:
+- **As Jordan (Member, scoped)**: Dashboard, Pipeline, Tasks, Leads, Contacts all loaded with
+  every toggle/filter listed above absent. `GET /api/crm-refetch` returned exactly 2 leads / 1
+  contact / 0 deals / 0 tasks (matching Jordan's own rows, not the org's 13/12/10/8), with
+  `repVisibility: "OWN"` and `scopeOwnerId` set to Jordan's own id — but `companies` (15) and
+  `owners` (4) came back as the full, unscoped sets, confirming those stay shared by design.
+  Companies and Reports pages loaded without error. Settings showed no visibility-switch text.
+  `/payments` stayed unreachable (pre-existing, role-based, unrelated to this stage). The command
+  palette opened and searched without error.
+- **As the real Admin, same OWN-mode org**: Dashboard's "Team" toggle, Pipeline's "All owners"
+  filter and "All deals"/"My deals" toggle, and Tasks' "Team tasks" toggle were all still present.
+  `GET /api/crm-refetch` returned the full 13 leads with `scopeOwnerId: null` — an Admin stays
+  completely unrestricted even once the org itself is in OWN mode, exactly per `computeScopeOwnerId`'s
+  two-source rule.
+- Restored `Organization.repVisibility` to `'ALL'` for this org immediately after — confirmed via
+  a direct read afterward.
+
+### Test total: 265/265 (248 pre-existing, net +17: 3 new in `action-route-matrix.test.ts`, 7 new
+in `scope-required.test.ts`, 8 new role-rule tests in `cross-tenant.test.ts`, minus the 1
+`getCompanyDetail` test removed along with the deleted function). `tsc --noEmit` and `next build`
+both clean.
+
+**No Stage 1c (the actual Settings switch) started** — waiting for go-ahead.
+
 ## Stage 1a verification report + pg_trgm drift fixed permanently (Oct 23 2026)
 
 Requested before starting Stage 1b: an evidence-backed report on Stage 1a's five claims, plus a
