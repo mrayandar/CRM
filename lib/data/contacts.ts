@@ -1,24 +1,28 @@
 // Server-only data access. Do not import this module from a Client
 // Component — it pulls in `@prisma/client`, which only runs in Node.
 //
-// Every function requires `orgId` as its first argument and includes it in
-// every `where` clause. Never call these with an id alone — that would let
-// a client that guessed/enumerated an id read across tenants.
+// Every function takes a `Scope` (orgId + the caller's scopeOwnerId) as its first argument and
+// includes both in every `where` clause. Never call these with a bare orgId or an id alone —
+// that would let a client read or write across tenants, or across reps within the same org.
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@lib/prisma'
+import type { Scope } from '@lib/scope'
+import { cascadeActivityOwner } from '@lib/data/activities'
 
 export interface ListContactsOptions {
+  /** A free filter, meaningful only when `scope.scopeOwnerId` is null — see ListLeadsOptions'
+   *  identical field in lib/data/leads.ts for why this is ignored once the caller is scoped. */
   ownerId?: string
   tag?: string
   search?: string
 }
 
-export function listContacts(orgId: string, options: ListContactsOptions = {}) {
+export function listContacts(scope: Scope, options: ListContactsOptions = {}) {
   const { ownerId, tag, search } = options
 
   const where: Prisma.ContactWhereInput = {
-    orgId,
-    ...(ownerId && { ownerId }),
+    orgId: scope.orgId,
+    ...(scope.scopeOwnerId ? { ownerId: scope.scopeOwnerId } : ownerId ? { ownerId } : {}),
     ...(tag && { tags: { has: tag } }),
     ...(search && {
       OR: [
@@ -36,26 +40,34 @@ export function listContacts(orgId: string, options: ListContactsOptions = {}) {
   })
 }
 
-export function getContactById(orgId: string, id: string) {
+export function getContactById(scope: Scope, id: string) {
   return prisma.contact.findFirst({
-    where: { id, orgId },
+    where: {
+      id,
+      orgId: scope.orgId,
+      ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }),
+    },
     include: { owner: true, company: true, deals: true, originLead: true },
   })
 }
 
-/** Case-insensitive lookup within one org; used to reject duplicate emails. */
-export function getContactByEmail(orgId: string, email: string) {
+/** Case-insensitive lookup within one org; used to reject duplicate emails. Deliberately searches
+ *  the WHOLE org regardless of scope — email uniqueness is an org-level invariant, not a
+ *  per-owner one, so a scoped Member must still be blocked from creating a duplicate of a contact
+ *  they can't otherwise see. Still takes `Scope`, not a bare orgId, for consistency with every
+ *  other function here (and so the structural test covers it too). */
+export function getContactByEmail(scope: Scope, email: string) {
   return prisma.contact.findFirst({
-    where: { orgId, email: { equals: email, mode: 'insensitive' } },
+    where: { orgId: scope.orgId, email: { equals: email, mode: 'insensitive' } },
     select: { id: true },
   })
 }
 
-export function createContact(
-  orgId: string,
-  data: Omit<Prisma.ContactCreateInput, 'orgId'>,
-) {
-  return prisma.contact.create({ data: { ...data, orgId } })
+/** Creation has nothing yet to scope a read against — `scope.scopeOwnerId` isn't used here. The
+ *  caller (createContactAction) is responsible for enforcing that a scoped Member can only create
+ *  a contact owned by themselves — see createLead's identical note in lib/data/leads.ts. */
+export function createContact(scope: Scope, data: Omit<Prisma.ContactCreateInput, 'orgId'>) {
+  return prisma.contact.create({ data: { ...data, orgId: scope.orgId } })
 }
 
 export interface UpdateContactInput {
@@ -72,10 +84,12 @@ export interface UpdateContactInput {
  * with a short summary of which fields actually changed — all in one transaction, so a failed write
  * can never leave an orphan activity. A no-op save (nothing actually differs) skips the write and
  * the activity entirely, rather than bumping lastInteractionAt and logging an empty "edited" entry
- * for a save that changed nothing. Mirrors updateLead in lib/data/leads.ts.
+ * for a save that changed nothing. Mirrors updateLead in lib/data/leads.ts, including the
+ * reassignment cascade: when `data.ownerId` differs from the contact's current owner, every
+ * Activity already attached to it moves to the new owner in the same transaction.
  */
 export async function updateContact(
-  orgId: string,
+  scope: Scope,
   id: string,
   data: UpdateContactInput,
   actorId: string,
@@ -83,8 +97,10 @@ export async function updateContact(
   activityId: string,
 ) {
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.contact.findFirst({ where: { id, orgId } })
-    if (!existing) throw new Error(`Contact ${id} not found in org ${orgId}`)
+    const existing = await tx.contact.findFirst({
+      where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
+    })
+    if (!existing) throw new Error(`Contact ${id} not found in org ${scope.orgId}`)
 
     const changed: string[] = []
     if (existing.name !== data.name) changed.push('name')
@@ -101,14 +117,19 @@ export async function updateContact(
       data: { ...data, lastInteractionAt: new Date() },
     })
 
+    if (existing.ownerId !== data.ownerId) {
+      await cascadeActivityOwner(tx, 'contactId', id, data.ownerId)
+    }
+
     await tx.activity.create({
       data: {
         id: activityId,
-        orgId,
+        orgId: scope.orgId,
         kind: 'edited',
         title: `edited ${updated.name}`,
         body: `Changed: ${changed.join(', ')}`,
         actorId,
+        ownerId: updated.ownerId,
         subjectType: 'contact',
         subjectLabel: updated.name,
         contactId: id,
@@ -119,10 +140,12 @@ export async function updateContact(
   })
 }
 
-export function addContactTag(orgId: string, id: string, tag: string) {
+export function addContactTag(scope: Scope, id: string, tag: string) {
   return prisma.$transaction(async (tx) => {
-    const contact = await tx.contact.findFirst({ where: { id, orgId } })
-    if (!contact) throw new Error(`Contact ${id} not found in org ${orgId}`)
+    const contact = await tx.contact.findFirst({
+      where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
+    })
+    if (!contact) throw new Error(`Contact ${id} not found in org ${scope.orgId}`)
     if (contact.tags.includes(tag)) return contact
     return tx.contact.update({
       where: { id },

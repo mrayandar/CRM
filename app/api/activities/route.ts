@@ -5,6 +5,7 @@ import { getContactById } from '@lib/data/contacts'
 import { getDealById } from '@lib/data/deals'
 import { listActivitiesForSubject } from '@lib/data/activities'
 import { mapActivity } from '@lib/mappers'
+import type { Scope } from '@lib/scope'
 
 /**
  * One record's own activity history, paginated — powers RecordDetail's Activity and Notes tabs.
@@ -36,9 +37,10 @@ function isSubjectType(value: string | null): value is SubjectType {
 }
 
 export async function GET(request: Request) {
-  let orgId: string
+  let scope: Scope
   try {
-    ;({ orgId } = await requireAuth())
+    const { orgId, scopeOwnerId } = await requireAuth()
+    scope = { orgId, scopeOwnerId }
   } catch {
     // The one case that gets a 401 — no valid session, same meaning as crm-refetch's 401.
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401, headers: NO_STORE_HEADERS })
@@ -51,20 +53,23 @@ export async function GET(request: Request) {
     const cursor = params.get('cursor') ?? undefined
     if (!isSubjectType(subjectType) || !subjectId) throw new Error('Invalid subject')
 
-    // The subject must belong to this org — same scoped by-id read, same rejection as a
-    // cross-tenant id, as everywhere else in the app. Never leaks "found in another org" vs.
-    // "doesn't exist at all": both just fall through to the catch below as the same 404.
+    // The subject must belong to this org AND (once scoped) to this caller — same scoped by-id
+    // read, same rejection as a cross-tenant id, as everywhere else in the app. Never leaks
+    // "found in another org/owner" vs. "doesn't exist at all": both just fall through to the
+    // catch below as the same 404. Once this passes, every activity attached to the subject is
+    // already known to share its current owner (see listActivitiesForSubject's doc comment), so
+    // no separate scope filter is needed on the activities query itself.
     const subject =
       subjectType === 'lead'
-        ? await getLeadById(orgId, subjectId)
+        ? await getLeadById(scope, subjectId)
         : subjectType === 'contact'
-          ? await getContactById(orgId, subjectId)
-          : await getDealById(orgId, subjectId)
+          ? await getContactById(scope, subjectId)
+          : await getDealById(scope, subjectId)
     if (!subject) throw new Error('Subject not found')
 
     const includePayments = await canAccessPayments()
     const { rows, nextCursor } = await listActivitiesForSubject(
-      orgId,
+      scope,
       { type: subjectType, id: subjectId },
       { cursor, excludeKinds: includePayments ? [] : ['payment'] },
     )

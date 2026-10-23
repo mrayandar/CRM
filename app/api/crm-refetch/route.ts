@@ -30,9 +30,9 @@ const NO_STORE_HEADERS = { 'Cache-Control': 'private, no-store' }
 
 export async function GET() {
   try {
-    const { orgId, ownerId } = await requireAuth()
+    const { orgId, ownerId, scopeOwnerId } = await requireAuth()
     const includePayments = await canAccessPayments()
-    const data = await loadCrmData(orgId, ownerId, includePayments)
+    const data = await loadCrmData({ orgId, scopeOwnerId }, ownerId, includePayments)
     return NextResponse.json(data, { headers: NO_STORE_HEADERS })
   } catch {
     // Never redirects, never leaks why — requireAuth() throwing (deactivated Owner, no session,

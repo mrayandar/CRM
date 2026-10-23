@@ -78,7 +78,9 @@ export async function createPaymentAction(input: {
   if (note && note.length > 2000) throw new Error('Note is too long')
 
   // dealId comes from the client — must belong to this org before anything is linked to it.
-  const deal = await getDealById(orgId, input.dealId)
+  // requirePaymentWriteAccess() is admin-only, so this is always an unrestricted read — Scope's
+  // scopeOwnerId is always null here, never a client-influenced value.
+  const deal = await getDealById({ orgId, scopeOwnerId: null }, input.dealId)
   if (!deal) throw new Error('Deal not found')
 
   const payment = await dbCreatePayment(
@@ -107,7 +109,7 @@ export async function updatePaymentAction(input: {
 
   const payment = await getPaymentById(orgId, input.id)
   if (!payment) throw new Error('Payment not found')
-  const deal = await getDealById(orgId, payment.dealId)
+  const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)
   if (!deal) throw new Error('Deal not found')
 
   await dbUpdatePayment(orgId, input.id, { amount: input.amount, label: input.label, dueDate, note }, actorId, deal.name)
@@ -142,7 +144,7 @@ export async function splitPaymentAction(input: {
   if (totalPercent !== 100) throw new Error('Percentages must total exactly 100%')
 
   // dealId comes from the client — must belong to this org before anything is linked to it.
-  const deal = await getDealById(orgId, input.dealId)
+  const deal = await getDealById({ orgId, scopeOwnerId: null }, input.dealId)
   if (!deal) throw new Error('Deal not found')
 
   const amounts = splitAmounts(deal.value, input.parts.map((p) => p.percent))
@@ -163,7 +165,7 @@ export async function markPaymentPaidAction(paymentId: string) {
   const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
   const payment = await getPaymentById(orgId, paymentId)
   if (!payment) throw new Error('Payment not found')
-  const deal = await getDealById(orgId, payment.dealId)
+  const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)
   if (!deal) throw new Error('Deal not found')
 
   await dbMarkPaymentPaid(orgId, paymentId, actorId, deal.name)
@@ -174,7 +176,7 @@ export async function cancelPaymentAction(paymentId: string) {
   const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
   const payment = await getPaymentById(orgId, paymentId)
   if (!payment) throw new Error('Payment not found')
-  const deal = await getDealById(orgId, payment.dealId)
+  const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)
   if (!deal) throw new Error('Deal not found')
 
   await dbCancelPayment(orgId, paymentId, actorId, deal.name)
@@ -188,7 +190,7 @@ export async function deletePaymentAction(paymentId: string): Promise<{ ok: true
   const { orgId, ownerId: actorId } = await requirePaymentWriteAccess()
   const payment = await getPaymentById(orgId, paymentId)
   if (!payment) throw new Error('Payment not found')
-  const deal = await getDealById(orgId, payment.dealId)
+  const deal = await getDealById({ orgId, scopeOwnerId: null }, payment.dealId)
   if (!deal) throw new Error('Deal not found')
 
   try {

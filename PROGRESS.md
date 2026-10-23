@@ -2,6 +2,125 @@
 
 > Living context file. Updated at the end of every task.
 
+## Scale/visibility redesign, Stage 1a of 11 (data-layer + action enforcement, OWN-mode test matrix — still no UI change) (Oct 23 2026)
+
+Per the approved plan: `Scope` replaces the bare `orgId` on every exported function in
+`lib/data/{leads,contacts,deals,tasks,activities}.ts` and every server action in
+`lib/actions/crm.ts`, with ALL-mode behavior (`scopeOwnerId: null`) required to stay byte-for-byte
+unchanged before any OWN-mode-specific code or test was added — proven by running the full
+pre-existing suite (215/215) immediately after the threading was done and before writing a single
+new test. **`repVisibility` still defaults to `ALL` for every org; nothing in this commit is
+reachable or visible to a real user yet** — that's Stage 1b (UI gating) and the Settings switch
+after it.
+
+### What changed
+
+- **Inlined `where`-clause scoping, no new `isInScope`-style helper.** Every scoped read/write adds
+  `...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId })` (or, for list filters,
+  `scope.scopeOwnerId ? { ownerId: scope.scopeOwnerId } : ownerId ? { ownerId } : {}` so a scoped
+  caller's own id always wins over any free-form filter param). An out-of-scope id is rejected via
+  the exact same `findFirst → null → throw "not found"` path already used for a cross-tenant id —
+  no new rejection code path to keep in sync with the old one.
+- **`Activity.ownerId` wired at every creation site** (inline creates in `createLeadAction`/
+  `createContactAction`/`createDealAction`, `logActivityAction`/`addNoteAction` via
+  `assertSubjectInScope`'s returned subject, and every `updateX`'s "edited" activity), and kept in
+  sync on reassignment by a new shared helper, `cascadeActivityOwner(tx, subjectField, subjectId,
+  newOwnerId)` in `lib/data/activities.ts` — called inside the same transaction as the `ownerId`
+  change in `updateLead`, `updateContact`, `updateDeal`, and `convertLeadToDeal` (which also moves
+  the lead's own `ownerId` to match the new contact/deal's owner when they differ, cascading the
+  lead's existing activities too — reachable only by an Admin or in an ALL-mode org, since a scoped
+  Member can only ever convert to themselves).
+- **`Task.createdById` wired at creation** (`addTaskAction` connects it to the caller). Task
+  visibility for a scoped Member is "assigned to them OR created by them"
+  (`taskVisibilityWhere` in `lib/data/tasks.ts`) — the one list in the app that isn't a plain
+  `ownerId` gate. Task **assignment stays unrestricted even when scoped** (a Member can hand a task
+  to any teammate) — only who can *see* it afterward is gated.
+- **Redacted task parents + no writes to out-of-scope parents**: `listTasks`/`getTaskById` null out
+  `relatedToType`/`relatedToLabel`/`leadId`/`contactId`/`dealId` when the parent's *current* owner
+  isn't the scoped caller (the task itself can still pass its own assignee-or-creator visibility
+  check independently of who owns its parent). `updateTask` still updates the task's own fields in
+  that case, but skips writing the attached "edited" activity onto a parent the caller doesn't own.
+- **Companies kept deliberately narrow, per the approved design**: company identity (name,
+  website, industry, notes) stays org-wide and unscoped — shared company names are not per-rep
+  data — but `listCompanies`/`getCompanyDetail` gained an optional `scopeOwnerId` parameter (not a
+  full `Scope`, since companies.ts was explicitly excluded from the Scope-replacement list) that
+  narrows the `_count`/nested leads/contacts/deals to just the caller's own records.
+  `getContactByEmail` deliberately still searches the *whole* org regardless of scope — email
+  uniqueness is an org-level invariant, not a per-owner one — but takes `Scope`, not a bare
+  `orgId`, for structural consistency with every other function in `contacts.ts`.
+- **The two-source role rule** (`computeScopeOwnerId` from Stage 0) is now actually exercised:
+  every `requireAuth()`/`resolveAuth()` call already computed `scopeOwnerId`; this stage is what
+  makes every downstream read/write actually use it.
+- **`GET /api/activities`**: the subject lookup (`getLeadById`/`getContactById`/`getDealById`) is
+  now the scoped-by-id read — a subject owned by another rep 404s identically to a cross-tenant
+  one. Once that passes, every activity attached to it is already known to share its current owner
+  (the cascade above), so no second scope filter is needed on the activities query itself.
+  **`GET /api/crm-refetch`** and `loadCrmData` (the `(app)` layout's first load) both now take a
+  `Scope` built from `requireAuth()`'s own `scopeOwnerId`.
+- **Owner rules for Members, enforced in `lib/actions/crm.ts`**: `assertOwnerInScope()` rejects
+  `createLeadAction`/`createContactAction`/`createDealAction`/`convertLeadAction` when the
+  client-supplied `ownerId` isn't the scoped caller's own. Reassignment (editing an *existing*
+  record's owner to someone else) is deliberately **not** restricted by this — only creation — and
+  the data layer's own scoped `findFirst` already guarantees a scoped Member can only be
+  reassigning a record they currently own.
+
+### The generated OWN-mode test matrix (`tests/integration/own-mode.test.ts`, new file)
+
+Built by iterating `Object.keys(actions)` against three explicit buckets — a **scoped-mutation**
+matrix, a **scoped-creation** matrix, and an **exempt list with a one-line reason each** — then
+asserting every real export of `lib/actions/crm.ts` falls into exactly one bucket. A newly added
+action that isn't placed in one of the three fails that exhaustiveness test immediately, rather
+than silently shipping without OWN-mode coverage.
+
+- **Scoped-mutation matrix (9 actions)**, each called with another rep's record id while logged in
+  as a scoped Member, asserted to reject like a cross-tenant id: `setLeadStatusAction`,
+  `convertLeadAction`, `updateLeadAction`, `updateContactAction`, `updateDealAction`,
+  `moveDealAction`, `toggleTaskAction`, `updateTaskAction`, `deleteTaskAction`.
+- **Scoped-creation matrix (3 actions)**, each called with another rep's id as the target
+  `ownerId`, asserted to reject: `createLeadAction`, `createContactAction`, `createDealAction`.
+- **Directly tested outside the generated matrix** (different shape — a `subject`, not a bare
+  record id): `logActivityAction` and `addNoteAction`, via `assertSubjectInScope`.
+- **Exempt, with reasons recorded in the test file itself**: `createCompanyAction`/
+  `updateCompanyAction`/`deleteCompanyAction` and `createStageAction`/`renameStageAction`/
+  `reorderStageAction`/`deleteStageAction` (companies and stages are shared/org-wide, never
+  per-owner); `inviteMemberAction`/`updateProfileAction`/`updateOrgTimezoneAction`/
+  `updateQuotaAction`/`updateCurrencyAction` (org-level or caller's-own-profile, not a scoped CRM
+  record); `addTaskAction` (assignment is unrestricted even when scoped, by design).
+- **Lists/loaders/aggregates**: `listLeads`, `listContacts`, `listDeals`, `listTasks`,
+  `listActivities`, and `listCompanies`' scoped rollup `_count` all asserted to return zero
+  out-of-scope rows/counts for a scoped Member, against a real two-Member OWN-mode org fixture.
+  `loadCrmData` and `GET /api/crm-refetch` asserted the same, end to end.
+- **Reassignment test**: reassigns a contact from the (scoped) caller to a teammate via
+  `updateContactAction`, then — still logged in as the *former* owner — asserts `loadCrmData`, `GET
+  /api/crm-refetch`, and `GET /api/activities` (404) all show nothing of that contact anymore.
+
+### Anything that couldn't be enforced exactly the planned way
+
+- **Task-activity ownership on edit** wasn't in the original plan explicitly: when `updateTask`
+  writes its "edited" activity and the task has a `relatedTo` subject, `Activity.ownerId` is set to
+  that subject's *current* owner (queried fresh inside the transaction), not the task's own
+  assignee — consistent with every other activity's "denormalized from the subject" rule, but this
+  required one extra query inside `updateTask`'s transaction that wasn't in the original sketch.
+- **One flaky transaction timeout, not a logic bug**: the reassignment test's `updateContact` call
+  (`findFirst` → `update` → `cascadeActivityOwner` → `activity.create`, all in one transaction)
+  occasionally hit Prisma's default 5000ms interactive-transaction timeout on a cold Neon
+  connection in this dev environment (confirmed by re-running: failed once at 9.4s elapsed cold,
+  passed immediately after on a warm connection). Not something to paper over with a longer
+  timeout without the user's sign-off — flagged here as a known, environment-dependent flake, not
+  fixed in this commit.
+
+### Test total: 245/245 (215 pre-existing, unchanged + 30 new in `own-mode.test.ts`)
+
+`tsc --noEmit` clean across the whole repo. The pre-existing suite was run and confirmed
+215/215 passing *before* `own-mode.test.ts` was written, per the required checkpoint, then the
+full 245 run again after.
+
+### Next (1b): UI gating — waiting for go-ahead
+
+Sidebar counts/toggles/owner filters closing per the design, still with `repVisibility` staying
+`ALL` for every real org (so still nothing user-visible changes) until the Settings switch after
+that. Not started.
+
 ## Stage 0 follow-up: a real regression found and fixed, four other points verified with evidence (Oct 23 2026)
 
 **1. Org timezone default — real regression, found and fixed.** Checked every call site: before

@@ -5,6 +5,7 @@ import { headers } from 'next/headers'
 import { Prisma } from '@prisma/client'
 import { auth, clerkClient } from '@clerk/nextjs/server'
 import { requireAuth, requireAdmin } from '@lib/auth'
+import type { Scope } from '@lib/scope'
 import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone } from '@lib/data/organizations'
 import { isValidIanaTimezone } from '@lib/timezones'
 import { CURRENCY_CODES } from '@/data/types'
@@ -58,16 +59,33 @@ const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** A lead/contact/deal id from the client must belong to the caller's org before it is linked. */
-async function assertSubjectInOrg(orgId: string, subject?: { type: 'lead' | 'contact' | 'deal'; id: string }) {
-  if (!subject) return
+/** A lead/contact/deal id from the client must belong to the caller's scope before it is linked —
+ *  a cross-tenant id and (once scoped) another rep's id are rejected identically. Returns the
+ *  found subject (so callers needing its current `ownerId` — e.g. for a denormalized
+ *  Activity.ownerId — don't issue a second query), or `undefined` when no subject was given. */
+async function assertSubjectInScope(
+  scope: Scope,
+  subject?: { type: 'lead' | 'contact' | 'deal'; id: string },
+): Promise<{ ownerId: string } | undefined> {
+  if (!subject) return undefined
   const found =
     subject.type === 'lead'
-      ? await getLeadById(orgId, subject.id)
+      ? await getLeadById(scope, subject.id)
       : subject.type === 'contact'
-        ? await getContactById(orgId, subject.id)
-        : await getDealById(orgId, subject.id)
+        ? await getContactById(scope, subject.id)
+        : await getDealById(scope, subject.id)
   if (!found) throw new Error(`${subject.type} not found`)
+  return found
+}
+
+/** A scoped Member may only create/convert a record owned by themselves — `ownerId` on a
+ *  create/convert action is otherwise a free client-chosen value (any teammate), same as an
+ *  Admin or an ALL-mode org's Member. Reassignment (editing an existing record's owner away from
+ *  the caller) is NOT restricted by this — only creation/conversion. */
+function assertOwnerInScope(scope: Scope, ownerId: string) {
+  if (scope.scopeOwnerId && ownerId !== scope.scopeOwnerId) {
+    throw new Error('Owner not found')
+  }
 }
 
 /** Optimistic creates use a client-generated UUID as the row id; reject anything else. */
@@ -197,11 +215,12 @@ export async function inviteMemberAction(input: { emailAddress: string; role: 'o
 }
 
 export async function moveDealAction(dealId: string, stageId: string) {
-  const { orgId } = await requireAuth()
+  const { orgId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   // stageId comes from the client (the kanban column it was dropped on) — must belong to this org.
   const stage = await getStageById(orgId, stageId)
   if (!stage) throw new Error('Stage not found')
-  await dbMoveDealToStage(orgId, dealId, stage)
+  await dbMoveDealToStage(scope, dealId, stage)
   revalidatePath('/', 'layout')
 }
 
@@ -220,7 +239,8 @@ export async function createLeadAction(input: {
   /** Same, for the optional note activity — only used when `notes` is set. */
   noteActivityId?: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.id)
   assertClientId(input.activityId)
 
@@ -236,7 +256,9 @@ export async function createLeadAction(input: {
   if (!LEAD_STATUSES.includes(input.status)) throw new Error('Invalid status')
   if (notes) assertClientId(input.noteActivityId)
 
-  // ownerId and companyId come from the client — both must belong to this org before connecting them.
+  // ownerId and companyId come from the client — both must belong to this org before connecting
+  // them, and (once scoped) a Member may only create a lead owned by themselves.
+  assertOwnerInScope(scope, input.ownerId)
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const company = await getCompanyById(orgId, input.companyId)
@@ -244,7 +266,7 @@ export async function createLeadAction(input: {
 
   const subject = { subjectType: 'lead' as const, subjectLabel: name }
   const lead = await guardAgainstIdCollision(() =>
-    dbCreateLead(orgId, {
+    dbCreateLead(scope, {
       id: input.id,
       name,
       title: '',
@@ -263,6 +285,7 @@ export async function createLeadAction(input: {
             kind: 'created',
             title: `created lead ${name}`,
             actor: { connect: { id: actorId } },
+            ownerId: owner.id,
             ...subject,
           },
           ...(notes
@@ -274,6 +297,7 @@ export async function createLeadAction(input: {
                   title: `added a note on ${name}`,
                   body: notes,
                   actor: { connect: { id: actorId } },
+                  ownerId: owner.id,
                   ...subject,
                 },
               ]
@@ -297,7 +321,8 @@ export async function createContactAction(input: {
   /** Client-generated id for the "created contact" activity (see logActivityAction's `id` param). */
   activityId: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.id)
   assertClientId(input.activityId)
 
@@ -310,7 +335,9 @@ export async function createContactAction(input: {
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
 
-  // ownerId and companyId come from the client — both must belong to this org before connecting them.
+  // ownerId and companyId come from the client — both must belong to this org before connecting
+  // them, and (once scoped) a Member may only create a contact owned by themselves.
+  assertOwnerInScope(scope, input.ownerId)
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const company = await getCompanyById(orgId, input.companyId)
@@ -318,12 +345,12 @@ export async function createContactAction(input: {
 
   // Email is optional; only a non-blank email can collide. Returned (not thrown) because it's an
   // expected validation failure — thrown messages are redacted from the client in production.
-  if (email && (await getContactByEmail(orgId, email))) {
+  if (email && (await getContactByEmail(scope, email))) {
     return { ok: false as const, error: 'A contact with this email already exists' }
   }
 
   const contact = await guardAgainstIdCollision(() =>
-    dbCreateContact(orgId, {
+    dbCreateContact(scope, {
       id: input.id,
       name,
       title,
@@ -342,6 +369,7 @@ export async function createContactAction(input: {
             kind: 'created',
             title: `created contact ${name}`,
             actor: { connect: { id: actorId } },
+            ownerId: owner.id,
             subjectType: 'contact',
             subjectLabel: name,
           },
@@ -364,7 +392,8 @@ export async function updateContactAction(input: {
   /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
   activityId: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.activityId)
 
   const name = input.name.trim()
@@ -376,7 +405,10 @@ export async function updateContactAction(input: {
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
 
-  // ownerId and companyId come from the client — both must belong to this org before connecting them.
+  // ownerId and companyId come from the client — both must belong to this org before connecting
+  // them. Reassignment (the destination owner) is unrestricted even when scoped — dbUpdateContact's
+  // own scoped findFirst already guarantees a scoped Member can only be reassigning a contact they
+  // currently own; see assertOwnerInScope's doc comment for why creation and reassignment differ.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const company = await getCompanyById(orgId, input.companyId)
@@ -386,13 +418,13 @@ export async function updateContactAction(input: {
   // this (persist()'s toast + revert instead), so a thrown error is enough — no {ok, error} shape
   // needed here. A contact matching itself (unchanged email) is not a duplicate.
   if (email) {
-    const existing = await getContactByEmail(orgId, email)
+    const existing = await getContactByEmail(scope, email)
     if (existing && existing.id !== input.id) throw new Error('A contact with this email already exists')
   }
 
   await guardAgainstIdCollision(() =>
     dbUpdateContact(
-      orgId,
+      scope,
       input.id,
       { name, title, email, phone, companyId: company.id, ownerId: owner.id },
       actorId,
@@ -416,7 +448,8 @@ export async function createDealAction(input: {
   /** Client-generated id for the "created deal" activity (see logActivityAction's `id` param). */
   activityId: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.id)
   assertClientId(input.activityId)
 
@@ -430,14 +463,16 @@ export async function createDealAction(input: {
   if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
   if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
 
-  // ownerId, contactId, and stageId all come from the client — every one must belong to this org.
+  // ownerId, contactId, and stageId all come from the client — every one must belong to this org,
+  // and (once scoped) a Member may only create a deal owned by themselves.
+  assertOwnerInScope(scope, input.ownerId)
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const stage = await getStageById(orgId, input.stageId)
   if (!stage) throw new Error('Stage not found')
   let contact = null
   if (input.contactId) {
-    contact = await getContactById(orgId, input.contactId)
+    contact = await getContactById(scope, input.contactId)
     if (!contact) throw new Error('Contact not found')
   }
 
@@ -449,7 +484,7 @@ export async function createDealAction(input: {
   if (!company) throw new Error('Company not found')
 
   const deal = await guardAgainstIdCollision(() =>
-    dbCreateDeal(orgId, {
+    dbCreateDeal(scope, {
       id: input.id,
       name,
       company: { connect: { id: company.id } },
@@ -469,6 +504,7 @@ export async function createDealAction(input: {
             kind: 'created',
             title: `created deal ${name}`,
             actor: { connect: { id: actorId } },
+            ownerId: owner.id,
             subjectType: 'deal',
             subjectLabel: name,
           },
@@ -492,7 +528,8 @@ export async function updateDealAction(input: {
   /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
   activityId: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.activityId)
 
   const name = input.name.trim()
@@ -504,7 +541,8 @@ export async function updateDealAction(input: {
   if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
 
   // ownerId, contactId, stageId, and companyId all come from the client — every one must belong
-  // to this org.
+  // to this org. Reassignment (the destination owner) is unrestricted even when scoped — see
+  // updateContactAction's identical note.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const stage = await getStageById(orgId, input.stageId)
@@ -513,13 +551,13 @@ export async function updateDealAction(input: {
   if (!company) throw new Error('Company not found')
   let contact = null
   if (input.contactId) {
-    contact = await getContactById(orgId, input.contactId)
+    contact = await getContactById(scope, input.contactId)
     if (!contact) throw new Error('Contact not found')
   }
 
   await guardAgainstIdCollision(() =>
     dbUpdateDeal(
-      orgId,
+      scope,
       input.id,
       {
         name,
@@ -549,7 +587,8 @@ export async function updateLeadAction(input: {
   /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
   activityId: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.activityId)
 
   const name = input.name.trim()
@@ -562,7 +601,9 @@ export async function updateLeadAction(input: {
   if (phone.length > 60) throw new Error('Invalid phone')
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
 
-  // ownerId and companyId come from the client — both must belong to this org before connecting them.
+  // ownerId and companyId come from the client — both must belong to this org before connecting
+  // them. Reassignment (the destination owner) is unrestricted even when scoped — see
+  // updateContactAction's identical note.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
   const company = await getCompanyById(orgId, input.companyId)
@@ -570,7 +611,7 @@ export async function updateLeadAction(input: {
 
   await guardAgainstIdCollision(() =>
     dbUpdateLead(
-      orgId,
+      scope,
       input.id,
       { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id },
       actorId,
@@ -581,8 +622,8 @@ export async function updateLeadAction(input: {
 }
 
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {
-  const { orgId } = await requireAuth()
-  await dbUpdateLeadStatus(orgId, leadId, status)
+  const { orgId, scopeOwnerId } = await requireAuth()
+  await dbUpdateLeadStatus({ orgId, scopeOwnerId }, leadId, status)
   revalidatePath('/', 'layout')
 }
 
@@ -603,12 +644,15 @@ export async function convertLeadAction(
     }
   },
 ) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.contactId)
   assertClientId(input.activityId)
   if (input.deal) assertClientId(input.dealId)
 
-  // ownerId comes from the client — make sure it belongs to this org before using it.
+  // ownerId comes from the client — make sure it belongs to this org before using it, and (once
+  // scoped) that a Member can only ever convert to themselves, same rule as any other creation.
+  assertOwnerInScope(scope, input.ownerId)
   if (!(await getOwnerById(orgId, input.ownerId))) throw new Error('Owner not found')
 
   // Same for the new deal's stageId, when a deal is being opened as part of the conversion.
@@ -616,7 +660,7 @@ export async function convertLeadAction(
   if (input.deal && !stage) throw new Error('Stage not found')
 
   const result = await guardAgainstIdCollision(() =>
-    dbConvertLeadToDeal(orgId, leadId, {
+    dbConvertLeadToDeal(scope, leadId, {
       ownerId: input.ownerId,
       actorId,
       contactId: input.contactId,
@@ -642,8 +686,8 @@ export async function convertLeadAction(
 }
 
 export async function toggleTaskAction(taskId: string, done: boolean) {
-  const { orgId } = await requireAuth()
-  await dbToggleTaskDone(orgId, taskId, done)
+  const { orgId, scopeOwnerId } = await requireAuth()
+  await dbToggleTaskDone({ orgId, scopeOwnerId }, taskId, done)
   revalidatePath('/', 'layout')
 }
 
@@ -657,7 +701,8 @@ export async function addTaskAction(input: {
   ownerId?: string
   subject?: { type: 'lead' | 'contact' | 'deal'; id: string; label: string }
 }) {
-  const { orgId, ownerId: callerId } = await requireAuth()
+  const { orgId, ownerId: callerId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.id)
 
   const title = input.title.trim()
@@ -668,7 +713,11 @@ export async function addTaskAction(input: {
   if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
   if (!TASK_TYPES.includes(type)) throw new Error('Invalid task type')
 
-  // ownerId comes from the client — an assignee other than the caller must be verified to belong to this org.
+  // ownerId comes from the client — an assignee other than the caller must be verified to belong
+  // to this org. Task assignment is unrestricted even when scoped: a scoped Member may assign a
+  // task to any teammate (unlike creating/owning a lead/contact/deal) — the thing that's scoped
+  // is who can *see* the task afterward (assignee or creator — see taskVisibilityWhere in
+  // lib/data/tasks.ts), not who it can be assigned to.
   let assigneeId = callerId
   if (input.ownerId && input.ownerId !== callerId) {
     const assignee = await getOwnerById(orgId, input.ownerId)
@@ -676,15 +725,16 @@ export async function addTaskAction(input: {
     assigneeId = assignee.id
   }
 
-  await assertSubjectInOrg(orgId, input.subject)
+  await assertSubjectInScope(scope, input.subject)
   await guardAgainstIdCollision(() =>
-    dbCreateTask(orgId, {
+    dbCreateTask(scope, {
       id: input.id,
       title,
       dueDate,
       priority: input.priority,
       type,
       owner: { connect: { id: assigneeId } },
+      createdBy: { connect: { id: callerId } },
       ...(input.subject?.type === 'lead' && {
         relatedToType: 'lead',
         relatedToLabel: input.subject.label,
@@ -717,7 +767,8 @@ export async function updateTaskAction(input: {
    *  updateTask in lib/data/tasks.ts — omitted for a standalone task, same as that function). */
   activityId?: string
 }) {
-  const { orgId, ownerId: actorId } = await requireAuth()
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   if (input.activityId !== undefined) assertClientId(input.activityId)
 
   const title = input.title.trim()
@@ -729,13 +780,14 @@ export async function updateTaskAction(input: {
   if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
   if (!TASK_TYPES.includes(input.type)) throw new Error('Invalid task type')
 
-  // ownerId comes from the client — make sure it belongs to this org before connecting it.
+  // ownerId comes from the client — make sure it belongs to this org before connecting it. Task
+  // (re)assignment is unrestricted even when scoped — see addTaskAction's identical note.
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
 
   await guardAgainstIdCollision(() =>
     dbUpdateTask(
-      orgId,
+      scope,
       input.id,
       { title, description, dueDate, priority: input.priority, type: input.type, ownerId: owner.id },
       actorId,
@@ -746,8 +798,8 @@ export async function updateTaskAction(input: {
 }
 
 export async function deleteTaskAction(taskId: string) {
-  const { orgId } = await requireAuth()
-  await dbDeleteTask(orgId, taskId)
+  const { orgId, scopeOwnerId } = await requireAuth()
+  await dbDeleteTask({ orgId, scopeOwnerId }, taskId)
   revalidatePath('/', 'layout')
 }
 
@@ -758,16 +810,18 @@ export async function logActivityAction(
   subject?: { type: 'lead' | 'contact' | 'deal'; id: string; label: string },
   body?: string,
 ) {
-  const { orgId, ownerId } = await requireAuth()
+  const { orgId, ownerId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(id)
-  await assertSubjectInOrg(orgId, subject)
+  const foundSubject = await assertSubjectInScope(scope, subject)
   await guardAgainstIdCollision(() =>
-    dbLogActivity(orgId, {
+    dbLogActivity(scope, {
       id,
       kind,
       title,
       body,
       actor: { connect: { id: ownerId } },
+      ownerId: foundSubject ? foundSubject.ownerId : ownerId,
       ...(subject?.type === 'lead' && {
         subjectType: 'lead',
         subjectLabel: subject.label,

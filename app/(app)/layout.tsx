@@ -10,9 +10,9 @@ export default async function AuthenticatedLayout({
 }: {
   children: React.ReactNode
 }) {
-  const { orgId, owner } = await resolveAuth()
+  const { orgId, owner, scopeOwnerId } = await resolveAuth()
   const hasPaymentAccess = await canAccessPayments()
-  const data = await loadCrmData(orgId, owner.id, hasPaymentAccess)
+  const data = await loadCrmData({ orgId, scopeOwnerId }, owner.id, hasPaymentAccess)
 
   return (
     <QueryProvider>

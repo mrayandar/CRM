@@ -45,6 +45,7 @@ import * as actions from '@lib/actions/crm'
 import { GET, dynamic as crmRefetchDynamic } from '../../app/api/crm-refetch/route'
 import { GET as getActivitiesRoute, dynamic as activitiesRouteDynamic } from '../../app/api/activities/route'
 import type { PipelineStage } from '@prisma/client'
+import type { Scope } from '@lib/scope'
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 
@@ -180,21 +181,29 @@ afterAll(async () => {
   await prisma.$disconnect()
 })
 
+// ALL-mode Scope for each fixture org — `scopeOwnerId: null` means "unrestricted," the only value
+// any org has today (Stage 1a wires OWN-mode enforcement into the data layer, but no org is
+// actually in OWN mode yet — see the OWN-mode matrix further down for that behavior). Every one
+// of these cross-tenant tests must keep passing unchanged with Scope threaded through, exactly as
+// it did with a bare orgId.
+const scopeA = (): Scope => ({ orgId: A.org.id, scopeOwnerId: null })
+const scopeB = (): Scope => ({ orgId: B.org.id, scopeOwnerId: null })
+
 describe('lib/data: reads are scoped by orgId', () => {
   it('getLeadById returns null for another org\'s lead', async () => {
-    expect(await getLeadById(B.org.id, A.lead.id)).toBeNull()
+    expect(await getLeadById(scopeB(), A.lead.id)).toBeNull()
   })
   it('getContactById returns null for another org\'s contact', async () => {
-    expect(await getContactById(B.org.id, A.contact.id)).toBeNull()
+    expect(await getContactById(scopeB(), A.contact.id)).toBeNull()
   })
   it('getDealById returns null for another org\'s deal', async () => {
-    expect(await getDealById(B.org.id, A.deal.id)).toBeNull()
+    expect(await getDealById(scopeB(), A.deal.id)).toBeNull()
   })
   it('getOwnerById returns null for another org\'s owner', async () => {
     expect(await getOwnerById(B.org.id, A.owner.id)).toBeNull()
   })
   it('getTaskById returns null for another org\'s task', async () => {
-    expect(await getTaskById(B.org.id, A.task.id)).toBeNull()
+    expect(await getTaskById(scopeB(), A.task.id)).toBeNull()
   })
   it('getStageById returns null for another org\'s stage', async () => {
     expect(await getStageById(B.org.id, A.stage.id)).toBeNull()
@@ -206,19 +215,19 @@ describe('lib/data: reads are scoped by orgId', () => {
     expect(await getCompanyDetail(B.org.id, A.company.id)).toBeNull()
   })
   it('listLeads never includes another org\'s leads', async () => {
-    expect((await listLeads(B.org.id)).map((l) => l.id)).not.toContain(A.lead.id)
+    expect((await listLeads(scopeB())).map((l) => l.id)).not.toContain(A.lead.id)
   })
   it('listContacts never includes another org\'s contacts', async () => {
-    expect((await listContacts(B.org.id)).map((c) => c.id)).not.toContain(A.contact.id)
+    expect((await listContacts(scopeB())).map((c) => c.id)).not.toContain(A.contact.id)
   })
   it('listDeals never includes another org\'s deals', async () => {
-    expect((await listDeals(B.org.id)).map((d) => d.id)).not.toContain(A.deal.id)
+    expect((await listDeals(scopeB())).map((d) => d.id)).not.toContain(A.deal.id)
   })
   it('listOwners never includes another org\'s owners', async () => {
     expect((await listOwners(B.org.id)).map((o) => o.id)).not.toContain(A.owner.id)
   })
   it('listTasks never includes another org\'s tasks', async () => {
-    expect((await listTasks(B.org.id)).map((t) => t.id)).not.toContain(A.task.id)
+    expect((await listTasks(scopeB())).map((t) => t.id)).not.toContain(A.task.id)
   })
   it('listStages never includes another org\'s stages', async () => {
     const bStageIds = (await listStages(B.org.id)).map((s) => s.id)
@@ -228,18 +237,18 @@ describe('lib/data: reads are scoped by orgId', () => {
     const activityA = await prisma.activity.create({
       data: { orgId: A.org.id, kind: 'note', title: 'org A only', actorId: A.owner.id },
     })
-    expect((await listActivities(B.org.id)).map((x) => x.id)).not.toContain(activityA.id)
+    expect((await listActivities(scopeB())).map((x) => x.id)).not.toContain(activityA.id)
   })
 })
 
 describe('lib/data: writes reject a record id from another org', () => {
   it('updateLeadStatus throws', async () => {
-    await expect(updateLeadStatus(B.org.id, A.lead.id, 'contacted')).rejects.toThrow()
+    await expect(updateLeadStatus(scopeB(), A.lead.id, 'contacted')).rejects.toThrow()
   })
   it('updateLead throws', async () => {
     await expect(
       updateLead(
-        B.org.id,
+        scopeB(),
         A.lead.id,
         { name: 'x', title: '', email: '', phone: '', companyId: B.company.id, source: 'Inbound', ownerId: B.owner.id },
         B.owner.id,
@@ -249,13 +258,13 @@ describe('lib/data: writes reject a record id from another org', () => {
   })
   it('convertLeadToDeal throws', async () => {
     await expect(
-      convertLeadToDeal(B.org.id, A.lead.id, { ownerId: B.owner.id, actorId: B.owner.id, activityId: randomUUID() }),
+      convertLeadToDeal(scopeB(), A.lead.id, { ownerId: B.owner.id, actorId: B.owner.id, activityId: randomUUID() }),
     ).rejects.toThrow()
   })
   it('updateContact throws', async () => {
     await expect(
       updateContact(
-        B.org.id,
+        scopeB(),
         A.contact.id,
         { name: 'x', title: '', email: '', phone: '', companyId: B.company.id, ownerId: B.owner.id },
         B.owner.id,
@@ -264,12 +273,12 @@ describe('lib/data: writes reject a record id from another org', () => {
     ).rejects.toThrow()
   })
   it('addContactTag throws', async () => {
-    await expect(addContactTag(B.org.id, A.contact.id, 'tag')).rejects.toThrow()
+    await expect(addContactTag(scopeB(), A.contact.id, 'tag')).rejects.toThrow()
   })
   it('updateDeal throws', async () => {
     await expect(
       updateDeal(
-        B.org.id,
+        scopeB(),
         A.deal.id,
         {
           name: 'x',
@@ -287,7 +296,7 @@ describe('lib/data: writes reject a record id from another org', () => {
   })
   it('moveDealToStage throws', async () => {
     await expect(
-      moveDealToStage(B.org.id, A.deal.id, {
+      moveDealToStage(scopeB(), A.deal.id, {
         id: B.otherStage.id,
         probability: B.otherStage.probability,
         isWon: B.otherStage.isWon,
@@ -295,12 +304,12 @@ describe('lib/data: writes reject a record id from another org', () => {
     ).rejects.toThrow()
   })
   it('toggleTaskDone throws', async () => {
-    await expect(toggleTaskDone(B.org.id, A.task.id, true)).rejects.toThrow()
+    await expect(toggleTaskDone(scopeB(), A.task.id, true)).rejects.toThrow()
   })
   it('updateTask throws', async () => {
     await expect(
       updateTask(
-        B.org.id,
+        scopeB(),
         A.task.id,
         { title: 'x', description: null, dueDate: new Date(), priority: 'low', type: 'todo', ownerId: B.owner.id },
         B.owner.id,
@@ -308,7 +317,7 @@ describe('lib/data: writes reject a record id from another org', () => {
     ).rejects.toThrow()
   })
   it('deleteTask throws', async () => {
-    await expect(deleteTask(B.org.id, A.task.id)).rejects.toThrow()
+    await expect(deleteTask(scopeB(), A.task.id)).rejects.toThrow()
   })
   it('renameStage throws', async () => {
     await expect(renameStage(B.org.id, A.stage.id, 'Hijacked')).rejects.toThrow()
@@ -1280,7 +1289,7 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
   })
 
   it("never received any Payment rows or payment-kind activities in this member's loaded data", async () => {
-    const data = await loadCrmData(B.org.id, member.id, false)
+    const data = await loadCrmData(scopeB(), member.id, false)
     expect(data.payments).toEqual([])
     expect(data.canAccessPayments).toBe(false)
     expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
@@ -1298,11 +1307,11 @@ describe('lib/actions/payments: role enforcement — a non-privileged member is 
       dueDate: new Date().toISOString(),
     })
 
-    const privileged = await loadCrmData(B.org.id, B.owner.id, true)
+    const privileged = await loadCrmData(scopeB(), B.owner.id, true)
     const dealPrivileged = privileged.deals.find((d) => d.id === B.deal.id)
     expect(dealPrivileged).toBeTruthy()
 
-    const asMember = await loadCrmData(B.org.id, member.id, false)
+    const asMember = await loadCrmData(scopeB(), member.id, false)
     const dealAsMember = asMember.deals.find((d) => d.id === B.deal.id)
     expect(dealAsMember).toBeTruthy()
     // Same Deal shape either way — no extra "hasPayments"/count/amount field exists to leak,
@@ -1423,7 +1432,7 @@ describe('activity leak: payment-kind activities and Payment rows never reach a 
   })
 
   it('a privileged load includes the payment and its activity', async () => {
-    const data = await loadCrmData(A.org.id, A.owner.id, true)
+    const data = await loadCrmData(scopeA(), A.owner.id, true)
     expect(data.payments.some((p) => p.id === paymentId)).toBe(true)
     expect(data.canAccessPayments).toBe(true)
     expect(data.activities.some((a) => a.kind === 'payment' && a.subject?.id === A.deal.id)).toBe(true)
@@ -1434,7 +1443,7 @@ describe('activity leak: payment-kind activities and Payment rows never reach a 
   })
 
   it('the exact same org, loaded as non-privileged, gets no Payment rows and no payment activities', async () => {
-    const data = await loadCrmData(A.org.id, A.owner.id, false)
+    const data = await loadCrmData(scopeA(), A.owner.id, false)
     expect(data.payments).toEqual([])
     expect(data.canAccessPayments).toBe(false)
     expect(data.activities.some((a) => a.kind === 'payment')).toBe(false)
@@ -1726,7 +1735,7 @@ describe('Dashboard Payments card math: a paid-then-cancelled payment is exclude
   it('a Member has no payments data for the Dashboard card to compute anything from', async () => {
     // Same gate the Dashboard card relies on — already proven by loadCrmData above, re-asserted
     // here in the specific framing of "the card has nothing to show, not just something hidden".
-    const data = await loadCrmData(A.org.id, A.owner.id, false)
+    const data = await loadCrmData(scopeA(), A.owner.id, false)
     expect(data.payments).toEqual([])
     expect(data.canAccessPayments).toBe(false)
   })

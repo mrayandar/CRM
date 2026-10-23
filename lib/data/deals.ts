@@ -1,11 +1,13 @@
 // Server-only data access. Do not import this module from a Client
 // Component — it pulls in `@prisma/client`, which only runs in Node.
 //
-// Every function requires `orgId` as its first argument and includes it in
-// every `where` clause. Never call these with an id alone — that would let
-// a client that guessed/enumerated an id read across tenants.
+// Every function takes a `Scope` (orgId + the caller's scopeOwnerId) as its first argument and
+// includes both in every `where` clause. Never call these with a bare orgId or an id alone —
+// that would let a client read or write across tenants, or across reps within the same org.
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@lib/prisma'
+import type { Scope } from '@lib/scope'
+import { cascadeActivityOwner } from '@lib/data/activities'
 
 /** A stage already resolved (and tenant-checked via getStageById) by the caller — mirrors how
  *  ownerId/contactId are handled: the action validates it belongs to this org, this module trusts
@@ -18,17 +20,19 @@ export interface ResolvedStage {
 
 export interface ListDealsOptions {
   stageId?: string
+  /** A free filter, meaningful only when `scope.scopeOwnerId` is null — see ListLeadsOptions'
+   *  identical field in lib/data/leads.ts for why this is ignored once the caller is scoped. */
   ownerId?: string
   search?: string
 }
 
-export function listDeals(orgId: string, options: ListDealsOptions = {}) {
+export function listDeals(scope: Scope, options: ListDealsOptions = {}) {
   const { stageId, ownerId, search } = options
 
   const where: Prisma.DealWhereInput = {
-    orgId,
+    orgId: scope.orgId,
     ...(stageId && { stageId }),
-    ...(ownerId && { ownerId }),
+    ...(scope.scopeOwnerId ? { ownerId: scope.scopeOwnerId } : ownerId ? { ownerId } : {}),
     ...(search && {
       OR: [
         { name: { contains: search, mode: 'insensitive' } },
@@ -46,11 +50,12 @@ export function listDeals(orgId: string, options: ListDealsOptions = {}) {
 
 /** Deal count + total value per stage — backs the pipeline board's column headers. Currently
  *  unused (the UI computes this client-side from the loaded deals), kept for parity with the
- *  old enum-based version. */
-export async function getPipelineTotals(orgId: string) {
+ *  old enum-based version. Scoped like every other aggregate: a scoped Member's totals only ever
+ *  reflect deals they currently own. */
+export async function getPipelineTotals(scope: Scope) {
   const grouped = await prisma.deal.groupBy({
     by: ['stageId'],
-    where: { orgId },
+    where: { orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     _count: { _all: true },
     _sum: { value: true },
   })
@@ -62,18 +67,22 @@ export async function getPipelineTotals(orgId: string) {
   }))
 }
 
-export function getDealById(orgId: string, id: string) {
+export function getDealById(scope: Scope, id: string) {
   return prisma.deal.findFirst({
-    where: { id, orgId },
+    where: {
+      id,
+      orgId: scope.orgId,
+      ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }),
+    },
     include: { owner: true, contact: true, lead: true, stage: true, company: true },
   })
 }
 
-export function createDeal(
-  orgId: string,
-  data: Omit<Prisma.DealCreateInput, 'orgId'>,
-) {
-  return prisma.deal.create({ data: { ...data, orgId } })
+/** Creation has nothing yet to scope a read against — `scope.scopeOwnerId` isn't used here. The
+ *  caller (createDealAction) is responsible for enforcing that a scoped Member can only create a
+ *  deal owned by themselves — see createLead's identical note in lib/data/leads.ts. */
+export function createDeal(scope: Scope, data: Omit<Prisma.DealCreateInput, 'orgId'>) {
+  return prisma.deal.create({ data: { ...data, orgId: scope.orgId } })
 }
 
 /**
@@ -92,10 +101,12 @@ function closeDateOnStageChange(previousIsWon: boolean, nextIsWon: boolean): Dat
 
 /** Moves a deal to a new stage — what a kanban drag-and-drop drop handler would call. `stage`
  *  must already be tenant-checked by the caller (getStageById), same convention as owner/contact. */
-export async function moveDealToStage(orgId: string, id: string, stage: ResolvedStage) {
+export async function moveDealToStage(scope: Scope, id: string, stage: ResolvedStage) {
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.deal.findFirst({ where: { id, orgId } })
-    if (!existing) throw new Error(`Deal ${id} not found in org ${orgId}`)
+    const existing = await tx.deal.findFirst({
+      where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
+    })
+    if (!existing) throw new Error(`Deal ${id} not found in org ${scope.orgId}`)
     // The deal's own current stageId already belongs to this org (it was written by a
     // tenant-checked call when the deal was created/last moved), so this lookup needs no
     // additional orgId check — it's not client input.
@@ -125,9 +136,13 @@ export interface UpdateDealInput {
  * entirely. If `stage` changes, the close date follows the exact same rule moveDealToStage uses
  * (via the shared closeDateOnStageChange), not a separately re-derived one — so a stage change made
  * through this edit modal behaves identically to one made by dragging the card.
+ *
+ * Mirrors updateLead/updateContact's reassignment cascade: when `data.ownerId` differs from the
+ * deal's current owner, every Activity already attached to it moves to the new owner in the same
+ * transaction.
  */
 export async function updateDeal(
-  orgId: string,
+  scope: Scope,
   id: string,
   data: UpdateDealInput,
   actorId: string,
@@ -135,8 +150,10 @@ export async function updateDeal(
   activityId: string,
 ) {
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.deal.findFirst({ where: { id, orgId } })
-    if (!existing) throw new Error(`Deal ${id} not found in org ${orgId}`)
+    const existing = await tx.deal.findFirst({
+      where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
+    })
+    if (!existing) throw new Error(`Deal ${id} not found in org ${scope.orgId}`)
 
     const previousStage = await tx.pipelineStage.findUnique({ where: { id: existing.stageId } })
 
@@ -170,14 +187,19 @@ export async function updateDeal(
       },
     })
 
+    if (existing.ownerId !== data.ownerId) {
+      await cascadeActivityOwner(tx, 'dealId', id, data.ownerId)
+    }
+
     await tx.activity.create({
       data: {
         id: activityId,
-        orgId,
+        orgId: scope.orgId,
         kind: 'edited',
         title: `edited ${updated.name}`,
         body: `Changed: ${changed.join(', ')}`,
         actorId,
+        ownerId: updated.ownerId,
         subjectType: 'deal',
         subjectLabel: updated.name,
         dealId: id,

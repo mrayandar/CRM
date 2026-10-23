@@ -35,6 +35,7 @@ import type {
   Payment,
 } from '@/data/types'
 import { DEFAULT_ORG_TIMEZONE } from '@lib/timezones'
+import type { Scope } from '@lib/scope'
 
 export interface CrmInitialData {
   owners: Owner[]
@@ -84,9 +85,15 @@ export interface CrmInitialData {
  * queried and payment-kind activities are excluded from the activity feed at the query level, so a
  * non-privileged member's hydrated client state contains no payment data at all, not just data
  * that's hidden by the UI.
+ *
+ * `scope.scopeOwnerId`, once an org is in OWN mode, narrows leads/contacts/deals/tasks/activities
+ * (and companies' rollup counts) to just what this caller owns — see each listed function's own
+ * doc comment. Owners, stages, and payments stay org-wide regardless of scope: an org's team
+ * roster, pipeline stages, and (gated separately by `includePayments`) payments are never
+ * per-rep data.
  */
 export async function loadCrmData(
-  orgId: string,
+  scope: Scope,
   currentOwnerId: string,
   includePayments: boolean,
 ): Promise<CrmInitialData> {
@@ -102,16 +109,16 @@ export async function loadCrmData(
     rawPayments,
     org,
   ] = await Promise.all([
-    listOwners(orgId),
-    listLeads(orgId),
-    listContacts(orgId),
-    listDeals(orgId),
-    listTasks(orgId),
-    listActivities(orgId, { excludeKinds: includePayments ? [] : ['payment'] }),
-    listStages(orgId),
-    listCompanies(orgId),
-    includePayments ? listPayments(orgId) : Promise.resolve([]),
-    getOrgById(orgId),
+    listOwners(scope.orgId),
+    listLeads(scope),
+    listContacts(scope),
+    listDeals(scope),
+    listTasks(scope),
+    listActivities(scope, { excludeKinds: includePayments ? [] : ['payment'] }),
+    listStages(scope.orgId),
+    listCompanies(scope.orgId, { scopeOwnerId: scope.scopeOwnerId }),
+    includePayments ? listPayments(scope.orgId) : Promise.resolve([]),
+    getOrgById(scope.orgId),
   ])
 
   const owners = rawOwners.map(mapOwner)

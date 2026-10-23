@@ -8,16 +8,30 @@ import { prisma } from '@lib/prisma'
 
 export interface ListCompaniesOptions {
   search?: string
+  /** Non-null for a scoped Member: company identity (name/website/industry/notes) stays org-wide
+   *  and unscoped — shared company names are not per-rep data — but the rollup `_count` below is
+   *  narrowed to just the records this caller owns, same rule as every other count in this app.
+   *  Kept as a plain optional param rather than a `Scope`, since this module's call sites
+   *  (companies aren't in Stage 1a's Scope-replacement list) still pass a bare orgId. */
+  scopeOwnerId?: string | null
 }
 
 export function listCompanies(orgId: string, options: ListCompaniesOptions = {}) {
-  const { search } = options
+  const { search, scopeOwnerId } = options
   return prisma.company.findMany({
     where: {
       orgId,
       ...(search && { name: { contains: search, mode: 'insensitive' } }),
     },
-    include: { _count: { select: { leads: true, contacts: true, deals: true } } },
+    include: {
+      _count: {
+        select: {
+          leads: scopeOwnerId ? { where: { ownerId: scopeOwnerId } } : true,
+          contacts: scopeOwnerId ? { where: { ownerId: scopeOwnerId } } : true,
+          deals: scopeOwnerId ? { where: { ownerId: scopeOwnerId } } : true,
+        },
+      },
+    },
     orderBy: { name: 'asc' },
   })
 }
@@ -26,14 +40,16 @@ export function getCompanyById(orgId: string, id: string) {
   return prisma.company.findFirst({ where: { id, orgId } })
 }
 
-/** Full detail view: the company plus every Lead/Contact/Deal linked to it. */
-export function getCompanyDetail(orgId: string, id: string) {
+/** Full detail view: the company plus every Lead/Contact/Deal linked to it. `scopeOwnerId` (see
+ *  ListCompaniesOptions' identical field) narrows the nested leads/contacts/deals to just this
+ *  caller's own — the company row itself (name etc.) is still returned unscoped. */
+export function getCompanyDetail(orgId: string, id: string, scopeOwnerId?: string | null) {
   return prisma.company.findFirst({
     where: { id, orgId },
     include: {
-      leads: { include: { owner: true } },
-      contacts: { include: { owner: true } },
-      deals: { include: { owner: true, stage: true } },
+      leads: { where: scopeOwnerId ? { ownerId: scopeOwnerId } : {}, include: { owner: true } },
+      contacts: { where: scopeOwnerId ? { ownerId: scopeOwnerId } : {}, include: { owner: true } },
+      deals: { where: scopeOwnerId ? { ownerId: scopeOwnerId } : {}, include: { owner: true, stage: true } },
     },
   })
 }
