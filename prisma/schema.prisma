@@ -140,6 +140,15 @@ model Organization {
   /// number regardless of currency (see the confirmation copy in the Settings UI).
   currency String @default("USD")
 
+  /// Real IANA zone id (e.g. "Asia/Karachi"). Used for org-wide business periods: won this
+  /// month, quarter-to-date quota, monthly charts, month-over-month, closing in 30 days — never
+  /// for a Member's personal day boundaries (tasks due today/overdue), which use their own
+  /// Owner.timezone instead. "UTC" is the raw DB default for a brand-new org (no browser context
+  /// is available at on-demand org-creation time); Settings pre-fills the admin's own browser-
+  /// resolved zone as a suggested value the first time they open the workspace timezone field
+  /// while it's still at that untouched default, rather than silently keeping UTC.
+  timezone String @default("UTC")
+
   /// Admin-only, changed in Settings with a confirmation (see PROGRESS.md's visibility design).
   /// Not yet read or written by any code path as of this column's introduction — every org is
   /// ALL until the Settings switch ships.

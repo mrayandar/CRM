@@ -34,6 +34,7 @@ import type {
   Company,
   Payment,
 } from '@/data/types'
+import { DEFAULT_ORG_TIMEZONE } from '@lib/timezones'
 
 export interface CrmInitialData {
   owners: Owner[]
@@ -53,6 +54,10 @@ export interface CrmInitialData {
   canAccessPayments: boolean
   quarterlyQuota: number | null
   orgCurrency: string
+  /** Real IANA zone id (e.g. "Asia/Karachi") — org-wide business periods (won this month,
+   *  quarter-to-date quota, monthly charts, month-over-month, closing in 30 days) are computed
+   *  in this zone, never the viewer's own. See lib/timePeriods.ts. */
+  orgTimezone: string
   /** The org's own name, as stored in our DB (set once, at creation, from Clerk's org name — see
    *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
    *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
@@ -124,6 +129,7 @@ export async function loadCrmData(
     canAccessPayments: includePayments,
     quarterlyQuota: org?.quarterlyQuota ?? null,
     orgCurrency: org?.currency ?? 'USD',
+    orgTimezone: org?.timezone ?? DEFAULT_ORG_TIMEZONE,
     orgName: org?.name ?? '',
   }
 }

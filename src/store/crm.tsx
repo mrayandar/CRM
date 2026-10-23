@@ -52,6 +52,7 @@ import {
   updateProfileAction,
   updateQuotaAction,
   updateCurrencyAction,
+  updateOrgTimezoneAction,
   createStageAction,
   renameStageAction,
   reorderStageAction,
@@ -230,6 +231,11 @@ interface CrmState {
   /** Org-level display currency (ISO 4217, e.g. "USD"), set from Settings -> Workspace, admin-only.
    *  Relabels every amount in the app — never converts stored values. */
   orgCurrency: string
+  /** Real IANA zone id, set from Settings -> Workspace, admin-only — org-wide business periods
+   *  (won this month, quarter-to-date quota, monthly charts, MoM, closing in 30 days) are
+   *  computed in this zone. See lib/timePeriods.ts. */
+  orgTimezone: string
+  updateOrgTimezone: (timezone: string) => void
   /** Read-only — there's no "rename workspace" action in this app; see orgName's doc comment in
    *  lib/data-loader.ts for why it can lag a rename made directly in Clerk. */
   orgName: string
@@ -373,6 +379,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [wonPaymentSetupDealId, setWonPaymentSetupDealId] = useState<string | null>(null)
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
+  const [orgTimezone, setOrgTimezone] = useState<string>(initialData.orgTimezone)
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
@@ -1034,6 +1041,20 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       )
     },
     [orgCurrency, persist],
+  )
+
+  const updateOrgTimezone = useCallback(
+    (timezone: string) => {
+      const prev = orgTimezone
+      setOrgTimezone(timezone)
+      persist(
+        () => updateOrgTimezoneAction({ timezone }),
+        () => setOrgTimezone(prev),
+        undefined,
+        "Couldn't save the workspace time zone, please try again.",
+      )
+    },
+    [orgTimezone, persist],
   )
 
   // Not routed through persist(): the caller (the inline create-or-select picker) needs the real
@@ -1714,6 +1735,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     setCanAccessPayments(fresh.canAccessPayments)
     setQuarterlyQuota(fresh.quarterlyQuota)
     setOrgCurrency(fresh.orgCurrency)
+    setOrgTimezone(fresh.orgTimezone)
     setOrgName(fresh.orgName)
   }, [])
 
@@ -1787,6 +1809,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       closeWonPaymentSetup,
       quarterlyQuota,
       orgCurrency,
+      orgTimezone,
+      updateOrgTimezone,
       orgName,
       ownerById,
       stageById,
@@ -1841,6 +1865,8 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       closeWonPaymentSetup,
       quarterlyQuota,
       orgCurrency,
+      orgTimezone,
+      updateOrgTimezone,
       orgName,
       ownerById,
       stageById,

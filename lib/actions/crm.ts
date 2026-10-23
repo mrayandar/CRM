@@ -4,7 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { auth, clerkClient } from '@clerk/nextjs/server'
 import { requireAuth, requireAdmin } from '@lib/auth'
-import { updateOrgQuota, updateOrgCurrency } from '@lib/data/organizations'
+import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone } from '@lib/data/organizations'
+import { isValidIanaTimezone } from '@lib/timezones'
 import { CURRENCY_CODES } from '@/data/types'
 import {
   createLead as dbCreateLead,
@@ -742,9 +743,20 @@ export async function updateProfileAction(input: { name: string; timezone: strin
   const name = input.name.trim()
   if (!name || name.length > 200) throw new Error('Name is required')
   const timezone = input.timezone?.trim() || null
-  if (timezone && timezone.length > 100) throw new Error('Invalid time zone')
+  // A real IANA zone id or null (never the old free-text display labels) — see lib/timezones.ts.
+  // Clearing it is allowed (Settings prompts again rather than silently keeping a stale value).
+  if (timezone && !isValidIanaTimezone(timezone)) throw new Error('Invalid time zone')
 
   await updateOwnerProfile(orgId, ownerId, { name, timezone })
+  revalidatePath('/', 'layout')
+}
+
+export async function updateOrgTimezoneAction(input: { timezone: string }) {
+  const { orgId } = await requireAdmin()
+  const timezone = input.timezone.trim()
+  if (!isValidIanaTimezone(timezone)) throw new Error('Invalid time zone')
+
+  await updateOrgTimezone(orgId, timezone)
   revalidatePath('/', 'layout')
 }
 

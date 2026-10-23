@@ -13,25 +13,30 @@ import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/ui/Display'
 import { StageManager } from '@/components/common/StageManager'
+import { TimezoneSelect } from '@/components/common/TimezoneSelect'
 import { useCrm } from '@/store/crm'
 import { cn, currencySymbol, formatDate } from '@/lib/utils'
 import { CURRENCY_CODES, CURRENCY_LABEL } from '@/data/types'
+import { resolveBrowserTimezone } from '@lib/timezones'
 import { useOrganization, useUser } from '@clerk/nextjs'
 import { inviteMemberAction } from '@lib/actions/crm'
 
 type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
 
-const TIMEZONES = [
-  { value: 'Pacific Time (US & Canada)', label: 'Pacific Time (US & Canada)' },
-  { value: 'Eastern Time (US & Canada)', label: 'Eastern Time (US & Canada)' },
-  { value: 'London (GMT)', label: 'London (GMT)' },
-  { value: 'Central European Time', label: 'Central European Time' },
-]
-
 const formatQuota = (quota: number | null) => (quota !== null ? quota.toLocaleString('en-US') : '')
 
 export function Settings() {
-  const { currentUser, updateProfile, quarterlyQuota, updateQuota, orgCurrency, updateCurrency, orgName } = useCrm()
+  const {
+    currentUser,
+    updateProfile,
+    quarterlyQuota,
+    updateQuota,
+    orgCurrency,
+    updateCurrency,
+    orgTimezone,
+    updateOrgTimezone,
+    orgName,
+  } = useCrm()
   const [params] = useSearchParams()
   const initialSection = params.get('section')
   const [section, setSection] = useState<Section>(
@@ -40,16 +45,25 @@ export function Settings() {
       : 'profile',
   )
   const [profileName, setProfileName] = useState(currentUser.name)
-  const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? TIMEZONES[0]!.value)
+  // Was never set for this owner — pre-fill with the browser's own resolved zone rather than
+  // leaving it blank; a banner below still makes clear this is a suggestion to confirm, not
+  // already-saved. Never silently assumed to be UTC.
+  const profileTimezoneUnset = !currentUser.timezone
+  const [profileTimezone, setProfileTimezone] = useState(currentUser.timezone ?? resolveBrowserTimezone())
   const [quotaInput, setQuotaInput] = useState(formatQuota(quarterlyQuota))
   const [currencyInput, setCurrencyInput] = useState(orgCurrency)
   const [confirmCurrencyOpen, setConfirmCurrencyOpen] = useState(false)
+  // Pre-fills with the browser's resolved zone only while the org is still at the untouched
+  // "UTC" default — an admin's real, deliberate choice of UTC is never overwritten on reload.
+  const [orgTimezoneInput, setOrgTimezoneInput] = useState(
+    orgTimezone === 'UTC' ? resolveBrowserTimezone() : orgTimezone,
+  )
 
   const isAdmin = currentUser.role === 'Admin'
-  const profileDirty =
-    profileName.trim() !== currentUser.name || profileTimezone !== (currentUser.timezone ?? TIMEZONES[0]!.value)
+  const profileDirty = profileName.trim() !== currentUser.name || profileTimezone !== (currentUser.timezone ?? resolveBrowserTimezone())
   const quotaDirty = quotaInput !== formatQuota(quarterlyQuota)
   const currencyDirty = currencyInput !== orgCurrency
+  const orgTimezoneDirty = orgTimezoneInput !== orgTimezone
 
   const saveProfile = () => {
     const name = profileName.trim()
@@ -59,8 +73,11 @@ export function Settings() {
 
   const cancelProfile = () => {
     setProfileName(currentUser.name)
-    setProfileTimezone(currentUser.timezone ?? TIMEZONES[0]!.value)
+    setProfileTimezone(currentUser.timezone ?? resolveBrowserTimezone())
   }
+
+  const saveOrgTimezone = () => updateOrgTimezone(orgTimezoneInput)
+  const cancelOrgTimezone = () => setOrgTimezoneInput(orgTimezone === 'UTC' ? resolveBrowserTimezone() : orgTimezone)
 
   const saveQuota = () => {
     const digits = quotaInput.replace(/[^0-9]/g, '')
@@ -135,17 +152,12 @@ export function Settings() {
                   </div>
                   <div>
                     <Label>Time zone</Label>
-                    <Select
-                      value={profileTimezone}
-                      onChange={(e) => setProfileTimezone(e.target.value)}
-                      className="h-9"
-                    >
-                      {TIMEZONES.map((tz) => (
-                        <option key={tz.value} value={tz.value}>
-                          {tz.label}
-                        </option>
-                      ))}
-                    </Select>
+                    <TimezoneSelect value={profileTimezone} onChange={setProfileTimezone} />
+                    {profileTimezoneUnset && (
+                      <p className="mt-1 text-[11px] text-ink-500">
+                        Set from your browser — confirm it or pick a different one, then save.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -208,6 +220,40 @@ export function Settings() {
                       ? 'Relabels every amount in the app — it does not convert existing values.'
                       : 'Only admins can change the workspace currency.'}
                   </p>
+                </div>
+                <div>
+                  <Label>Workspace time zone</Label>
+                  {isAdmin ? (
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        <TimezoneSelect
+                          value={orgTimezoneInput}
+                          onChange={setOrgTimezoneInput}
+                          className="flex-1"
+                        />
+                        {orgTimezoneDirty && (
+                          <>
+                            <IconButton label="Save workspace time zone" variant="secondary" onClick={saveOrgTimezone}>
+                              <Check size={13} />
+                            </IconButton>
+                            <IconButton label="Cancel" onClick={cancelOrgTimezone}>
+                              <X size={13} />
+                            </IconButton>
+                          </>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] text-ink-400">
+                        Used for org-wide numbers: won this month, quota progress, monthly charts,
+                        and closing in 30 days. Your own time zone (above) only affects your task
+                        due dates.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <Input value={orgTimezone} disabled />
+                      <p className="mt-1 text-[11px] text-ink-400">Only admins can change the workspace time zone.</p>
+                    </>
+                  )}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">

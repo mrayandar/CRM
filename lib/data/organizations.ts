@@ -87,3 +87,13 @@ export function updateOrgCurrency(orgId: string, currency: string) {
     data: { currency },
   })
 }
+
+/** Sets the org's business-period timezone (won this month, quarter-to-date quota, monthly
+ *  charts, MoM, closing in 30 days — see lib/timePeriods.ts). Same orgId/admin-only reasoning as
+ *  updateOrgCurrency. */
+export function updateOrgTimezone(orgId: string, timezone: string) {
+  return prisma.organization.update({
+    where: { id: orgId },
+    data: { timezone },
+  })
+}

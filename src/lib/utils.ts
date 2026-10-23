@@ -60,6 +60,15 @@ export function dayDelta(iso: string): number {
   return Math.round((then - today) / DAY)
 }
 
+/**
+ * The one definition of "weighted pipeline value" for a deal — used by Dashboard's funnel tile
+ * and Pipeline's per-column total, which used to each write out `(d.value * d.probability) / 100`
+ * inline. No date/timezone sensitivity (pure arithmetic on two numbers already on the deal).
+ */
+export function weightedValue(deal: { value: number; probability: number }): number {
+  return (deal.value * deal.probability) / 100
+}
+
 /** "2h ago", "Yesterday", "Sep 12" */
 export function relativeTime(iso: string): string {
   const then = new Date(iso).getTime()
@@ -246,22 +255,6 @@ export function exportCsv(filename: string, rows: Array<Record<string, unknown>>
   URL.revokeObjectURL(url)
 }
 
-export function isThisMonth(iso: string): boolean {
-  const d = new Date(iso)
-  const now = new Date()
-  return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
-}
-
-/** True if `iso` falls in the calendar month exactly `monthsAgo` months before the current one
- *  (0 = this month, 1 = last month, ...). Used for real month-over-month comparisons — never
- *  invent a trend for a metric with no time-series basis; this is how the real ones are built. */
-export function isMonthsAgo(iso: string, monthsAgo: number): boolean {
-  const d = new Date(iso)
-  const now = new Date()
-  const target = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1)
-  return d.getFullYear() === target.getFullYear() && d.getMonth() === target.getMonth()
-}
-
 /**
  * Real month-over-month % change. Returns null — render as "not enough data yet", never a
  * fabricated number — when there's nothing meaningful to compare against (no prior-period value).
@@ -269,31 +262,4 @@ export function isMonthsAgo(iso: string, monthsAgo: number): boolean {
 export function momDelta(current: number, previous: number): number | null {
   if (previous <= 0) return null
   return ((current - previous) / previous) * 100
-}
-
-/**
- * Buckets already-won deals into calendar months (oldest to newest, `months` wide, including the
- * current month) and sums their value per month. Every bucket in the window is present even when
- * empty — an org with sparse or no closed-won history gets honest zero bars, never padded with
- * fabricated figures.
- */
-export function monthlyWonRevenue(
-  wonDeals: Array<{ value: number; closeDate: string }>,
-  months = 6,
-): Array<{ month: string; value: number }> {
-  const now = new Date()
-  const buckets = new Map<string, { month: string; value: number }>()
-  for (let i = months - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    buckets.set(`${d.getFullYear()}-${d.getMonth()}`, {
-      month: d.toLocaleDateString('en-US', { month: 'short' }),
-      value: 0,
-    })
-  }
-  for (const deal of wonDeals) {
-    const d = new Date(deal.closeDate)
-    const bucket = buckets.get(`${d.getFullYear()}-${d.getMonth()}`)
-    if (bucket) bucket.value += deal.value
-  }
-  return [...buckets.values()]
 }

@@ -22,16 +22,24 @@ import {
   dayDelta,
   formatDate,
   isAwaitingMilestone,
-  isMonthsAgo,
   isPaymentOverdue,
-  isThisMonth,
   momDelta,
-  monthlyWonRevenue,
   percent,
   receivedTotal,
   sortBy,
   sum,
+  weightedValue,
 } from '@/lib/utils'
+import {
+  isClosingSoon,
+  isInCurrentQuarter,
+  isMonthsAgo,
+  isTaskDueToday,
+  isTaskOverdue,
+  isThisMonth,
+  monthlyWonRevenue,
+} from '@lib/timePeriods'
+import { resolveBrowserTimezone } from '@lib/timezones'
 
 export function Dashboard() {
   const {
@@ -45,9 +53,15 @@ export function Dashboard() {
     stageById,
     quarterlyQuota,
     orgCurrency,
+    orgTimezone,
     payments,
     canAccessPayments,
   } = useCrm()
+  // Personal day boundaries (tasks due today/overdue) use the viewer's own timezone, falling
+  // back to the browser's resolved zone while it's unset (prompted for in Settings, never
+  // silently assumed to be UTC). Every other date-boundary rule here is an org-wide business
+  // period and uses orgTimezone instead — see lib/timePeriods.ts.
+  const viewerTimezone = currentUser.timezone ?? resolveBrowserTimezone()
   const [newDealOpen, setNewDealOpen] = useState(false)
   const [taskScope, setTaskScope] = useState<'mine' | 'team'>('mine')
   // Bound to this org's currency — see src/lib/utils.ts; every money display on this page goes
@@ -58,20 +72,18 @@ export function Dashboard() {
 
   const openDeals = deals.filter((d) => !stageById(d.stageId).isClosed)
   const openValue = sum(openDeals.map((d) => d.value))
-  const weightedValue = sum(openDeals.map((d) => (d.value * d.probability) / 100))
+  const weightedTotal = sum(openDeals.map(weightedValue))
 
   const wonDeals = deals.filter((d) => stageById(d.stageId).isWon)
-  const wonThisMonth = wonDeals.filter((d) => isThisMonth(d.closeDate))
-  const wonLastMonth = wonDeals.filter((d) => isMonthsAgo(d.closeDate, 1))
+  const wonThisMonth = wonDeals.filter((d) => isThisMonth(d.closeDate, orgTimezone))
+  const wonLastMonth = wonDeals.filter((d) => isMonthsAgo(d.closeDate, 1, orgTimezone))
   const wonThisMonthValue = sum(wonThisMonth.map((d) => d.value))
   const wonDelta = momDelta(wonThisMonthValue, sum(wonLastMonth.map((d) => d.value)))
 
   // The quota (Settings -> Workspace) is explicitly quarterly, so it's compared against
   // quarter-to-date revenue, not the month-to-date figure the tile's headline value shows.
-  const now = new Date()
-  const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)
   const wonThisQuarterValue = sum(
-    wonDeals.filter((d) => new Date(d.closeDate) >= quarterStart).map((d) => d.value),
+    wonDeals.filter((d) => isInCurrentQuarter(d.closeDate, orgTimezone)).map((d) => d.value),
   )
   const quotaProgress = quarterlyQuota ? Math.min((wonThisQuarterValue / quarterlyQuota) * 100, 999) : null
 
@@ -83,8 +95,8 @@ export function Dashboard() {
 
   // Real month-over-month conversion trend — only shown when both months actually had closed
   // deals to compute a rate from; otherwise there's nothing honest to compare.
-  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate))
-  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1))
+  const closedThisMonth = deals.filter((d) => stageById(d.stageId).isClosed && isThisMonth(d.closeDate, orgTimezone))
+  const closedLastMonth = deals.filter((d) => stageById(d.stageId).isClosed && isMonthsAgo(d.closeDate, 1, orgTimezone))
   const conversionThisMonth = closedThisMonth.length
     ? (closedThisMonth.filter((d) => stageById(d.stageId).isWon).length / closedThisMonth.length) * 100
     : null
@@ -103,19 +115,19 @@ export function Dashboard() {
   // counts straight off this array — never affected by how many rows are actually rendered below.
   const scopedTasks = taskScope === 'mine' ? myOpenTasks : teamOpenTasks
   const byDueDate = (list: typeof tasks) => sortBy(list, (t) => new Date(t.dueDate).getTime())
-  const overdueTasks = byDueDate(scopedTasks.filter((t) => dayDelta(t.dueDate) < 0))
-  const dueTodayTasks = byDueDate(scopedTasks.filter((t) => dayDelta(t.dueDate) === 0))
+  const overdueTasks = byDueDate(scopedTasks.filter((t) => isTaskOverdue(t, viewerTimezone)))
+  const dueTodayTasks = byDueDate(scopedTasks.filter((t) => isTaskDueToday(t, viewerTimezone)))
   const upcomingTasks = byDueDate(
     scopedTasks.filter((t) => dayDelta(t.dueDate) > 0 && dayDelta(t.dueDate) <= 7),
   )
   const TASK_SECTION_LIMIT = 5
 
-  const overdue = tasks.filter((t) => !t.done && dayDelta(t.dueDate) < 0)
+  const overdue = tasks.filter((t) => !t.done && isTaskOverdue(t, viewerTimezone))
   const stalled = openDeals.filter((d) => dayDelta(d.updatedAt) <= -5)
   const untouchedLeads = leads.filter((l) => l.status === 'new')
 
   const closingSoon = sortBy(
-    openDeals.filter((d) => dayDelta(d.closeDate) <= 30),
+    openDeals.filter((d) => isClosingSoon(d, orgTimezone)),
     (d) => new Date(d.closeDate).getTime(),
   ).slice(0, 5)
 
@@ -125,7 +137,7 @@ export function Dashboard() {
   })
   const maxStageValue = Math.max(...stageRows.map((r) => r.value), 1)
 
-  const monthlyRevenue = monthlyWonRevenue(wonDeals, 6)
+  const monthlyRevenue = monthlyWonRevenue(wonDeals, orgTimezone, 6)
   const hasRevenueHistory = monthlyRevenue.some((m) => m.value > 0)
   const chartData = monthlyRevenue.map((m, i) => ({
     label: m.month,
@@ -163,7 +175,7 @@ export function Dashboard() {
               label: 'Open pipeline value',
               value: fmtCompact(openValue),
               emphasis: true,
-              footer: `${fmtCompact(weightedValue)} weighted · ${openDeals.length} open deals`,
+              footer: `${fmtCompact(weightedTotal)} weighted · ${openDeals.length} open deals`,
             },
             {
               // Same reasoning: no time-series of the open-deal count exists to trend against.
@@ -258,7 +270,7 @@ export function Dashboard() {
               <div className="flex items-center justify-between border-t border-line bg-subtler px-5 py-2.5">
                 <span className="text-[12px] text-ink-500">Weighted forecast</span>
                 <span className="tabular text-[13px] font-semibold text-ink-900">
-                  {fmt(weightedValue)}
+                  {fmt(weightedTotal)}
                 </span>
               </div>
             </Card>
@@ -431,7 +443,9 @@ export function Dashboard() {
                 `canAccessPayments` is false and `payments` is already [] (loadCrmData never
                 queries Payment rows for them), so this renders nothing and has nothing to render
                 from even if the gate were somehow bypassed client-side. */}
-            {canAccessPayments && <PaymentsSummaryCard payments={payments} orgCurrency={orgCurrency} />}
+            {canAccessPayments && (
+              <PaymentsSummaryCard payments={payments} orgCurrency={orgCurrency} orgTimezone={orgTimezone} />
+            )}
 
             <Card>
               <CardHeader
@@ -458,12 +472,21 @@ export function Dashboard() {
   )
 }
 
-function PaymentsSummaryCard({ payments, orgCurrency }: { payments: Payment[]; orgCurrency: string }) {
+function PaymentsSummaryCard({
+  payments,
+  orgCurrency,
+  orgTimezone,
+}: {
+  payments: Payment[]
+  orgCurrency: string
+  orgTimezone: string
+}) {
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   // Collected this month: status === 'paid' (via receivedTotal, never paidAt alone) AND paidAt
-  // falls in the current calendar month. A payment paid and then cancelled fails the status
-  // check and is correctly excluded even though its paidAt is still set.
-  const paidThisMonth = payments.filter((p) => p.status === 'paid' && p.paidAt && isThisMonth(p.paidAt))
+  // falls in the current calendar month — an org-wide business period, same as "won this month"
+  // (see lib/timePeriods.ts). A payment paid and then cancelled fails the status check and is
+  // correctly excluded even though its paidAt is still set.
+  const paidThisMonth = payments.filter((p) => p.status === 'paid' && p.paidAt && isThisMonth(p.paidAt, orgTimezone))
   const collectedThisMonth = receivedTotal(paidThisMonth)
   const overduePayments = payments.filter(isPaymentOverdue)
   const overdueAmount = sum(overduePayments.map((p) => p.amount))

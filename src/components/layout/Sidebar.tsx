@@ -13,7 +13,9 @@ import {
   ChevronsUpDown,
   Wallet,
 } from 'lucide-react'
-import { cn, dayDelta } from '@/lib/utils'
+import { cn } from '@/lib/utils'
+import { isClosingSoon, isTaskOverdue } from '@lib/timePeriods'
+import { resolveBrowserTimezone } from '@lib/timezones'
 import { useCrm } from '@/store/crm'
 import { Avatar } from '@/components/ui/Avatar'
 import { Popover, MenuDivider, MenuItem, MenuLabel } from '@/components/ui/Menu'
@@ -32,14 +34,15 @@ interface NavEntry {
 }
 
 export function Sidebar() {
-  const { leads, tasks, deals, contacts, stageById, canAccessPayments } = useCrm()
+  const { leads, tasks, deals, contacts, stageById, canAccessPayments, currentUser, orgTimezone } = useCrm()
+  const viewerTimezone = currentUser.timezone ?? resolveBrowserTimezone()
 
   const newLeads = leads.filter((l) => l.status === 'new').length
-  const overdueTasks = tasks.filter((t) => !t.done && dayDelta(t.dueDate) < 0).length
+  const overdueTasks = tasks.filter((t) => !t.done && isTaskOverdue(t, viewerTimezone)).length
   const openTasks = tasks.filter((t) => !t.done).length
   // Same definition Dashboard's "Closing in 30 days" card uses: any open deal due within 30
   // days (including already-overdue ones, same as that card).
-  const closingSoon = deals.filter((d) => !stageById(d.stageId).isClosed && dayDelta(d.closeDate) <= 30).length
+  const closingSoon = deals.filter((d) => !stageById(d.stageId).isClosed && isClosingSoon(d, orgTimezone)).length
   const champions = contacts.filter((c) => c.lifecycle === 'Champion').length
 
   const primary: NavEntry[] = [

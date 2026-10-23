@@ -36,7 +36,8 @@ import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
 import { getPaymentById, listPayments } from '@lib/data/payments'
 import * as paymentActions from '@lib/actions/payments'
 import { loadCrmData } from '@lib/data-loader'
-import { isThisMonth, receivedTotal } from '@/lib/utils'
+import { receivedTotal } from '@/lib/utils'
+import { isThisMonth } from '@lib/timePeriods'
 import { getTaskById, listTasks, toggleTaskDone, updateTask, deleteTask } from '@lib/data/tasks'
 import { listActivities } from '@lib/data/activities'
 import { ensureDefaultStages, getStageById, listStages, renameStage, reorderStage, deleteStage } from '@lib/data/stages'
@@ -1593,7 +1594,9 @@ describe('Dashboard Payments card math: a paid-then-cancelled payment is exclude
     expect(relevant.find((r) => r.id === cancelledId)?.paidAt).not.toBeNull() // the exact trap condition
 
     // Same filter PaymentsSummaryCard uses: status === 'paid' AND paidAt this month, via receivedTotal.
-    const paidThisMonth = relevant.filter((r) => r.status === 'paid' && r.paidAt && isThisMonth(r.paidAt.toISOString()))
+    const paidThisMonth = relevant.filter(
+      (r) => r.status === 'paid' && r.paidAt && isThisMonth(r.paidAt.toISOString(), A.org.timezone),
+    )
     const collectedThisMonth = receivedTotal(paidThisMonth)
     expect(collectedThisMonth).toBe(400) // only the still-paid $400, not the paid-then-cancelled $600
 

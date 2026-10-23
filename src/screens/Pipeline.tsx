@@ -24,7 +24,7 @@ import { StageManager } from '@/components/common/StageManager'
 import { useNavigate } from '@/lib/router-compat'
 import { useCrm } from '@/store/crm'
 import type { Deal, Payment, PipelineStage } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, receivedTotal, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, dayDelta, exportCsv, formatDate, receivedTotal, sortBy, sum, weightedValue } from '@/lib/utils'
 
 export function Pipeline() {
   const { deals, owners, ownerById, moveDeal, currentUser, stages, orgCurrency, payments, canAccessPayments } = useCrm()
@@ -63,9 +63,7 @@ export function Pipeline() {
   }, [visible, columns])
 
   const openValue = sum(visible.filter((d) => openStageIds.has(d.stageId)).map((d) => d.value))
-  const weighted = sum(
-    visible.filter((d) => openStageIds.has(d.stageId)).map((d) => (d.value * d.probability) / 100),
-  )
+  const weighted = sum(visible.filter((d) => openStageIds.has(d.stageId)).map(weightedValue))
   const maxColumnValue = Math.max(
     ...columns.map((stage) => sum((byStage[stage.id] ?? []).map((d) => d.value))),
     1,
