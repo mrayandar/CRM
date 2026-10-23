@@ -342,6 +342,71 @@ describe('lib/data: writes reject a record id from another org', () => {
   })
 })
 
+describe('client-supplied id collisions fail identically whether the id already exists in this org or another one', () => {
+  it('createLeadAction: resubmitting the same id within the same org fails with the uniform error', async () => {
+    loginAs(A)
+    const id = randomUUID()
+    const activityId = randomUUID()
+    const base = {
+      id,
+      name: 'Collision Test Lead',
+      email: `collision-${RUN}@example.com`,
+      phone: '',
+      companyId: A.company.id,
+      source: 'Inbound' as const,
+      status: 'new' as const,
+      ownerId: A.owner.id,
+      activityId,
+    }
+    await actions.createLeadAction(base)
+
+    await expect(
+      actions.createLeadAction({ ...base, activityId: randomUUID(), email: `collision-retry-${RUN}@example.com` }),
+    ).rejects.toThrow('Could not create record')
+
+    await prisma.activity.deleteMany({ where: { orgId: A.org.id, leadId: id } })
+    await prisma.lead.delete({ where: { id } })
+  })
+
+  it('createLeadAction: the SAME id already existing in a DIFFERENT org fails with the identical error — no existence leak', async () => {
+    loginAs(B)
+    const id = randomUUID()
+    const activityId = randomUUID()
+    // First, a real lead under this id in org A.
+    const ownedByA = await prisma.lead.create({
+      data: {
+        id,
+        orgId: A.org.id,
+        name: 'Org A Collision Lead',
+        title: '',
+        companyId: A.company.id,
+        email: `org-a-collision-${RUN}@example.com`,
+        phone: '',
+        source: 'Inbound',
+        location: '',
+        ownerId: A.owner.id,
+      },
+    })
+
+    // B (a completely different org) happens to submit the same id.
+    await expect(
+      actions.createLeadAction({
+        id,
+        name: 'Org B Collision Lead',
+        email: `org-b-collision-${RUN}@example.com`,
+        phone: '',
+        companyId: B.company.id,
+        source: 'Inbound',
+        status: 'new',
+        ownerId: B.owner.id,
+        activityId,
+      }),
+    ).rejects.toThrow('Could not create record') // identical message/shape to the same-org case above
+
+    await prisma.lead.delete({ where: { id: ownedByA.id } })
+  })
+})
+
 describe('server actions: reject a client-supplied ownerId/contactId/stageId from another org', () => {
   beforeEach(() => loginAs(B))
 

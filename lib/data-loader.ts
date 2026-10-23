@@ -58,6 +58,10 @@ export interface CrmInitialData {
    *  quarter-to-date quota, monthly charts, month-over-month, closing in 30 days) are computed
    *  in this zone, never the viewer's own. See lib/timePeriods.ts. */
   orgTimezone: string
+  /** Always "ALL" today — no Settings switch exists yet to change it (Stage 1). Exposed now so
+   *  the query-cache security guard (lib/queryCacheSecurity.ts) already watches it; nothing else
+   *  reads or writes this. */
+  repVisibility: 'ALL' | 'OWN'
   /** The org's own name, as stored in our DB (set once, at creation, from Clerk's org name — see
    *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
    *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
@@ -130,6 +134,7 @@ export async function loadCrmData(
     quarterlyQuota: org?.quarterlyQuota ?? null,
     orgCurrency: org?.currency ?? 'USD',
     orgTimezone: org?.timezone ?? DEFAULT_ORG_TIMEZONE,
+    repVisibility: org?.repVisibility ?? 'ALL',
     orgName: org?.name ?? '',
   }
 }

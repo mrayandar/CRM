@@ -1,6 +1,8 @@
 import { resolveAuth, canAccessPayments } from '@lib/auth'
 import { loadCrmData } from '@lib/data-loader'
 import { CrmProvider } from '@/store/crm'
+import { QueryProvider } from '@/store/queryClient'
+import { QueryCacheSecurityGuard } from '@/store/QueryCacheSecurityGuard'
 import { AppLayout } from '@/components/layout/AppLayout'
 
 export default async function AuthenticatedLayout({
@@ -13,8 +15,12 @@ export default async function AuthenticatedLayout({
   const data = await loadCrmData(orgId, owner.id, hasPaymentAccess)
 
   return (
-    <CrmProvider initialData={data} orgId={orgId}>
-      <AppLayout>{children}</AppLayout>
-    </CrmProvider>
+    <QueryProvider>
+      <CrmProvider initialData={data} orgId={orgId}>
+        <QueryCacheSecurityGuard>
+          <AppLayout>{children}</AppLayout>
+        </QueryCacheSecurityGuard>
+      </CrmProvider>
+    </QueryProvider>
   )
 }

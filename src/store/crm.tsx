@@ -200,6 +200,10 @@ export interface SplitPaymentPart {
 }
 
 interface CrmState {
+  /** Never changes within one mounted CrmProvider — a different org means a different page load
+   *  (a fresh (app)/layout.tsx render), not a client-side org switch. Exposed for the query-cache
+   *  security guard (lib/queryCacheSecurity.ts), which needs it in its state comparison. */
+  orgId: string
   owners: Owner[]
   currentUser: Owner
   leads: Lead[]
@@ -236,6 +240,8 @@ interface CrmState {
    *  computed in this zone. See lib/timePeriods.ts. */
   orgTimezone: string
   updateOrgTimezone: (timezone: string) => void
+  /** Always "ALL" today — see lib/data-loader.ts's identical field. */
+  repVisibility: 'ALL' | 'OWN'
   /** Read-only — there's no "rename workspace" action in this app; see orgName's doc comment in
    *  lib/data-loader.ts for why it can lag a rename made directly in Clerk. */
   orgName: string
@@ -360,7 +366,7 @@ interface CrmProviderProps {
   orgId: string
 }
 
-export function CrmProvider({ children, initialData }: CrmProviderProps) {
+export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) {
   const [, startTransition] = useTransition()
 
   const [leads, setLeads] = useState<Lead[]>(initialData.leads)
@@ -380,6 +386,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
   const [quarterlyQuota, setQuarterlyQuota] = useState<number | null>(initialData.quarterlyQuota)
   const [orgCurrency, setOrgCurrency] = useState<string>(initialData.orgCurrency)
   const [orgTimezone, setOrgTimezone] = useState<string>(initialData.orgTimezone)
+  const [repVisibility, setRepVisibility] = useState<'ALL' | 'OWN'>(initialData.repVisibility)
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
@@ -1736,6 +1743,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
     setQuarterlyQuota(fresh.quarterlyQuota)
     setOrgCurrency(fresh.orgCurrency)
     setOrgTimezone(fresh.orgTimezone)
+    setRepVisibility(fresh.repVisibility)
     setOrgName(fresh.orgName)
   }, [])
 
@@ -1793,6 +1801,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
 
   const value = useMemo<CrmState>(
     () => ({
+      orgId,
       owners,
       currentUser,
       leads,
@@ -1811,6 +1820,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       orgCurrency,
       orgTimezone,
       updateOrgTimezone,
+      repVisibility,
       orgName,
       ownerById,
       stageById,
@@ -1849,6 +1859,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       persist,
     }),
     [
+      orgId,
       owners,
       currentUser,
       leads,
@@ -1867,6 +1878,7 @@ export function CrmProvider({ children, initialData }: CrmProviderProps) {
       orgCurrency,
       orgTimezone,
       updateOrgTimezone,
+      repVisibility,
       orgName,
       ownerById,
       stageById,

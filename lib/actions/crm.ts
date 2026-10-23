@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
+import { Prisma } from '@prisma/client'
 import { auth, clerkClient } from '@clerk/nextjs/server'
 import { requireAuth, requireAdmin } from '@lib/auth'
 import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone } from '@lib/data/organizations'
@@ -74,6 +75,34 @@ function assertClientId(id: unknown): asserts id is string {
   if (typeof id !== 'string' || !UUID_RE.test(id)) throw new Error('Invalid id')
 }
 
+/**
+ * Wraps a create call that writes a client-supplied id as a row's primary key. Converts only a
+ * primary-key collision (`meta.target` includes "id") into one deliberate, uniform error — the
+ * same message and shape whether the id already exists in this org (e.g. a retried double-submit)
+ * or in a completely different one (a guess/collision), so neither case leaks which one happened.
+ * Every other unique-constraint violation (a duplicate email, say) is a real validation signal
+ * and is rethrown untouched — those already have their own specific handling at each call site.
+ *
+ * This used to be an accident of Next's production-only error-message redaction, never
+ * application code's own decision — explicit here so the guarantee holds in dev mode too, and
+ * wouldn't quietly stop holding if this code ever moved to a plain API route.
+ */
+async function guardAgainstIdCollision<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (err) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002' &&
+      Array.isArray(err.meta?.target) &&
+      (err.meta!.target as string[]).includes('id')
+    ) {
+      throw new Error('Could not create record')
+    }
+    throw err
+  }
+}
+
 export async function createCompanyAction(input: {
   id: string
   name: string
@@ -98,7 +127,9 @@ export async function createCompanyAction(input: {
   const existing = await getCompanyByName(orgId, name)
   if (existing) return { id: existing.id, name: existing.name, existing: true as const }
 
-  const company = await dbCreateCompany(orgId, { id: input.id, name, website, industry, notes })
+  const company = await guardAgainstIdCollision(() =>
+    dbCreateCompany(orgId, { id: input.id, name, website, industry, notes }),
+  )
   revalidatePath('/', 'layout')
   return { id: company.id, name: company.name, existing: false as const }
 }
@@ -212,43 +243,45 @@ export async function createLeadAction(input: {
   if (!company) throw new Error('Company not found')
 
   const subject = { subjectType: 'lead' as const, subjectLabel: name }
-  const lead = await dbCreateLead(orgId, {
-    id: input.id,
-    name,
-    title: '',
-    company: { connect: { id: company.id } },
-    email,
-    phone,
-    location: '',
-    status: input.status,
-    source: input.source,
-    owner: { connect: { id: owner.id } },
-    activities: {
-      create: [
-        {
-          id: input.activityId,
-          orgId,
-          kind: 'created',
-          title: `created lead ${name}`,
-          actor: { connect: { id: actorId } },
-          ...subject,
-        },
-        ...(notes
-          ? [
-              {
-                id: input.noteActivityId,
-                orgId,
-                kind: 'note' as const,
-                title: `added a note on ${name}`,
-                body: notes,
-                actor: { connect: { id: actorId } },
-                ...subject,
-              },
-            ]
-          : []),
-      ],
-    },
-  })
+  const lead = await guardAgainstIdCollision(() =>
+    dbCreateLead(orgId, {
+      id: input.id,
+      name,
+      title: '',
+      company: { connect: { id: company.id } },
+      email,
+      phone,
+      location: '',
+      status: input.status,
+      source: input.source,
+      owner: { connect: { id: owner.id } },
+      activities: {
+        create: [
+          {
+            id: input.activityId,
+            orgId,
+            kind: 'created',
+            title: `created lead ${name}`,
+            actor: { connect: { id: actorId } },
+            ...subject,
+          },
+          ...(notes
+            ? [
+                {
+                  id: input.noteActivityId,
+                  orgId,
+                  kind: 'note' as const,
+                  title: `added a note on ${name}`,
+                  body: notes,
+                  actor: { connect: { id: actorId } },
+                  ...subject,
+                },
+              ]
+            : []),
+        ],
+      },
+    }),
+  )
   revalidatePath('/', 'layout')
   return { id: lead.id, createdAt: lead.createdAt.toISOString() }
 }
@@ -289,31 +322,33 @@ export async function createContactAction(input: {
     return { ok: false as const, error: 'A contact with this email already exists' }
   }
 
-  const contact = await dbCreateContact(orgId, {
-    id: input.id,
-    name,
-    title,
-    company: { connect: { id: company.id } },
-    email,
-    phone,
-    location: '',
-    tags: [],
-    lifecycle: 'Prospect',
-    owner: { connect: { id: owner.id } },
-    activities: {
-      create: [
-        {
-          id: input.activityId,
-          orgId,
-          kind: 'created',
-          title: `created contact ${name}`,
-          actor: { connect: { id: actorId } },
-          subjectType: 'contact',
-          subjectLabel: name,
-        },
-      ],
-    },
-  })
+  const contact = await guardAgainstIdCollision(() =>
+    dbCreateContact(orgId, {
+      id: input.id,
+      name,
+      title,
+      company: { connect: { id: company.id } },
+      email,
+      phone,
+      location: '',
+      tags: [],
+      lifecycle: 'Prospect',
+      owner: { connect: { id: owner.id } },
+      activities: {
+        create: [
+          {
+            id: input.activityId,
+            orgId,
+            kind: 'created',
+            title: `created contact ${name}`,
+            actor: { connect: { id: actorId } },
+            subjectType: 'contact',
+            subjectLabel: name,
+          },
+        ],
+      },
+    }),
+  )
   revalidatePath('/', 'layout')
   return { ok: true as const, id: contact.id }
 }
@@ -355,12 +390,14 @@ export async function updateContactAction(input: {
     if (existing && existing.id !== input.id) throw new Error('A contact with this email already exists')
   }
 
-  await dbUpdateContact(
-    orgId,
-    input.id,
-    { name, title, email, phone, companyId: company.id, ownerId: owner.id },
-    actorId,
-    input.activityId,
+  await guardAgainstIdCollision(() =>
+    dbUpdateContact(
+      orgId,
+      input.id,
+      { name, title, email, phone, companyId: company.id, ownerId: owner.id },
+      actorId,
+      input.activityId,
+    ),
   )
   revalidatePath('/', 'layout')
 }
@@ -411,32 +448,34 @@ export async function createDealAction(input: {
   const company = await getCompanyById(orgId, companyId)
   if (!company) throw new Error('Company not found')
 
-  const deal = await dbCreateDeal(orgId, {
-    id: input.id,
-    name,
-    company: { connect: { id: company.id } },
-    value: input.value,
-    stage: { connect: { id: stage.id } },
-    priority: input.priority,
-    source: input.source,
-    probability: stage.probability,
-    closeDate,
-    owner: { connect: { id: owner.id } },
-    ...(contact && { contact: { connect: { id: contact.id } } }),
-    activities: {
-      create: [
-        {
-          id: input.activityId,
-          orgId,
-          kind: 'created',
-          title: `created deal ${name}`,
-          actor: { connect: { id: actorId } },
-          subjectType: 'deal',
-          subjectLabel: name,
-        },
-      ],
-    },
-  })
+  const deal = await guardAgainstIdCollision(() =>
+    dbCreateDeal(orgId, {
+      id: input.id,
+      name,
+      company: { connect: { id: company.id } },
+      value: input.value,
+      stage: { connect: { id: stage.id } },
+      priority: input.priority,
+      source: input.source,
+      probability: stage.probability,
+      closeDate,
+      owner: { connect: { id: owner.id } },
+      ...(contact && { contact: { connect: { id: contact.id } } }),
+      activities: {
+        create: [
+          {
+            id: input.activityId,
+            orgId,
+            kind: 'created',
+            title: `created deal ${name}`,
+            actor: { connect: { id: actorId } },
+            subjectType: 'deal',
+            subjectLabel: name,
+          },
+        ],
+      },
+    }),
+  )
   revalidatePath('/', 'layout')
   return { id: deal.id }
 }
@@ -478,20 +517,22 @@ export async function updateDealAction(input: {
     if (!contact) throw new Error('Contact not found')
   }
 
-  await dbUpdateDeal(
-    orgId,
-    input.id,
-    {
-      name,
-      value: input.value,
-      stage: { id: stage.id, probability: stage.probability, isWon: stage.isWon },
-      closeDate,
-      contactId: contact?.id ?? null,
-      ownerId: owner.id,
-      companyId: company.id,
-    },
-    actorId,
-    input.activityId,
+  await guardAgainstIdCollision(() =>
+    dbUpdateDeal(
+      orgId,
+      input.id,
+      {
+        name,
+        value: input.value,
+        stage: { id: stage.id, probability: stage.probability, isWon: stage.isWon },
+        closeDate,
+        contactId: contact?.id ?? null,
+        ownerId: owner.id,
+        companyId: company.id,
+      },
+      actorId,
+      input.activityId,
+    ),
   )
   revalidatePath('/', 'layout')
 }
@@ -527,12 +568,14 @@ export async function updateLeadAction(input: {
   const company = await getCompanyById(orgId, input.companyId)
   if (!company) throw new Error('Company not found')
 
-  await dbUpdateLead(
-    orgId,
-    input.id,
-    { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id },
-    actorId,
-    input.activityId,
+  await guardAgainstIdCollision(() =>
+    dbUpdateLead(
+      orgId,
+      input.id,
+      { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id },
+      actorId,
+      input.activityId,
+    ),
   )
   revalidatePath('/', 'layout')
 }
@@ -572,23 +615,25 @@ export async function convertLeadAction(
   const stage = input.deal ? await getStageById(orgId, input.deal.stageId) : null
   if (input.deal && !stage) throw new Error('Stage not found')
 
-  const result = await dbConvertLeadToDeal(orgId, leadId, {
-    ownerId: input.ownerId,
-    actorId,
-    contactId: input.contactId,
-    dealId: input.deal ? input.dealId : undefined,
-    activityId: input.activityId,
-    deal:
-      input.deal && stage
-        ? {
-            name: input.deal.name,
-            value: input.deal.value,
-            priority: input.deal.priority,
-            stage: { id: stage.id, probability: stage.probability },
-            closeDate: new Date(input.deal.closeDate),
-          }
-        : undefined,
-  })
+  const result = await guardAgainstIdCollision(() =>
+    dbConvertLeadToDeal(orgId, leadId, {
+      ownerId: input.ownerId,
+      actorId,
+      contactId: input.contactId,
+      dealId: input.deal ? input.dealId : undefined,
+      activityId: input.activityId,
+      deal:
+        input.deal && stage
+          ? {
+              name: input.deal.name,
+              value: input.deal.value,
+              priority: input.deal.priority,
+              stage: { id: stage.id, probability: stage.probability },
+              closeDate: new Date(input.deal.closeDate),
+            }
+          : undefined,
+    }),
+  )
   revalidatePath('/', 'layout')
   return {
     contactId: result.contact.id,
@@ -632,29 +677,31 @@ export async function addTaskAction(input: {
   }
 
   await assertSubjectInOrg(orgId, input.subject)
-  await dbCreateTask(orgId, {
-    id: input.id,
-    title,
-    dueDate,
-    priority: input.priority,
-    type,
-    owner: { connect: { id: assigneeId } },
-    ...(input.subject?.type === 'lead' && {
-      relatedToType: 'lead',
-      relatedToLabel: input.subject.label,
-      lead: { connect: { id: input.subject.id } },
+  await guardAgainstIdCollision(() =>
+    dbCreateTask(orgId, {
+      id: input.id,
+      title,
+      dueDate,
+      priority: input.priority,
+      type,
+      owner: { connect: { id: assigneeId } },
+      ...(input.subject?.type === 'lead' && {
+        relatedToType: 'lead',
+        relatedToLabel: input.subject.label,
+        lead: { connect: { id: input.subject.id } },
+      }),
+      ...(input.subject?.type === 'contact' && {
+        relatedToType: 'contact',
+        relatedToLabel: input.subject.label,
+        contact: { connect: { id: input.subject.id } },
+      }),
+      ...(input.subject?.type === 'deal' && {
+        relatedToType: 'deal',
+        relatedToLabel: input.subject.label,
+        deal: { connect: { id: input.subject.id } },
+      }),
     }),
-    ...(input.subject?.type === 'contact' && {
-      relatedToType: 'contact',
-      relatedToLabel: input.subject.label,
-      contact: { connect: { id: input.subject.id } },
-    }),
-    ...(input.subject?.type === 'deal' && {
-      relatedToType: 'deal',
-      relatedToLabel: input.subject.label,
-      deal: { connect: { id: input.subject.id } },
-    }),
-  })
+  )
   revalidatePath('/', 'layout')
 }
 
@@ -686,12 +733,14 @@ export async function updateTaskAction(input: {
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner) throw new Error('Owner not found')
 
-  await dbUpdateTask(
-    orgId,
-    input.id,
-    { title, description, dueDate, priority: input.priority, type: input.type, ownerId: owner.id },
-    actorId,
-    input.activityId,
+  await guardAgainstIdCollision(() =>
+    dbUpdateTask(
+      orgId,
+      input.id,
+      { title, description, dueDate, priority: input.priority, type: input.type, ownerId: owner.id },
+      actorId,
+      input.activityId,
+    ),
   )
   revalidatePath('/', 'layout')
 }
@@ -712,28 +761,30 @@ export async function logActivityAction(
   const { orgId, ownerId } = await requireAuth()
   assertClientId(id)
   await assertSubjectInOrg(orgId, subject)
-  await dbLogActivity(orgId, {
-    id,
-    kind,
-    title,
-    body,
-    actor: { connect: { id: ownerId } },
-    ...(subject?.type === 'lead' && {
-      subjectType: 'lead',
-      subjectLabel: subject.label,
-      lead: { connect: { id: subject.id } },
+  await guardAgainstIdCollision(() =>
+    dbLogActivity(orgId, {
+      id,
+      kind,
+      title,
+      body,
+      actor: { connect: { id: ownerId } },
+      ...(subject?.type === 'lead' && {
+        subjectType: 'lead',
+        subjectLabel: subject.label,
+        lead: { connect: { id: subject.id } },
+      }),
+      ...(subject?.type === 'contact' && {
+        subjectType: 'contact',
+        subjectLabel: subject.label,
+        contact: { connect: { id: subject.id } },
+      }),
+      ...(subject?.type === 'deal' && {
+        subjectType: 'deal',
+        subjectLabel: subject.label,
+        deal: { connect: { id: subject.id } },
+      }),
     }),
-    ...(subject?.type === 'contact' && {
-      subjectType: 'contact',
-      subjectLabel: subject.label,
-      contact: { connect: { id: subject.id } },
-    }),
-    ...(subject?.type === 'deal' && {
-      subjectType: 'deal',
-      subjectLabel: subject.label,
-      deal: { connect: { id: subject.id } },
-    }),
-  })
+  )
   revalidatePath('/', 'layout')
 }
 
@@ -793,7 +844,7 @@ export async function createStageAction(input: { id: string; label: string }) {
   assertClientId(input.id)
   const label = input.label.trim()
   if (!label || label.length > 100) throw new Error('Stage name is required')
-  await dbCreateStage(orgId, { id: input.id, label })
+  await guardAgainstIdCollision(() => dbCreateStage(orgId, { id: input.id, label }))
   revalidatePath('/', 'layout')
 }
 
