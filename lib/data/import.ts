@@ -4,9 +4,10 @@
 // as one created through the single-record form.
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
+import { assertOwnerInScope } from '@lib/scope'
 import { getCompanyByName, createCompany } from '@lib/data/companies'
-import { getLeadByEmail } from '@lib/data/leads'
-import { getContactByEmail } from '@lib/data/contacts'
+import { getLeadByEmail, createLead as dbCreateLead, updateLead as dbUpdateLead, updateLeadStatus as dbUpdateLeadStatus } from '@lib/data/leads'
+import { getContactByEmail, createContact as dbCreateContact, updateContact as dbUpdateContact } from '@lib/data/contacts'
 import { getOwnerByEmailInsensitive } from '@lib/data/owners'
 import {
   EMAIL_RE,
@@ -17,8 +18,9 @@ import {
   MAX_NOTES_LENGTH,
   MAX_PHONE_LENGTH,
   MAX_TITLE_LENGTH,
+  assertClientId,
 } from '@lib/validation'
-import type { ImportEntityType, LeadSource, LeadStatus } from '@prisma/client'
+import { Prisma, type ImportEntityType, type LeadSource, type LeadStatus } from '@prisma/client'
 import Papa from 'papaparse'
 
 // ---------------------------------------------------------------------------
@@ -28,9 +30,10 @@ import Papa from 'papaparse'
 export const MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024
 export const MAX_IMPORT_ROWS = 2000
 
-/** Default commit chunk size — a client never has to guess this; see app/api/import/commit's own
- *  doc comment for how it was measured against a real deployed region. */
-export const DEFAULT_COMMIT_CHUNK_SIZE = 100
+/** Default/max commit chunk size — a client never has to guess this, and the server enforces the
+ *  same number as a hard ceiling (app/api/import/commit's MAX_CHUNK_ROWS). See that route's own
+ *  doc comment for the real per-row write-cost measurement this is sized from. */
+export const DEFAULT_COMMIT_CHUNK_SIZE = 10
 
 /** A fixed ceiling on how many leads/contacts a single org may hold (checked at commit time, not
  *  parse/validate time — a cap this app-level, not DB-level, so the message can name the actual
@@ -360,6 +363,413 @@ export async function countOrgRecords(orgId: string, entityType: ImportEntityTyp
     : prisma.contact.count({ where: { orgId } })
 }
 
-// withTransaction is re-exported for the commit route (lib/actions/import.ts) to use for each
-// row's create/update, matching every other write in lib/data/*.ts.
+// ---------------------------------------------------------------------------
+// ImportBatch lifecycle
+// ---------------------------------------------------------------------------
+
+export function createImportBatch(orgId: string, importedById: string, entityType: ImportEntityType, totalRows: number) {
+  return prisma.importBatch.create({ data: { orgId, importedById, entityType, totalRows } })
+}
+
+/** Null if the batch doesn't exist, belongs to a different org/importer, or is already closed —
+ *  every one of those is reported identically by the caller (a single "can't commit to this
+ *  import" message), never distinguishing which, so a client can't use this to probe batch ids
+ *  it doesn't own. */
+export async function getOpenImportBatch(orgId: string, importedById: string, batchId: string) {
+  const batch = await prisma.importBatch.findFirst({ where: { id: batchId, orgId, importedById } })
+  if (!batch || batch.committedAt) return null
+  return batch
+}
+
+export function recordChunkResults(
+  batchId: string,
+  counts: { created: number; updated: number; skipped: number; failed: number },
+  isFinalChunk: boolean,
+) {
+  return prisma.importBatch.update({
+    where: { id: batchId },
+    data: {
+      createdCount: { increment: counts.created },
+      updatedCount: { increment: counts.updated },
+      skippedCount: { increment: counts.skipped },
+      failedCount: { increment: counts.failed },
+      ...(isFinalChunk && { committedAt: new Date() }),
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Chunked commit
+// ---------------------------------------------------------------------------
+
+export interface ImportRowInput {
+  rowNumber: number
+  /** Client-generated UUID — becomes the new row's primary key if this row is created. Also what
+   *  makes a retried chunk idempotent: see the pre-write existence check below. */
+  id: string
+  cells: string[]
+}
+
+export type ImportOutcome = 'created' | 'updated' | 'skipped' | 'failed'
+export type DuplicateStrategy = 'skip' | 'update' | 'create'
+
+export interface ImportRowResult {
+  rowNumber: number
+  outcome: ImportOutcome
+  recordId?: string
+  error?: string
+  defaultedFields?: Array<'source' | 'status'>
+}
+
+function isIdCollision(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    err.code === 'P2002' &&
+    Array.isArray(err.meta?.target) &&
+    (err.meta!.target as string[]).includes('id')
+  )
+}
+
+async function createImportRow(
+  scope: Scope,
+  batchId: string,
+  entityType: ImportEntityType,
+  rowId: string,
+  fields: FieldValidatedRow,
+  companyId: string,
+  ownerId: string,
+  actorId: string,
+) {
+  const name = fields.name.value
+  const activityId = crypto.randomUUID()
+  const noteActivityId = fields.notes.value ? crypto.randomUUID() : undefined
+  const activities = {
+    create: [
+      {
+        id: activityId,
+        orgId: scope.orgId,
+        kind: 'created' as const,
+        title: `created ${entityType} ${name}`,
+        actorId,
+        ownerId,
+        subjectType: entityType,
+        subjectLabel: name,
+      },
+      ...(noteActivityId
+        ? [
+            {
+              id: noteActivityId,
+              orgId: scope.orgId,
+              kind: 'note' as const,
+              title: `added a note on ${name}`,
+              body: fields.notes.value,
+              actorId,
+              ownerId,
+              subjectType: entityType,
+              subjectLabel: name,
+            },
+          ]
+        : []),
+    ],
+  }
+
+  if (entityType === 'lead') {
+    return dbCreateLead(scope, {
+      id: rowId,
+      name,
+      title: '',
+      email: fields.email.value,
+      phone: fields.phone.value,
+      location: '',
+      status: fields.status.value as LeadStatus,
+      source: fields.source.value as LeadSource,
+      importBatchId: batchId,
+      company: { connect: { id: companyId } },
+      owner: { connect: { id: ownerId } },
+      activities,
+    })
+  }
+  return dbCreateContact(scope, {
+    id: rowId,
+    name,
+    title: fields.title.value,
+    email: fields.email.value,
+    phone: fields.phone.value,
+    location: '',
+    tags: [],
+    lifecycle: 'Prospect',
+    importBatchId: batchId,
+    company: { connect: { id: companyId } },
+    owner: { connect: { id: ownerId } },
+    activities,
+  })
+}
+
+/**
+ * Updates an existing duplicate-matched row from an import row's values. Deliberately narrow:
+ * only name/email/phone/company (+ a lead's source — already part of UpdateLeadInput) are ever
+ * changed; ownerId and a lead's status are never touched by an import update (reassignment and
+ * workflow-state changes are a bigger, separately-scoped decision than "refresh this contact's
+ * info from a spreadsheet"). A blank cell always preserves the existing value — never overwrites
+ * with an empty string — and an unrecognized (not blank, not valid) source value also preserves
+ * the existing value rather than silently applying DEFAULT_LEAD_SOURCE, which only makes sense
+ * for a brand-new row with no "existing" to fall back to.
+ */
+async function applyImportUpdate(
+  scope: Scope,
+  entityType: ImportEntityType,
+  id: string,
+  fields: FieldValidatedRow,
+  companyId: string,
+  actorId: string,
+) {
+  if (entityType === 'lead') {
+    const existing = await prisma.lead.findFirst({ where: { id, orgId: scope.orgId } })
+    if (!existing) throw new Error(`Lead ${id} not found in org ${scope.orgId}`)
+
+    const updated = await dbUpdateLead(
+      scope,
+      id,
+      {
+        name: fields.name.value,
+        title: existing.title,
+        email: fields.email.raw ? fields.email.value : existing.email,
+        phone: fields.phone.raw ? fields.phone.value : existing.phone,
+        companyId,
+        source: fields.source.raw && !fields.source.defaulted ? (fields.source.value as LeadSource) : existing.source,
+        ownerId: existing.ownerId,
+      },
+      actorId,
+      crypto.randomUUID(),
+    )
+
+    if (fields.status.raw && !fields.status.defaulted && fields.status.value !== existing.status) {
+      await dbUpdateLeadStatus(scope, id, fields.status.value as LeadStatus)
+    }
+    return updated
+  }
+
+  const existing = await prisma.contact.findFirst({ where: { id, orgId: scope.orgId } })
+  if (!existing) throw new Error(`Contact ${id} not found in org ${scope.orgId}`)
+
+  return dbUpdateContact(
+    scope,
+    id,
+    {
+      name: fields.name.value,
+      title: fields.title.raw ? fields.title.value : existing.title,
+      email: fields.email.raw ? fields.email.value : existing.email,
+      phone: fields.phone.raw ? fields.phone.value : existing.phone,
+      companyId,
+      ownerId: existing.ownerId,
+    },
+    actorId,
+    crypto.randomUUID(),
+  )
+}
+
+/**
+ * Processes one chunk of an already-open import batch. Never trusts anything the client
+ * annotated during preview — every row is re-validated and re-resolved from scratch here, the
+ * same as app/api/import/validate, so a stale or tampered client-held row can't skip a check.
+ *
+ * Row order within the rules below matters: the idempotent-retry check (does a row with this
+ * exact client-generated id already exist under this batch?) runs FIRST, before even duplicate-
+ * email detection — a retried chunk's own already-created row would otherwise look like a
+ * pre-existing "duplicate" of itself on the second attempt and get diverted into the skip/update
+ * path. It also runs before the per-org cap check, so retrying an already-succeeded chunk never
+ * gets wrongly rejected by a cap that filled up in between — a row that already exists under
+ * this exact batch never consumes a new slot, because it isn't a new write at all.
+ */
+export async function commitImportChunk(
+  session: { orgId: string; ownerId: string; role: string; scopeOwnerId: string | null },
+  batch: { id: string; entityType: ImportEntityType },
+  mapping: ImportMapping,
+  duplicateStrategy: DuplicateStrategy,
+  rows: ImportRowInput[],
+): Promise<ImportRowResult[]> {
+  const scope: Scope = { orgId: session.orgId, scopeOwnerId: session.scopeOwnerId }
+  const isAdmin = session.role === 'Admin'
+  const companyCache = new Map<string, ResolvedCompany>()
+  const cap = PER_ORG_RECORD_CAP[batch.entityType]
+  let currentCount = await countOrgRecords(session.orgId, batch.entityType)
+
+  const results: ImportRowResult[] = []
+
+  for (const row of rows) {
+    const fields = validateRowFields(batch.entityType, row.cells, mapping, row.rowNumber)
+    if (fields.errors.length > 0) {
+      results.push({ rowNumber: row.rowNumber, outcome: 'failed', error: fields.errors.join('; ') })
+      continue
+    }
+    try {
+      assertClientId(row.id)
+    } catch {
+      results.push({ rowNumber: row.rowNumber, outcome: 'failed', error: 'Invalid row id' })
+      continue
+    }
+
+    const defaultedFields: Array<'source' | 'status'> = []
+    if (fields.source.defaulted) defaultedFields.push('source')
+    if (fields.status.defaulted) defaultedFields.push('status')
+    const withDefaulted = defaultedFields.length > 0 ? { defaultedFields } : {}
+
+    // Idempotent-retry check runs FIRST, before anything else — a row that already succeeded as
+    // a create in this exact batch must short-circuit here, before duplicate-email detection
+    // even runs. Otherwise a retried chunk's own successful create would make its own email look
+    // like a pre-existing "duplicate" on the second attempt (the row IS the match), diverting it
+    // into the skip/update path instead of being recognized as the same row coming back around.
+    const existingRow =
+      batch.entityType === 'lead'
+        ? await prisma.lead.findFirst({ where: { id: row.id, orgId: session.orgId }, select: { id: true, importBatchId: true } })
+        : await prisma.contact.findFirst({ where: { id: row.id, orgId: session.orgId }, select: { id: true, importBatchId: true } })
+
+    if (existingRow) {
+      if (existingRow.importBatchId === batch.id) {
+        results.push({ rowNumber: row.rowNumber, outcome: 'created', recordId: existingRow.id, ...withDefaulted })
+      } else {
+        results.push({ rowNumber: row.rowNumber, outcome: 'failed', error: 'Could not create record' })
+      }
+      continue
+    }
+
+    // Owner resolution — admin-only; everyone else always imports as themselves.
+    let ownerId = session.ownerId
+    if (isAdmin && fields.ownerEmail.value) {
+      const resolvedOwner = await resolveOwnerByEmail(session.orgId, fields.ownerEmail.value)
+      if (resolvedOwner && 'unknownEmail' in resolvedOwner) {
+        results.push({ rowNumber: row.rowNumber, outcome: 'failed', error: `Unknown owner email: ${resolvedOwner.unknownEmail}` })
+        continue
+      }
+      if (resolvedOwner) ownerId = resolvedOwner.id
+    }
+    // Defense in depth — an Admin is always unscoped (computeScopeOwnerId), so this only ever
+    // matters if that invariant is ever violated; never silently assign outside scope either way.
+    try {
+      assertOwnerInScope(scope, ownerId)
+    } catch {
+      ownerId = session.ownerId
+    }
+
+    const duplicate = fields.email.value ? await findDuplicateByEmail(scope, batch.entityType, fields.email.value) : null
+
+    if (duplicate && !duplicate.editable) {
+      // A scoped Member's match on another rep's record — skipped unconditionally, regardless of
+      // the chosen duplicateStrategy, revealing nothing about the other record.
+      results.push({ rowNumber: row.rowNumber, outcome: 'skipped', error: 'A record with this email already exists', ...withDefaulted })
+      continue
+    }
+
+    if (duplicate && duplicate.editable && duplicateStrategy !== 'create') {
+      if (duplicateStrategy === 'skip') {
+        results.push({ rowNumber: row.rowNumber, outcome: 'skipped', recordId: duplicate.recordId, ...withDefaulted })
+        continue
+      }
+      const company = await resolveCompany(session.orgId, fields.companyName.value, companyCache)
+      const updated = await applyImportUpdate(scope, batch.entityType, duplicate.recordId, fields, company.id, session.ownerId)
+      results.push({ rowNumber: row.rowNumber, outcome: 'updated', recordId: updated.id, ...withDefaulted })
+      continue
+    }
+
+    // Create path.
+    if (currentCount >= cap) {
+      results.push({
+        rowNumber: row.rowNumber,
+        outcome: 'failed',
+        error: `This org has reached its ${cap}-record limit for ${batch.entityType}s. Contact support to raise it.`,
+      })
+      continue
+    }
+
+    try {
+      const company = await resolveCompany(session.orgId, fields.companyName.value, companyCache)
+      const created = await createImportRow(scope, batch.id, batch.entityType, row.id, fields, company.id, ownerId, session.ownerId)
+      currentCount++
+      results.push({ rowNumber: row.rowNumber, outcome: 'created', recordId: created.id, ...withDefaulted })
+    } catch (err) {
+      if (isIdCollision(err)) {
+        results.push({ rowNumber: row.rowNumber, outcome: 'failed', error: 'Could not create record' })
+      } else {
+        throw err
+      }
+    }
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+export const UNDO_WINDOW_MS = 24 * 60 * 60 * 1000
+
+export function getImportBatchById(orgId: string, batchId: string) {
+  return prisma.importBatch.findFirst({ where: { id: batchId, orgId } })
+}
+
+export function markBatchUndone(batchId: string, undoneById: string) {
+  return prisma.importBatch.update({ where: { id: batchId }, data: { undoneAt: new Date(), undoneById } })
+}
+
+/**
+ * Removes every row from this batch that is both (a) untouched since import — no Activity beyond
+ * the single `created` one logged at import time, a deliberately literal reading that also, on
+ * the safe side, excludes a row imported WITH a note (two activities instead of one) from ever
+ * being undoable, rather than trying to distinguish "the import's own note" from "a note added
+ * later" — and (b) has no dependents (a lead's conversion into a contact/deal, or any Task linked
+ * to it; a contact's own linked Deals or Tasks). Everything else is kept, never deleted. Company
+ * rows created as a side effect of the import are never touched either way.
+ */
+export async function undoImportBatch(batch: {
+  id: string
+  orgId: string
+  entityType: ImportEntityType
+}): Promise<{ removed: number; kept: number }> {
+  let removed = 0
+  let kept = 0
+
+  if (batch.entityType === 'lead') {
+    const rows = await prisma.lead.findMany({
+      where: { orgId: batch.orgId, importBatchId: batch.id },
+      include: { _count: { select: { activities: true, tasks: true } }, convertedDeal: { select: { id: true } }, convertedContact: { select: { id: true } } },
+    })
+    for (const row of rows) {
+      const onlyCreatedActivity = row._count.activities <= 1
+      const hasDependents = row._count.tasks > 0 || row.convertedDeal !== null || row.convertedContact !== null
+      if (onlyCreatedActivity && !hasDependents) {
+        await withTransaction(async (tx) => {
+          await tx.activity.deleteMany({ where: { leadId: row.id } })
+          await tx.lead.delete({ where: { id: row.id } })
+        })
+        removed++
+      } else {
+        kept++
+      }
+    }
+  } else {
+    const rows = await prisma.contact.findMany({
+      where: { orgId: batch.orgId, importBatchId: batch.id },
+      include: { _count: { select: { activities: true, tasks: true, deals: true } } },
+    })
+    for (const row of rows) {
+      const onlyCreatedActivity = row._count.activities <= 1
+      const hasDependents = row._count.tasks > 0 || row._count.deals > 0
+      if (onlyCreatedActivity && !hasDependents) {
+        await withTransaction(async (tx) => {
+          await tx.activity.deleteMany({ where: { contactId: row.id } })
+          await tx.contact.delete({ where: { id: row.id } })
+        })
+        removed++
+      } else {
+        kept++
+      }
+    }
+  }
+
+  return { removed, kept }
+}
+
+// withTransaction is re-exported for callers (app/api/import/commit's route, lib/actions/
+// import.ts) that need it directly, matching every other write in lib/data/*.ts.
 export { withTransaction }

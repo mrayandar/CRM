@@ -42,6 +42,7 @@ const KNOWN_TEST_FILES = [
   'integration/cache-control.test.ts',
   'integration/cross-tenant.test.ts',
   'integration/csv-import.test.ts',
+  'integration/csv-import-commit.test.ts',
   'integration/own-mode.test.ts',
   'integration/test-guard.test.ts',
   'unit/activity-timeline.test.ts',

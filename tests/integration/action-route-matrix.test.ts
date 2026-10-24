@@ -12,6 +12,7 @@ import { readdirSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import * as paymentActions from '@lib/actions/payments'
+import * as importActions from '@lib/actions/import'
 
 const REPO_ROOT = resolve(__dirname, '../..')
 
@@ -50,6 +51,19 @@ const PAYMENT_ACTION_BUCKETS: Record<string, string> = {
   deletePaymentAction: 'same as createPaymentAction',
 }
 
+/**
+ * Every export of lib/actions/import.ts is admin-only — undoing a bulk import is as destructive
+ * and org-wide as deleteCompanyAction/deleteStageAction, and the record-count view is explicitly
+ * an admin-only, own-org-only feature (see PROGRESS.md's CSV-import entry). The actual chunked
+ * commit (lib/data/import.ts's commitImportChunk) is Scope-aware and covered by
+ * tests/integration/csv-import.test.ts instead — it's invoked from a Route Handler, not a Server
+ * Action, so it isn't in this module at all.
+ */
+const IMPORT_ACTION_BUCKETS: Record<string, string> = {
+  undoImportBatchAction: 'admin-only (requireAdmin via tryAdminSession) — same destructive tier as deleteCompanyAction',
+  getOrgRecordCountsAction: 'admin-only (requireAdmin via tryAdminSession) — own org only, see PROGRESS.md',
+}
+
 const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reason: string }> = {
   'activities/route.ts': {
     kind: 'scoped',
@@ -74,14 +88,32 @@ const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reas
     reason:
       'POST /api/import/validate — findDuplicateByEmail respects Scope (an OWN-mode match outside it reveals nothing); see tests/integration/csv-import.test.ts',
   },
+  'import/batches/route.ts': {
+    kind: 'exempt',
+    reason:
+      'POST /api/import/batches — creates an ImportBatch row keyed by orgId/importedById; no Scope object involved at all.',
+  },
+  'import/commit/route.ts': {
+    kind: 'scoped',
+    reason:
+      'POST /api/import/commit — commitImportChunk builds and uses Scope throughout (duplicate detection, owner-scope assertion, the update path); see tests/integration/csv-import.test.ts',
+  },
 }
 
-describe('exhaustiveness: lib/actions/payments.ts and every app/api/**/route.ts file is bucketed', () => {
+describe('exhaustiveness: lib/actions/payments.ts, lib/actions/import.ts, and every app/api/**/route.ts file is bucketed', () => {
   it('every export of lib/actions/payments.ts is covered by the exempt bucket', () => {
     const actual = Object.keys(paymentActions).filter(
       (k) => typeof (paymentActions as Record<string, unknown>)[k] === 'function',
     )
     const uncovered = actual.filter((k) => !(k in PAYMENT_ACTION_BUCKETS))
+    expect(uncovered).toEqual([])
+  })
+
+  it('every export of lib/actions/import.ts is covered by the admin-only bucket', () => {
+    const actual = Object.keys(importActions).filter(
+      (k) => typeof (importActions as Record<string, unknown>)[k] === 'function',
+    )
+    const uncovered = actual.filter((k) => !(k in IMPORT_ACTION_BUCKETS))
     expect(uncovered).toEqual([])
   })
 
