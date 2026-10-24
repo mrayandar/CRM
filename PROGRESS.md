@@ -2,6 +2,35 @@
 
 > Living context file. Updated at the end of every task.
 
+## Pre-launch checklist (recorded Oct 24 2026 — not started)
+
+Deferred items, recorded so they aren't lost between now and launch. Nothing here has been
+built or investigated yet.
+
+- **Databases at launch.** The current Neon database is disposable until launch — no real
+  customer data goes into it before then. At launch: create a NEW, EMPTY Neon database for
+  production (migrations only; pooled connection string for the app, direct connection string for
+  migrations), together with the Clerk production instance. The current database then becomes
+  the permanent dev/test database and keeps the synthetic "Scale Test Org" for scale testing.
+  Production connection strings live only in Vercel, never in the local `.env`. Add a guard so
+  the test suite and every data-writing script (`scripts/*.js`) abort unless `DB_ROLE=dev` is set
+  locally.
+- **Investigate the slow single-record creates (~2-4s) and the ~2-hour-for-2,000-rows import
+  throughput figure**, measured from the deployed region, not just the local/direct-DB
+  measurement this session used (see the CSV-import entry below for what was already found: the
+  cost traces to `Lead`/`Contact`'s GIN trigram indexes, likely worsened by the leftover "Scale
+  Test Org").
+- **Live import checks on the deployed site**: a 50-row file, an over-limit file, a malformed
+  file, the three duplicate strategies, a Member in OWN mode, an Admin owner column with an
+  unknown email, and undo with an edited record and one with a deal.
+- **New sign-up and invite-accept on the deployed site under the enforced CSP.**
+- **Check Settings → Team in every real org for unknown admins.**
+- **Domain, Clerk production instance, webhook re-registration, terms and privacy policy.**
+- **Rate limiting, error monitoring, and a backup test restore** (the production-hardening
+  report's items 8-10 — recommended, not built).
+- **Upgrade Vercel to Pro before taking paying customers** (Hobby is non-commercial; Pro also
+  gives proper cron and higher function limits).
+
 ## CSV import for leads and contacts (Oct 24 2026)
 
 Built in four commits per the approved design. 399 tests passing (20 files), up from 320 at the
