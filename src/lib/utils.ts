@@ -230,15 +230,28 @@ export function seededRandom(seed: string): () => number {
 }
 
 /**
+ * A real phone number (e.g. "+1 555 010 0199") legitimately starts with `+` — the exact character
+ * this app's formula-injection guard would otherwise treat as an injection attempt. Deliberately
+ * gated on a leading `+` specifically, not `-`: a bare leading `-` is how a negative-number-shaped
+ * injection attempt (e.g. "-1+1") looks, never how a real phone number is written, so it still gets
+ * neutralized below. The body (after the `+`) allows only digits/spaces/parens/dots/dashes — a
+ * payload like "+=cmd" or "+1,=1+1" fails this (the second char class rejects `=`/`,`) and still
+ * gets neutralized.
+ */
+const PHONE_SHAPE_RE = /^\+[\d\s().-]*\d[\d\s().-]*$/
+
+/**
  * A cell starting with `=`, `+`, `-`, or `@` is interpreted as a formula by Excel/Sheets when the
  * CSV is opened — a lead/contact/company name or note containing one (typed by any rep, or an
  * attacker seeding a record precisely to exploit whoever exports it later) would otherwise execute
- * on open. Prefixing with a single quote neutralizes it in every spreadsheet app while staying a
- * no-op for every normal value, which never starts with one of these four characters by coincidence
- * in this app's own data (names, emails, amounts, dates).
+ * on open. Prefixing with a single quote neutralizes it in every spreadsheet app. The one
+ * deliberate exception is a value that's unambiguously phone-shaped (see `PHONE_SHAPE_RE`) — this
+ * check is content-based, not field-based, since `csvCell` has no idea which column it's rendering.
  */
 function neutralizeFormula(s: string): string {
-  return /^[=+\-@]/.test(s) ? `'${s}` : s
+  if (!/^[=+\-@]/.test(s)) return s
+  if (PHONE_SHAPE_RE.test(s)) return s
+  return `'${s}`
 }
 
 export function csvCell(value: unknown): string {
