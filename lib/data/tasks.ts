@@ -7,6 +7,7 @@
 import type { Prisma, Priority, TaskType } from '@prisma/client'
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
+import { retractAssignedNotifications, writeAssignedNotification } from '@lib/data/notifications'
 
 export interface ListTasksOptions {
   /** A free filter, meaningful only when `scope.scopeOwnerId` is null — see ListLeadsOptions'
@@ -107,8 +108,13 @@ export async function getTaskById(scope: Scope, id: string) {
  *  caller (addTaskAction) is responsible for passing `createdById` (the actor creating the task)
  *  in `data`, and for enforcing any ownership rule on the assignee — task assignment itself is
  *  unrestricted even for a scoped Member (see addTaskAction). */
-export function createTask(scope: Scope, data: Omit<Prisma.TaskCreateInput, 'orgId'>) {
-  return prisma.task.create({ data: { ...data, orgId: scope.orgId } })
+export function createTask(
+  scope: Scope,
+  data: Omit<Prisma.TaskCreateInput, 'orgId'>,
+  /** Optional transaction client — see createLead's identical param in lib/data/leads.ts. */
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  return client.task.create({ data: { ...data, orgId: scope.orgId } })
 }
 
 export async function toggleTaskDone(scope: Scope, id: string, done: boolean) {
@@ -182,6 +188,13 @@ export async function updateTask(
 
     if (changed.length === 0) return existing
 
+    // See lib/data/leads.ts's updateLead identical note — active is only required for an actual
+    // reassignment.
+    if (existing.ownerId !== data.ownerId) {
+      const newOwnerActive = await tx.owner.findFirst({ where: { id: data.ownerId, orgId: scope.orgId, active: true } })
+      if (!newOwnerActive) throw new Error('Owner not found')
+    }
+
     const updated = await tx.task.update({
       where: { id },
       data: {
@@ -193,6 +206,16 @@ export async function updateTask(
         ownerId: data.ownerId,
       },
     })
+
+    if (existing.ownerId !== data.ownerId) {
+      await retractAssignedNotifications(tx, {
+        orgId: scope.orgId, formerRecipientId: existing.ownerId, subjectType: 'task', subjectId: id,
+      })
+      await writeAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: data.ownerId, actorId,
+        subjectType: 'task', subjectId: id, dedupeKey: activityId ?? crypto.randomUUID(),
+      })
+    }
 
     let parentOwnerId: string | null = null
     if (existing.relatedToType) {

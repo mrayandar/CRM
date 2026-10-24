@@ -93,12 +93,17 @@ enum PaymentLabel {
 }
 
 /**
- * What a Task or Activity is attached to — a lightweight polymorphic reference.
+ * What a Task or Activity is attached to — a lightweight polymorphic reference. `task` is only
+ * ever used by Notification (a task itself can be the thing a notification is ABOUT — "this task
+ * was assigned to you"); Activity/Task's own `relatedToType`/`subjectType` usage never sets it,
+ * since a task's relation to a lead/contact/deal is a different, pre-existing concept from "is
+ * this row itself someone's subject."
  */
 enum SubjectType {
   lead
   contact
   deal
+  task
 }
 
 enum PlanTier {
@@ -120,6 +125,15 @@ enum RepVisibility {
 enum ImportEntityType {
   lead
   contact
+}
+
+/// task_due and lead_follow_up arrive in Stage C of the reminders/notifications work — only
+/// `assigned` is written anywhere yet (Stage B). Keeping all three here now (rather than adding
+/// the other two to this enum later) avoids a second enum-altering migration.
+enum NotificationKind {
+  assigned
+  task_due
+  lead_follow_up
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +227,7 @@ model Owner {
   activities      Activity[]
   paymentsCreated Payment[]
   importBatches   ImportBatch[]
+  notifications   Notification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -594,4 +609,46 @@ model ImportBatch {
   @@index([orgId])
   @@index([orgId, createdAt])
   @@map("import_batches")
+}
+
+/// An in-app notification for one recipient. Deliberately stores no record name, value, or
+/// amount — a title is always built at READ TIME, either from the subject (via the same scoped
+/// by-id reads every other feature uses, so a notification about a record the recipient can no
+/// longer see/own just isn't returned) or, for a coalesced notification, from `count` alone.
+///
+/// subjectType/subjectId are a soft reference (no FK, same convention as Activity's identical
+/// pair) — deliberately not a hard relation, so a notification survives the subject being
+/// reassigned away or deleted; the read path is what decides whether it's still valid to show
+/// (see lib/data/notifications.ts). Both are null for a coalesced notification (a bulk reassign
+/// or an import summary), which has no single subject — `count` is set instead, and the title is
+/// built directly from `kind` + `count`, never touching a subject lookup at all.
+model Notification {
+  id          String           @id @default(cuid())
+  orgId       String
+  kind        NotificationKind
+
+  recipient   Owner  @relation(fields: [recipientId], references: [id])
+  recipientId String
+
+  subjectType SubjectType?
+  subjectId   String?
+
+  /// Only set for a coalesced notification ("12 leads assigned to you"); null for a normal
+  /// single-subject one.
+  count Int?
+
+  /// Uniqueness guard, scoped to (orgId, recipientId) — NOT a general dedupe across time. An
+  /// `assigned` notification uses the triggering mutation's own activityId (always fresh), so
+  /// repeated assignment events (A to B to A) each get their own row, never deduped against each
+  /// other. A coalesced import summary uses the ImportBatch's own id instead, so re-running the
+  /// same batch-finalization step twice (a retry) can never double-write the same summary — see
+  /// each write site in lib/actions/*.ts for which key it uses and why.
+  dedupeKey String
+
+  createdAt DateTime  @default(now())
+  readAt    DateTime?
+
+  @@unique([orgId, recipientId, dedupeKey])
+  @@index([orgId, recipientId, readAt])
+  @@map("notifications")
 }

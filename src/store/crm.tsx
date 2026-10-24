@@ -43,6 +43,7 @@ import {
   deleteCompanyAction,
   moveDealAction,
   setLeadStatusAction,
+  bulkReassignLeadsAction,
   convertLeadAction,
   toggleTaskAction,
   addTaskAction,
@@ -301,6 +302,8 @@ interface CrmState {
   addDeal: (input: NewDealInput) => string
   /** Updates a lead's own fields (not status/conversion); rolls back and shows a toast if the save fails. */
   updateLead: (leadId: string, input: UpdateLeadInput) => void
+  /** Reassigns many leads to one new owner at once, coalesced server-side into a single notification. */
+  bulkReassignLeads: (leadIds: string[], ownerId: string) => void
   /** Updates a contact's own fields; rolls back and shows a toast if the save fails. A no-op (nothing changed) does nothing. */
   updateContact: (contactId: string, input: UpdateContactInput) => void
   /**
@@ -909,6 +912,30 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       )
     },
     [leads, currentUser.id, companyById, persist],
+  )
+
+  /** Reassigns many leads to one new owner in a single call, so the recipient gets one coalesced
+   *  "N leads assigned to you" notification instead of one per lead — see
+   *  bulkReassignLeadsAction/bulkReassignLeads. Leads not actually owned by someone else are
+   *  skipped server-side; the optimistic update here mirrors that by only touching leads whose
+   *  owner is actually changing. */
+  const bulkReassignLeads = useCallback(
+    (leadIds: string[], ownerId: string) => {
+      const idSet = new Set(leadIds)
+      const now = new Date().toISOString()
+      const prevLeads = leads
+      setLeads((prev) =>
+        prev.map((l) => (idSet.has(l.id) && l.ownerId !== ownerId ? { ...l, ownerId, lastTouchedAt: now } : l)),
+      )
+
+      persist(
+        () => bulkReassignLeadsAction({ leadIds, ownerId, activityId: newEntityId() }),
+        () => setLeads(prevLeads),
+        undefined,
+        "Couldn't reassign the leads, please try again.",
+      )
+    },
+    [leads, persist],
   )
 
   const updateContact = useCallback(
@@ -1956,6 +1983,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       moveDeal,
       addLead,
       updateLead,
+      bulkReassignLeads,
       addContact,
       updateContact,
       addDeal,
@@ -2021,6 +2049,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       moveDeal,
       addLead,
       updateLead,
+      bulkReassignLeads,
       addContact,
       updateContact,
       addDeal,

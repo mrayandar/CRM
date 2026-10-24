@@ -13,6 +13,7 @@ import { resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import * as paymentActions from '@lib/actions/payments'
 import * as importActions from '@lib/actions/import'
+import * as notificationActions from '@lib/actions/notifications'
 
 const REPO_ROOT = resolve(__dirname, '../..')
 
@@ -64,6 +65,19 @@ const IMPORT_ACTION_BUCKETS: Record<string, string> = {
   getOrgRecordCountsAction: 'admin-only (requireAdmin via tryAdminSession) — own org only, see PROGRESS.md',
 }
 
+/**
+ * Every export of lib/actions/notifications.ts scopes itself by recipientId === the caller's own
+ * ownerId inside lib/data/notifications.ts (markNotificationRead/markAllNotificationsRead) — a
+ * Member can only ever mark their OWN notifications, there is no "another rep's notification"
+ * concept for RepVisibility/Scope to gate, unlike a lead/contact/deal/task id. See
+ * tests/integration/notifications.test.ts for the direct "can't read or mark another user's
+ * notifications" behavioral proof.
+ */
+const NOTIFICATION_ACTION_BUCKETS: Record<string, string> = {
+  markNotificationReadAction: 'Member or Admin — scoped to the caller\'s own recipientId, not Scope/RepVisibility',
+  markAllNotificationsReadAction: 'same as markNotificationReadAction',
+}
+
 const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reason: string }> = {
   'activities/route.ts': {
     kind: 'scoped',
@@ -98,6 +112,16 @@ const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reas
     reason:
       'POST /api/import/commit — commitImportChunk builds and uses Scope throughout (duplicate detection, owner-scope assertion, the update path); see tests/integration/csv-import.test.ts',
   },
+  'notifications/route.ts': {
+    kind: 'scoped',
+    reason:
+      'GET /api/notifications — listNotifications builds titles through the same scoped by-id reads (getLeadById/getContactById/getDealById/getTaskById) every other feature uses; see tests/integration/notifications.test.ts',
+  },
+  'notifications/unread-count/route.ts': {
+    kind: 'exempt',
+    reason:
+      'GET /api/notifications/unread-count — a single COUNT scoped by orgId + the caller\'s own recipientId; no Scope object (no OWN-mode subject lookup) involved at all.',
+  },
 }
 
 describe('exhaustiveness: lib/actions/payments.ts, lib/actions/import.ts, and every app/api/**/route.ts file is bucketed', () => {
@@ -114,6 +138,14 @@ describe('exhaustiveness: lib/actions/payments.ts, lib/actions/import.ts, and ev
       (k) => typeof (importActions as Record<string, unknown>)[k] === 'function',
     )
     const uncovered = actual.filter((k) => !(k in IMPORT_ACTION_BUCKETS))
+    expect(uncovered).toEqual([])
+  })
+
+  it('every export of lib/actions/notifications.ts is covered by the recipient-scoped bucket', () => {
+    const actual = Object.keys(notificationActions).filter(
+      (k) => typeof (notificationActions as Record<string, unknown>)[k] === 'function',
+    )
+    const uncovered = actual.filter((k) => !(k in NOTIFICATION_ACTION_BUCKETS))
     expect(uncovered).toEqual([])
   })
 

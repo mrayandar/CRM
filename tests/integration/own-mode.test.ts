@@ -153,6 +153,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const orgId = F.org.id
+  await prisma.notification.deleteMany({ where: { orgId } })
   await prisma.activity.deleteMany({ where: { orgId } })
   await prisma.task.deleteMany({ where: { orgId } })
   await prisma.deal.deleteMany({ where: { orgId } })
@@ -311,6 +312,25 @@ describe('lib/actions/crm: OWN-mode scoped-mutation matrix — another rep\'s re
 })
 
 /**
+ * bulkReassignLeadsAction doesn't fit SCOPED_MUTATION_ACTIONS' single-id signature (it takes an
+ * array), so it gets its own dedicated OWN-mode test instead of a matrix entry — see its
+ * EXEMPT_ACTIONS reason below. Logged in as repA, including repB's lead id in the batch must not
+ * silently skip-or-succeed on the rest; the whole call rejects, same as every other scoped
+ * mutation in this file.
+ */
+describe('lib/actions/crm: bulkReassignLeadsAction rejects a batch containing repB\'s lead id', () => {
+  it('rejects when the batch includes a lead outside the scoped caller\'s OWN reach', async () => {
+    await expect(
+      actions.bulkReassignLeadsAction({
+        leadIds: [F.leadA.id, F.leadB.id],
+        ownerId: F.repA.id,
+        activityId: randomUUID(),
+      }),
+    ).rejects.toThrow()
+  })
+})
+
+/**
  * The scoped-creation matrix: every exported action that creates (or converts into) a new
  * lead/contact/deal with a client-chosen `ownerId`. A scoped Member may only ever create a record
  * owned by themselves — each entry supplies repB's id as the owner while logged in as repA and
@@ -368,6 +388,7 @@ const EXEMPT_ACTIONS: Record<string, string> = {
   renameStageAction: 'Admin only — same as createStageAction',
   reorderStageAction: 'Admin only — same as createStageAction',
   deleteStageAction: 'Admin only — same as createStageAction',
+  bulkReassignLeadsAction: 'Member or Admin — takes an array of lead ids, not a single one, so it doesn\'t fit SCOPED_MUTATION_ACTIONS\' signature; covered by its own dedicated test below instead',
 }
 
 describe('lib/actions/crm: OWN-mode matrix is exhaustive over every exported action', () => {

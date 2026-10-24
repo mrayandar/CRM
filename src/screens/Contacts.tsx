@@ -26,7 +26,7 @@ import { GroupRow, Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { useCrm } from '@/store/crm'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
 import type { Contact } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, exportCsv, sortBy, sum } from '@/lib/utils'
+import { assignableOwners, cn, currency, currencyCompact, dayDelta, exportCsv, sortBy, sum } from '@/lib/utils'
 import { RelativeTime } from '@/components/common/RelativeTime'
 
 const LIFECYCLE_TONE: Record<Contact['lifecycle'], Tone> = {
@@ -378,7 +378,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
           <CompanyPicker companyId={companyId} onChange={setCompanyId} />
           <Field label="Owner">
             <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-              {owners.map((o) => (
+              {assignableOwners(owners).map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.name} · {o.role}
                 </option>

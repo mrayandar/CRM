@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/ui/Display'
 import { TaskRow } from '@/components/common/TaskRow'
 import { useCrm } from '@/store/crm'
 import type { Priority, Task } from '@/data/types'
-import { dayDelta, sortBy } from '@/lib/utils'
+import { assignableOwners, dayDelta, sortBy } from '@/lib/utils'
 
 type Bucket = 'overdue' | 'today' | 'week' | 'later' | 'done'
 
@@ -268,7 +268,7 @@ function NewTaskModal({
           </Field>
           <Field label="Assignee">
             <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-              {owners.map((o) => (
+              {assignableOwners(owners, ownerId).map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.name} · {o.role}
                 </option>

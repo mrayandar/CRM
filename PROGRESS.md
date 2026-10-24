@@ -2,6 +2,103 @@
 
 > Living context file. Updated at the end of every task.
 
+## Reminders and notifications — Stage A (follow-up date) + Stage B (assigned notifications) (Oct 25 2026)
+
+Built per the approved design, one stage at a time, with the user's explicit four-check sign-off
+on Stage A before starting Stage B. 445 tests passing (24 files), up from 414 at the end of Stage
+A (which itself started from 399 at the end of the CSV-import work).
+
+### Stage A (424 tests after the fixes below, 414 at initial build)
+
+`Lead.followUpAt` (nullable `DateTime`, additive migration + index on `[orgId, followUpAt]`):
+schema, `createLeadAction`/`updateLeadAction` validation, the Leads list/filter/detail/new-lead UI,
+and CSV export. The user's four sign-off checks, run with evidence, found and fixed two real bugs:
+
+1. **Timezone display bug.** `followUpAt`/`dueDate` are calendar dates stored as UTC midnight of
+   the picked day, but the existing `dueLabel`/`dayDelta`/`formatDate` helpers read them with
+   local-time `Date` methods — for any negative-UTC-offset viewer (most of the Americas), that
+   silently shifted the displayed date back one day. Verified concretely with real Playwright
+   browser contexts (`timezoneId: 'Asia/Karachi'` vs `'America/Los_Angeles'`), not just a unit
+   assertion. Fixed with new zone-safe helpers (`asCalendarDate`/`calendarDayDelta`/
+   `calendarDueLabel` in `src/lib/utils.ts`) used specifically for `Lead.followUpAt`; `Task.dueDate`
+   has the identical pre-existing bug but was explicitly out of scope for this check.
+2. **No-op-edit false positive.** Editing a lead and saving with nothing changed always logged a
+   spurious "Changed: follow-up date" activity — `src/store/crm.tsx`'s client-side diff compared
+   the server's full ISO string against the date input's bare "YYYY-MM-DD" with a raw `!==`, never
+   equal even when unchanged. Fixed by comparing `Date.getTime()` values, matching the server's own
+   (already-correct) diff in `lib/data/leads.ts`.
+
+Check 3 (converted/closed leads must never count as "follow-up due") had no bug — confirmed with a
+corrected live-verification script after finding and fixing three script-only bugs (premature
+assertions, checking duplicate-strategy state after all iterations instead of per-iteration, and a
+test date that was actually in the past given this environment's Oct 2026 "today"). Check 4: CSV
+export was missing the follow-up date — added.
+
+### Stage B (445 tests)
+
+The `Notification` model (`assigned` kind only this stage; `NotificationKind`/`SubjectType` enums
+extended additively — `SubjectType` gained `task`, discovered mid-build as a real representability
+gap), two additive migrations, no drift.
+
+**Write sites**: every create/update/convert action that can set `ownerId` to someone other than
+the actor (`createLeadAction`/`createContactAction`/`createDealAction`/`addTaskAction`,
+`updateLead`/`updateContact`/`updateDeal`/`updateTask`'s reassignment branches, and
+`convertLeadToDeal`'s reassign-on-convert path) now writes an `assigned` notification inside its
+own existing transaction — never a standalone write. Self-assignment never notifies. Reassignment
+retracts the former owner's notification about that record in the SAME transaction (write-time
+retraction, not read-time re-validation — the only event that can make an `assigned` notification
+stale is a reassignment away, so retracting at that one moment is the complete mechanism, and keeps
+the frequently-polled unread-count query cheap). Dedupe keys reuse the mutation's own activityId
+(fresh per event, so A→B→A notifies A twice, never suppressed) with a `:contact`/`:deal`/`:lead`
+suffix where one action call could notify the same recipient more than once (lead conversion).
+
+**Owner.active**: every CREATE action checks it unconditionally; every UPDATE's reassignment branch
+checks it only when the owner is actually changing (editing another field on a record an inactive
+owner already owns must keep working — the nit deferred in the original scale/visibility pass).
+Client-side assignment pickers (`assignableOwners()` in `src/lib/utils.ts`) now filter out inactive
+owners in every assignment context (NewLeadModal, NewContactModal, EditLeadModal, EditContactModal,
+ReassignModal, the lead-conversion owner picker, Tasks' Assignee field) while always keeping the
+currently-selected owner visible even if inactive — filter dropdowns (list-screen "All owners")
+were deliberately left untouched.
+
+**Coalescing**: `bulkReassignLeadsAction` (new; replaces the client's old per-lead `updateLead()`
+loop in `ReassignModal`) reassigns a whole batch in one transaction and writes exactly one "N leads
+assigned to you" notification per recipient. CSV import's commit route calls a new
+`writeImportBatchSummaryNotifications` once, at `isFinalChunk`, grouping the batch's own rows by
+`ownerId` — one coalesced notification per recipient per batch, never per row (the data-layer
+`createLead`/`createContact` import uses directly never write per-row notifications at all — only
+the action layer does). Both coalesced paths are idempotent against a retry via a dedupe key scoped
+to the operation (`bulk-reassign:${activityId}` / `import:${batchId}:${recipientId}`).
+
+**Reading**: titles are always built at read time from the subject through the same scoped by-id
+read every other feature uses (`getLeadById`/`getContactById`/`getDealById`/`getTaskById`) — never
+stored on the row. A notification is silently omitted when its subject is gone or outside the
+recipient's current scope. Titles contain only the kind + record name, never a value or amount
+(verified directly: a deal notification's title never contains its dollar figure). Two new Route
+Handlers, `GET /api/notifications` (newest 50) and `GET /api/notifications/unread-count` (a single
+indexed COUNT, polled ~60s by the eventual bell) — both `force-dynamic` + `Cache-Control: private,
+no-store`, same reasoning as `GET /api/crm-refetch`. EXPLAIN ANALYZE against the real Neon DB (200
+seeded rows, 20 unread) confirmed the new `@@index([orgId, recipientId, readAt])` is used via an
+Index Only Scan, not a sequential scan. Two new Server Actions, `markNotificationReadAction`/
+`markAllNotificationsReadAction`, each scoped by id + orgId + recipientId.
+
+No bell UI yet — Stage D per the approved design.
+
+Extended both exhaustiveness matrices: `tests/integration/own-mode.test.ts`'s action matrix (new
+`bulkReassignLeadsAction` exemption with its own dedicated OWN-mode test, since it takes an array
+of ids and doesn't fit the single-id matrix shape) and
+`tests/integration/action-route-matrix.test.ts` (a new `lib/actions/notifications.ts` bucket, and
+both new routes). `tests/integration/test-guard.test.ts` gained the new
+`tests/integration/notifications.test.ts` entry.
+
+Tests added cover: a Member can't read or mark another user's notifications; OWN-mode reassignment
+removes the record from the former owner's list/count entirely; an inactive recipient gets no
+notification and can't be a new assignment; self-assignment writes nothing; A→B→A notifies A twice
+(not deduped); bulk reassign and CSV import each coalesce into exactly one notification per
+recipient (import verified idempotent against a retried final chunk); titles never contain a
+stored value/amount; `assignableOwners()` excludes inactive owners but keeps the current selection
+visible.
+
 ## Pre-launch checklist (recorded Oct 24 2026 — not started)
 
 Deferred items, recorded so they aren't lost between now and launch. Nothing here has been

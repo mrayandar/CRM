@@ -9,6 +9,11 @@ import type { LeadSource, LeadStatus, Priority, Prisma } from '@prisma/client'
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
+import {
+  retractAssignedNotifications,
+  writeAssignedNotification,
+  writeCoalescedAssignedNotification,
+} from '@lib/data/notifications'
 
 export interface ListLeadsOptions {
   status?: LeadStatus
@@ -63,8 +68,15 @@ export function getLeadById(scope: Scope, id: string) {
  *  lead owned by themselves; this function trusts `data.owner`/`data.orgId` exactly as given,
  *  same as before Scope existed. Still takes `Scope`, not a bare orgId, for consistency with
  *  every other function here (and so the structural test covers it too). */
-export function createLead(scope: Scope, data: Omit<Prisma.LeadCreateInput, 'orgId'>) {
-  return prisma.lead.create({ data: { ...data, orgId: scope.orgId } })
+export function createLead(
+  scope: Scope,
+  data: Omit<Prisma.LeadCreateInput, 'orgId'>,
+  /** Optional transaction client — passed by createLeadAction so the "assigned" notification
+   *  write can share the exact same transaction as the create, not a separate statement after
+   *  it. Defaults to the plain client for every other (unchanged) caller. */
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  return client.lead.create({ data: { ...data, orgId: scope.orgId } })
 }
 
 /** Case-insensitive lookup within the WHOLE org, deliberately ignoring `scope.scopeOwnerId` —
@@ -154,6 +166,15 @@ export async function updateLead(
 
     if (changed.length === 0) return existing
 
+    // An inactive owner can't be a NEW assignment — but editing other fields on a record an
+    // inactive owner already owns must still work (ownerId unchanged), which is exactly why this
+    // is gated on the reassignment branch, not a blanket check on every save. See PROGRESS.md's
+    // "Deliberately not built in this pass" note on Owner.active for the original reasoning.
+    if (existing.ownerId !== data.ownerId) {
+      const newOwnerActive = await tx.owner.findFirst({ where: { id: data.ownerId, orgId: scope.orgId, active: true } })
+      if (!newOwnerActive) throw new Error('Owner not found')
+    }
+
     const updated = await tx.lead.update({
       where: { id },
       data: { ...data, lastTouchedAt: new Date() },
@@ -161,6 +182,13 @@ export async function updateLead(
 
     if (existing.ownerId !== data.ownerId) {
       await cascadeActivityOwner(tx, 'leadId', id, data.ownerId)
+      await retractAssignedNotifications(tx, {
+        orgId: scope.orgId, formerRecipientId: existing.ownerId, subjectType: 'lead', subjectId: id,
+      })
+      await writeAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: data.ownerId, actorId,
+        subjectType: 'lead', subjectId: id, dedupeKey: activityId,
+      })
     }
 
     await tx.activity.create({
@@ -179,6 +207,80 @@ export async function updateLead(
     })
 
     return updated
+  })
+}
+
+/**
+ * Reassigns many leads to one new owner in a single transaction, writing exactly one coalesced
+ * "N leads assigned to you" notification for that owner instead of one per lead — the whole point
+ * of a bulk action is that the recipient doesn't get flooded. A lead id outside `scope` (a
+ * cross-tenant id, or — for a scoped Member — a lead outside their own OWN-mode reach) rejects the
+ * WHOLE batch, same as every other scoped mutation in this app (see the OWN-mode matrix in
+ * tests/integration/own-mode.test.ts) — it is never silently skipped. A lead already owned by
+ * `newOwnerId` IS silently skipped (a legitimate no-op, not a scope violation) and doesn't count
+ * toward the coalesced notification. Each reassigned lead still gets its own cascaded activity
+ * ownership and its own "edited" activity entry, same as a single-lead `updateLead` reassignment —
+ * only the notification is coalesced.
+ */
+export async function bulkReassignLeads(
+  scope: Scope,
+  input: {
+    leadIds: string[]
+    newOwnerId: string
+    actorId: string
+    /** Client-generated id for the whole bulk operation — see updateLead's activityId doc. Each
+     *  lead's own activity row uses `${activityId}:${leadId}` (same suffixing convention as
+     *  convertLeadToDeal) and the coalesced notification uses `bulk-reassign:${activityId}`. */
+    activityId: string
+  },
+) {
+  return withTransaction(async (tx) => {
+    const newOwner = await tx.owner.findFirst({
+      where: { id: input.newOwnerId, orgId: scope.orgId, active: true },
+    })
+    if (!newOwner) throw new Error('Owner not found')
+
+    let reassignedCount = 0
+    for (const leadId of input.leadIds) {
+      const existing = await tx.lead.findFirst({
+        where: { id: leadId, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
+      })
+      if (!existing) throw new Error(`Lead ${leadId} not found in org ${scope.orgId}`)
+      if (existing.ownerId === input.newOwnerId) continue
+
+      const updated = await tx.lead.update({
+        where: { id: leadId },
+        data: { ownerId: input.newOwnerId, lastTouchedAt: new Date() },
+      })
+      await cascadeActivityOwner(tx, 'leadId', leadId, input.newOwnerId)
+      await retractAssignedNotifications(tx, {
+        orgId: scope.orgId, formerRecipientId: existing.ownerId, subjectType: 'lead', subjectId: leadId,
+      })
+      await tx.activity.create({
+        data: {
+          id: `${input.activityId}:${leadId}`,
+          orgId: scope.orgId,
+          kind: 'edited',
+          title: `edited ${updated.name}`,
+          body: 'Changed: owner',
+          actorId: input.actorId,
+          ownerId: updated.ownerId,
+          subjectType: 'lead',
+          subjectLabel: updated.name,
+          leadId,
+        },
+      })
+      reassignedCount++
+    }
+
+    if (reassignedCount > 0) {
+      await writeCoalescedAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: input.newOwnerId, actorId: input.actorId,
+        subjectType: 'lead', count: reassignedCount, dedupeKey: `bulk-reassign:${input.activityId}`,
+      })
+    }
+
+    return { reassignedCount }
   })
 }
 
@@ -275,6 +377,28 @@ export async function convertLeadToDeal(
     })
     if (leadOwnerChanged) {
       await cascadeActivityOwner(tx, 'leadId', leadId, input.ownerId)
+      await retractAssignedNotifications(tx, {
+        orgId: scope.orgId, formerRecipientId: lead.ownerId, subjectType: 'lead', subjectId: leadId,
+      })
+      await writeAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: input.ownerId, actorId: input.actorId,
+        subjectType: 'lead', subjectId: leadId, dedupeKey: `${input.activityId}:lead`,
+      })
+    }
+    // Distinct dedupe keys (suffixed off the one activityId the caller provides) — the new
+    // contact, the optional new deal, and the lead reassignment above are three independently
+    // notifiable events that can all land on the SAME recipient in one conversion; a shared key
+    // would make the second and third writes look like duplicates of the first and get silently
+    // dropped.
+    await writeAssignedNotification(tx, {
+      orgId: scope.orgId, recipientId: input.ownerId, actorId: input.actorId,
+      subjectType: 'contact', subjectId: contact.id, dedupeKey: `${input.activityId}:contact`,
+    })
+    if (deal) {
+      await writeAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: input.ownerId, actorId: input.actorId,
+        subjectType: 'deal', subjectId: deal.id, dedupeKey: `${input.activityId}:deal`,
+      })
     }
 
     await tx.activity.create({

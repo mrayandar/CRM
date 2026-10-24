@@ -8,6 +8,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
+import { retractAssignedNotifications, writeAssignedNotification } from '@lib/data/notifications'
 
 /** A stage already resolved (and tenant-checked via getStageById) by the caller — mirrors how
  *  ownerId/contactId are handled: the action validates it belongs to this org, this module trusts
@@ -81,8 +82,13 @@ export function getDealById(scope: Scope, id: string) {
 /** Creation has nothing yet to scope a read against — `scope.scopeOwnerId` isn't used here. The
  *  caller (createDealAction) is responsible for enforcing that a scoped Member can only create a
  *  deal owned by themselves — see createLead's identical note in lib/data/leads.ts. */
-export function createDeal(scope: Scope, data: Omit<Prisma.DealCreateInput, 'orgId'>) {
-  return prisma.deal.create({ data: { ...data, orgId: scope.orgId } })
+export function createDeal(
+  scope: Scope,
+  data: Omit<Prisma.DealCreateInput, 'orgId'>,
+  /** Optional transaction client — see createLead's identical param in lib/data/leads.ts. */
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  return client.deal.create({ data: { ...data, orgId: scope.orgId } })
 }
 
 /**
@@ -173,6 +179,12 @@ export async function updateDeal(
 
     if (changed.length === 0) return existing
 
+    // See updateLead's identical note — active is only required for an actual reassignment.
+    if (existing.ownerId !== data.ownerId) {
+      const newOwnerActive = await tx.owner.findFirst({ where: { id: data.ownerId, orgId: scope.orgId, active: true } })
+      if (!newOwnerActive) throw new Error('Owner not found')
+    }
+
     const updated = await tx.deal.update({
       where: { id },
       data: {
@@ -189,6 +201,13 @@ export async function updateDeal(
 
     if (existing.ownerId !== data.ownerId) {
       await cascadeActivityOwner(tx, 'dealId', id, data.ownerId)
+      await retractAssignedNotifications(tx, {
+        orgId: scope.orgId, formerRecipientId: existing.ownerId, subjectType: 'deal', subjectId: id,
+      })
+      await writeAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: data.ownerId, actorId,
+        subjectType: 'deal', subjectId: id, dedupeKey: activityId,
+      })
     }
 
     await tx.activity.create({

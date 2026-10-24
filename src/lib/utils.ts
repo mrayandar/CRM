@@ -2,6 +2,22 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
 }
 
+/**
+ * The list an assignment picker (New lead/contact/deal/task's Owner field, Reassign, a task's
+ * Assignee) should offer — active owners, plus the record's CURRENT owner even if they've since
+ * gone inactive, so an edit modal's existing selection still has a matching `<option>` and
+ * doesn't silently blank out. Never used for a FILTER dropdown ("All owners" on a list screen) —
+ * those need every owner who's ever owned something, active or not, to stay useful for finding
+ * their past records. See PROGRESS.md's "Deliberately not built in this pass" note on
+ * Owner.active for why a new assignment and an unchanged existing one need different rules.
+ */
+export function assignableOwners<T extends { id: string; active: boolean }>(
+  owners: T[],
+  currentOwnerId?: string,
+): T[] {
+  return owners.filter((o) => o.active || o.id === currentOwnerId)
+}
+
 /** $148,000 (or the org's own currency — pass `orgCurrency` from `useCrm()`; defaults to USD only
  *  for the rare caller that genuinely has no org context, e.g. a pure unit test). */
 export function currency(value: number, currencyCode = 'USD'): string {

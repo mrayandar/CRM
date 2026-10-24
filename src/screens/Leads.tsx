@@ -33,7 +33,7 @@ import {
   type LeadSource,
   type LeadStatus,
 } from '@/data/types'
-import { calendarDueLabel, cn, currency, currencyCompact, exportCsv, isLeadFollowUpDue, sortBy, sum } from '@/lib/utils'
+import { assignableOwners, calendarDueLabel, cn, currency, currencyCompact, exportCsv, isLeadFollowUpDue, sortBy, sum } from '@/lib/utils'
 import { RelativeTime } from '@/components/common/RelativeTime'
 
 type SortKey = 'name' | 'company' | 'score' | 'estValue' | 'lastTouchedAt'
@@ -42,7 +42,7 @@ const SOURCES = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website
 
 export function Leads() {
   const navigate = useNavigate()
-  const { leads, owners, ownerById, setLeadStatus, updateLead, orgCurrency, isScopedMember } = useCrm()
+  const { leads, owners, ownerById, setLeadStatus, bulkReassignLeads, orgCurrency, isScopedMember } = useCrm()
   const fmt = (v: number) => currency(v, orgCurrency)
   const fmtCompact = (v: number) => currencyCompact(v, orgCurrency)
   const [params, setParams] = useSearchParams()
@@ -432,7 +432,7 @@ export function Leads() {
         <ReassignModal
           leads={leads.filter((l) => selected.has(l.id))}
           owners={owners}
-          updateLead={updateLead}
+          bulkReassignLeads={bulkReassignLeads}
           onClose={() => setReassignOpen(false)}
           onDone={() => {
             setReassignOpen(false)
@@ -444,27 +444,18 @@ export function Leads() {
   )
 }
 
-/** Bulk owner reassignment — reuses updateLead (the same call EditLeadModal makes) per selected
- *  lead, so the tenant-ownership check on the new owner (getOwnerById in updateLeadAction) applies
- *  identically here. */
+/** Bulk owner reassignment — a single call so the recipient gets one coalesced "N leads assigned
+ *  to you" notification instead of one per lead; see bulkReassignLeads/bulkReassignLeadsAction. */
 function ReassignModal({
   leads,
   owners,
-  updateLead,
+  bulkReassignLeads,
   onClose,
   onDone,
 }: {
   leads: Lead[]
-  owners: { id: string; name: string; role: string }[]
-  updateLead: (leadId: string, input: {
-    name: string
-    title: string
-    email: string
-    phone: string
-    companyId: string
-    source: Lead['source']
-    ownerId: string
-  }) => void
+  owners: { id: string; name: string; role: string; active: boolean }[]
+  bulkReassignLeads: (leadIds: string[], ownerId: string) => void
   onClose: () => void
   onDone: () => void
 }) {
@@ -472,17 +463,7 @@ function ReassignModal({
 
   const submit = () => {
     if (!ownerId) return
-    for (const lead of leads) {
-      updateLead(lead.id, {
-        name: lead.name,
-        title: lead.title,
-        email: lead.email,
-        phone: lead.phone,
-        companyId: lead.companyId,
-        source: lead.source,
-        ownerId,
-      })
-    }
+    bulkReassignLeads(leads.map((l) => l.id), ownerId)
     onDone()
   }
 
@@ -506,7 +487,7 @@ function ReassignModal({
     >
       <Field label="New owner">
         <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-          {owners.map((o) => (
+          {assignableOwners(owners).map((o) => (
             <option key={o.id} value={o.id}>
               {o.name} · {o.role}
             </option>
@@ -614,7 +595,7 @@ function NewLeadModal({ onClose }: { onClose: () => void }) {
 
         <Field label="Owner">
           <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-            {owners.map((o) => (
+            {assignableOwners(owners).map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name} · {o.role}
               </option>

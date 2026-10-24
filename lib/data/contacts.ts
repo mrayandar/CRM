@@ -8,6 +8,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
+import { retractAssignedNotifications, writeAssignedNotification } from '@lib/data/notifications'
 
 export interface ListContactsOptions {
   /** A free filter, meaningful only when `scope.scopeOwnerId` is null — see ListLeadsOptions'
@@ -66,8 +67,13 @@ export function getContactByEmail(scope: Scope, email: string) {
 /** Creation has nothing yet to scope a read against — `scope.scopeOwnerId` isn't used here. The
  *  caller (createContactAction) is responsible for enforcing that a scoped Member can only create
  *  a contact owned by themselves — see createLead's identical note in lib/data/leads.ts. */
-export function createContact(scope: Scope, data: Omit<Prisma.ContactCreateInput, 'orgId'>) {
-  return prisma.contact.create({ data: { ...data, orgId: scope.orgId } })
+export function createContact(
+  scope: Scope,
+  data: Omit<Prisma.ContactCreateInput, 'orgId'>,
+  /** Optional transaction client — see createLead's identical param in lib/data/leads.ts. */
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  return client.contact.create({ data: { ...data, orgId: scope.orgId } })
 }
 
 export interface UpdateContactInput {
@@ -112,6 +118,13 @@ export async function updateContact(
 
     if (changed.length === 0) return existing
 
+    // See updateLead's identical note — active is only required for an actual reassignment,
+    // never for a plain field edit on a record an inactive owner already owns.
+    if (existing.ownerId !== data.ownerId) {
+      const newOwnerActive = await tx.owner.findFirst({ where: { id: data.ownerId, orgId: scope.orgId, active: true } })
+      if (!newOwnerActive) throw new Error('Owner not found')
+    }
+
     const updated = await tx.contact.update({
       where: { id },
       data: { ...data, lastInteractionAt: new Date() },
@@ -119,6 +132,13 @@ export async function updateContact(
 
     if (existing.ownerId !== data.ownerId) {
       await cascadeActivityOwner(tx, 'contactId', id, data.ownerId)
+      await retractAssignedNotifications(tx, {
+        orgId: scope.orgId, formerRecipientId: existing.ownerId, subjectType: 'contact', subjectId: id,
+      })
+      await writeAssignedNotification(tx, {
+        orgId: scope.orgId, recipientId: data.ownerId, actorId,
+        subjectType: 'contact', subjectId: id, dedupeKey: activityId,
+      })
     }
 
     await tx.activity.create({

@@ -43,6 +43,7 @@ import {
   type Priority,
 } from '@/data/types'
 import {
+  assignableOwners,
   cn,
   currency,
   currencySymbol,
@@ -889,7 +890,7 @@ function EditLeadModal({
 
         <Field label="Owner">
           <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-            {owners.map((o) => (
+            {assignableOwners(owners, ownerId).map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name} · {o.role}
               </option>
@@ -998,7 +999,7 @@ function EditContactModal({
           <CompanyPicker companyId={companyId} onChange={setCompanyId} />
           <Field label="Owner">
             <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-              {owners.map((o) => (
+              {assignableOwners(owners, ownerId).map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.name} · {o.role}
                 </option>
@@ -1166,7 +1167,7 @@ function ConvertModal({
 
         <Field label="Owner">
           <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="h-9">
-            {owners.map((o) => (
+            {assignableOwners(owners, ownerId).map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name} · {o.role}
               </option>

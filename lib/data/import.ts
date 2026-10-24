@@ -9,6 +9,7 @@ import { getCompanyByName, createCompany } from '@lib/data/companies'
 import { getLeadByEmail, createLead as dbCreateLead, updateLead as dbUpdateLead, updateLeadStatus as dbUpdateLeadStatus } from '@lib/data/leads'
 import { getContactByEmail, createContact as dbCreateContact, updateContact as dbUpdateContact } from '@lib/data/contacts'
 import { getOwnerByEmailInsensitive } from '@lib/data/owners'
+import { writeCoalescedAssignedNotification } from '@lib/data/notifications'
 import {
   EMAIL_RE,
   LEAD_SOURCES,
@@ -395,6 +396,49 @@ export function recordChunkResults(
       failedCount: { increment: counts.failed },
       ...(isFinalChunk && { committedAt: new Date() }),
     },
+  })
+}
+
+/**
+ * Writes ONE coalesced "assigned" notification per distinct recipient of a just-finished import
+ * batch — never one per row, which is exactly the flood a bulk import would otherwise cause (see
+ * writeCoalescedAssignedNotification's own doc comment). Called once, at isFinalChunk time, after
+ * `recordChunkResults` has closed the batch. Groups the rows this batch actually created by their
+ * `ownerId`, excludes the importer themselves (self-assignment never notifies), and is naturally
+ * idempotent against a retried final chunk: `dedupeKey` is scoped to the batch + recipient, so a
+ * retry collides on the unique constraint and is swallowed as a no-op rather than double-counting.
+ */
+export async function writeImportBatchSummaryNotifications(
+  batch: { id: string; orgId: string; entityType: ImportEntityType },
+  importerId: string,
+): Promise<void> {
+  const grouped =
+    batch.entityType === 'lead'
+      ? await prisma.lead.groupBy({
+          by: ['ownerId'],
+          where: { orgId: batch.orgId, importBatchId: batch.id },
+          _count: { _all: true },
+        })
+      : await prisma.contact.groupBy({
+          by: ['ownerId'],
+          where: { orgId: batch.orgId, importBatchId: batch.id },
+          _count: { _all: true },
+        })
+
+  const recipients = grouped.filter((g) => g.ownerId !== importerId && g._count._all > 0)
+  if (recipients.length === 0) return
+
+  await withTransaction(async (tx) => {
+    for (const g of recipients) {
+      await writeCoalescedAssignedNotification(tx, {
+        orgId: batch.orgId,
+        recipientId: g.ownerId,
+        actorId: importerId,
+        subjectType: batch.entityType,
+        count: g._count._all,
+        dedupeKey: `import:${batch.id}:${g.ownerId}`,
+      })
+    }
   })
 }
 

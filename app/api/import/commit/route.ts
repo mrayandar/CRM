@@ -1,6 +1,14 @@
 import { NextResponse } from 'next/server'
 import { requireAuth } from '@lib/auth'
-import { commitImportChunk, getOpenImportBatch, recordChunkResults, type DuplicateStrategy, type ImportMapping, type ImportRowInput } from '@lib/data/import'
+import {
+  commitImportChunk,
+  getOpenImportBatch,
+  recordChunkResults,
+  writeImportBatchSummaryNotifications,
+  type DuplicateStrategy,
+  type ImportMapping,
+  type ImportRowInput,
+} from '@lib/data/import'
 import type { ImportEntityType } from '@prisma/client'
 
 /**
@@ -122,6 +130,12 @@ export async function POST(request: Request) {
       { created: 0, updated: 0, skipped: 0, failed: 0 },
     )
     await recordChunkResults(batch.id, counts, body.isFinalChunk)
+    if (body.isFinalChunk) {
+      await writeImportBatchSummaryNotifications(
+        { id: batch.id, orgId: session.orgId, entityType: batch.entityType },
+        session.ownerId,
+      )
+    }
 
     return NextResponse.json({ results, batchClosed: body.isFinalChunk }, { headers: NO_STORE_HEADERS })
   } catch (err) {

@@ -17,6 +17,7 @@ import {
   updateLead as dbUpdateLead,
   updateLeadStatus as dbUpdateLeadStatus,
   convertLeadToDeal as dbConvertLeadToDeal,
+  bulkReassignLeads as dbBulkReassignLeads,
 } from '@lib/data/leads'
 import { getOwnerById, updateOwnerProfile } from '@lib/data/owners'
 import {
@@ -52,6 +53,7 @@ import {
   reorderStage as dbReorderStage,
   deleteStage as dbDeleteStage,
 } from '@lib/data/stages'
+import { writeAssignedNotification, withTransaction } from '@lib/data/notifications'
 import type { LeadSource, LeadStatus, Priority, ActivityKind, TaskType, RepVisibility } from '@prisma/client'
 import { EMAIL_RE, LEAD_SOURCES, LEAD_STATUSES, assertClientId } from '@lib/validation'
 
@@ -266,54 +268,67 @@ export async function createLeadAction(input: {
   if (followUpAt && Number.isNaN(followUpAt.getTime())) throw new Error('Invalid follow-up date')
 
   // ownerId and companyId come from the client — both must belong to this org before connecting
-  // them, and (once scoped) a Member may only create a lead owned by themselves.
+  // them, and (once scoped) a Member may only create a lead owned by themselves. A create is
+  // always a NEW assignment (no "unchanged, so active doesn't matter" case the way an edit has),
+  // so active is required unconditionally here.
   assertOwnerInScope(scope, input.ownerId)
   const owner = await getOwnerById(orgId, input.ownerId)
-  if (!owner) throw new Error('Owner not found')
+  if (!owner || !owner.active) throw new Error('Owner not found')
   const company = await getCompanyById(orgId, input.companyId)
   if (!company) throw new Error('Company not found')
 
   const subject = { subjectType: 'lead' as const, subjectLabel: name }
   const lead = await guardAgainstIdCollision(() =>
-    dbCreateLead(scope, {
-      id: input.id,
-      name,
-      title: '',
-      company: { connect: { id: company.id } },
-      email,
-      phone,
-      location: '',
-      status: input.status,
-      source: input.source,
-      followUpAt,
-      owner: { connect: { id: owner.id } },
-      activities: {
-        create: [
-          {
-            id: input.activityId,
-            orgId,
-            kind: 'created',
-            title: `created lead ${name}`,
-            actor: { connect: { id: actorId } },
-            ownerId: owner.id,
-            ...subject,
+    withTransaction(async (tx) => {
+      const created = await dbCreateLead(
+        scope,
+        {
+          id: input.id,
+          name,
+          title: '',
+          company: { connect: { id: company.id } },
+          email,
+          phone,
+          location: '',
+          status: input.status,
+          source: input.source,
+          followUpAt,
+          owner: { connect: { id: owner.id } },
+          activities: {
+            create: [
+              {
+                id: input.activityId,
+                orgId,
+                kind: 'created',
+                title: `created lead ${name}`,
+                actor: { connect: { id: actorId } },
+                ownerId: owner.id,
+                ...subject,
+              },
+              ...(notes
+                ? [
+                    {
+                      id: input.noteActivityId,
+                      orgId,
+                      kind: 'note' as const,
+                      title: `added a note on ${name}`,
+                      body: notes,
+                      actor: { connect: { id: actorId } },
+                      ownerId: owner.id,
+                      ...subject,
+                    },
+                  ]
+                : []),
+            ],
           },
-          ...(notes
-            ? [
-                {
-                  id: input.noteActivityId,
-                  orgId,
-                  kind: 'note' as const,
-                  title: `added a note on ${name}`,
-                  body: notes,
-                  actor: { connect: { id: actorId } },
-                  ownerId: owner.id,
-                  ...subject,
-                },
-              ]
-            : []),
-        ],
-      },
+        },
+        tx,
+      )
+      await writeAssignedNotification(tx, {
+        orgId, recipientId: owner.id, actorId,
+        subjectType: 'lead', subjectId: created.id, dedupeKey: input.activityId,
+      })
+      return created
     }),
   )
   revalidatePath('/', 'layout')
@@ -346,10 +361,11 @@ export async function createContactAction(input: {
   if (phone.length > 60) throw new Error('Invalid phone')
 
   // ownerId and companyId come from the client — both must belong to this org before connecting
-  // them, and (once scoped) a Member may only create a contact owned by themselves.
+  // them, and (once scoped) a Member may only create a contact owned by themselves. See
+  // createLeadAction's identical note on why active is required unconditionally here.
   assertOwnerInScope(scope, input.ownerId)
   const owner = await getOwnerById(orgId, input.ownerId)
-  if (!owner) throw new Error('Owner not found')
+  if (!owner || !owner.active) throw new Error('Owner not found')
   const company = await getCompanyById(orgId, input.companyId)
   if (!company) throw new Error('Company not found')
 
@@ -360,31 +376,42 @@ export async function createContactAction(input: {
   }
 
   const contact = await guardAgainstIdCollision(() =>
-    dbCreateContact(scope, {
-      id: input.id,
-      name,
-      title,
-      company: { connect: { id: company.id } },
-      email,
-      phone,
-      location: '',
-      tags: [],
-      lifecycle: 'Prospect',
-      owner: { connect: { id: owner.id } },
-      activities: {
-        create: [
-          {
-            id: input.activityId,
-            orgId,
-            kind: 'created',
-            title: `created contact ${name}`,
-            actor: { connect: { id: actorId } },
-            ownerId: owner.id,
-            subjectType: 'contact',
-            subjectLabel: name,
+    withTransaction(async (tx) => {
+      const created = await dbCreateContact(
+        scope,
+        {
+          id: input.id,
+          name,
+          title,
+          company: { connect: { id: company.id } },
+          email,
+          phone,
+          location: '',
+          tags: [],
+          lifecycle: 'Prospect',
+          owner: { connect: { id: owner.id } },
+          activities: {
+            create: [
+              {
+                id: input.activityId,
+                orgId,
+                kind: 'created',
+                title: `created contact ${name}`,
+                actor: { connect: { id: actorId } },
+                ownerId: owner.id,
+                subjectType: 'contact',
+                subjectLabel: name,
+              },
+            ],
           },
-        ],
-      },
+        },
+        tx,
+      )
+      await writeAssignedNotification(tx, {
+        orgId, recipientId: owner.id, actorId,
+        subjectType: 'contact', subjectId: created.id, dedupeKey: input.activityId,
+      })
+      return created
     }),
   )
   revalidatePath('/', 'layout')
@@ -474,10 +501,11 @@ export async function createDealAction(input: {
   if (Number.isNaN(closeDate.getTime())) throw new Error('Invalid close date')
 
   // ownerId, contactId, and stageId all come from the client — every one must belong to this org,
-  // and (once scoped) a Member may only create a deal owned by themselves.
+  // and (once scoped) a Member may only create a deal owned by themselves. See createLeadAction's
+  // identical note on why active is required unconditionally here.
   assertOwnerInScope(scope, input.ownerId)
   const owner = await getOwnerById(orgId, input.ownerId)
-  if (!owner) throw new Error('Owner not found')
+  if (!owner || !owner.active) throw new Error('Owner not found')
   const stage = await getStageById(orgId, input.stageId)
   if (!stage) throw new Error('Stage not found')
   let contact = null
@@ -494,32 +522,43 @@ export async function createDealAction(input: {
   if (!company) throw new Error('Company not found')
 
   const deal = await guardAgainstIdCollision(() =>
-    dbCreateDeal(scope, {
-      id: input.id,
-      name,
-      company: { connect: { id: company.id } },
-      value: input.value,
-      stage: { connect: { id: stage.id } },
-      priority: input.priority,
-      source: input.source,
-      probability: stage.probability,
-      closeDate,
-      owner: { connect: { id: owner.id } },
-      ...(contact && { contact: { connect: { id: contact.id } } }),
-      activities: {
-        create: [
-          {
-            id: input.activityId,
-            orgId,
-            kind: 'created',
-            title: `created deal ${name}`,
-            actor: { connect: { id: actorId } },
-            ownerId: owner.id,
-            subjectType: 'deal',
-            subjectLabel: name,
+    withTransaction(async (tx) => {
+      const created = await dbCreateDeal(
+        scope,
+        {
+          id: input.id,
+          name,
+          company: { connect: { id: company.id } },
+          value: input.value,
+          stage: { connect: { id: stage.id } },
+          priority: input.priority,
+          source: input.source,
+          probability: stage.probability,
+          closeDate,
+          owner: { connect: { id: owner.id } },
+          ...(contact && { contact: { connect: { id: contact.id } } }),
+          activities: {
+            create: [
+              {
+                id: input.activityId,
+                orgId,
+                kind: 'created',
+                title: `created deal ${name}`,
+                actor: { connect: { id: actorId } },
+                ownerId: owner.id,
+                subjectType: 'deal',
+                subjectLabel: name,
+              },
+            ],
           },
-        ],
-      },
+        },
+        tx,
+      )
+      await writeAssignedNotification(tx, {
+        orgId, recipientId: owner.id, actorId,
+        subjectType: 'deal', subjectId: created.id, dedupeKey: input.activityId,
+      })
+      return created
     }),
   )
   revalidatePath('/', 'layout')
@@ -636,6 +675,36 @@ export async function updateLeadAction(input: {
   revalidatePath('/', 'layout')
 }
 
+/** Bulk owner reassignment — replaces per-lead updateLeadAction calls from the client so a single
+ *  action call can coalesce the recipient's notification into one "N leads assigned to you"
+ *  instead of N separate ones. Leads outside the caller's scope or already owned by the new owner
+ *  are silently skipped by dbBulkReassignLeads, not rejected. */
+export async function bulkReassignLeadsAction(input: {
+  leadIds: string[]
+  ownerId: string
+  /** Client-generated id for the whole bulk operation — see bulkReassignLeads's doc comment. */
+  activityId: string
+}) {
+  const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
+  const scope: Scope = { orgId, scopeOwnerId }
+  assertClientId(input.activityId)
+  if (input.leadIds.length === 0) throw new Error('No leads selected')
+  if (input.leadIds.length > 500) throw new Error('Too many leads selected')
+
+  const owner = await getOwnerById(orgId, input.ownerId)
+  if (!owner || !owner.active) throw new Error('Owner not found')
+
+  await guardAgainstIdCollision(() =>
+    dbBulkReassignLeads(scope, {
+      leadIds: input.leadIds,
+      newOwnerId: owner.id,
+      actorId,
+      activityId: input.activityId,
+    }),
+  )
+  revalidatePath('/', 'layout')
+}
+
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {
   const { orgId, scopeOwnerId } = await requireAuth()
   if (!LEAD_STATUSES.includes(status)) throw new Error('Invalid status')
@@ -668,8 +737,10 @@ export async function convertLeadAction(
 
   // ownerId comes from the client — make sure it belongs to this org before using it, and (once
   // scoped) that a Member can only ever convert to themselves, same rule as any other creation.
+  // See createLeadAction's identical note on why active is required unconditionally here.
   assertOwnerInScope(scope, input.ownerId)
-  if (!(await getOwnerById(orgId, input.ownerId))) throw new Error('Owner not found')
+  const convertOwner = await getOwnerById(orgId, input.ownerId)
+  if (!convertOwner || !convertOwner.active) throw new Error('Owner not found')
 
   // Same for the new deal's stageId, when a deal is being opened as part of the conversion.
   const stage = input.deal ? await getStageById(orgId, input.deal.stageId) : null
@@ -753,36 +824,52 @@ export async function addTaskAction(input: {
   // lib/data/tasks.ts), not who it can be assigned to.
   let assigneeId = callerId
   if (input.ownerId && input.ownerId !== callerId) {
+    // A fresh assignment (to someone other than the caller) — active required unconditionally,
+    // same as createLeadAction's identical note. Assigning to yourself (the default) never hits
+    // this branch at all, so it's never blocked by your own active status.
     const assignee = await getOwnerById(orgId, input.ownerId)
-    if (!assignee) throw new Error('Owner not found')
+    if (!assignee || !assignee.active) throw new Error('Owner not found')
     assigneeId = assignee.id
   }
 
   await assertSubjectInScope(scope, input.subject)
   await guardAgainstIdCollision(() =>
-    dbCreateTask(scope, {
-      id: input.id,
-      title,
-      dueDate,
-      priority: input.priority,
-      type,
-      owner: { connect: { id: assigneeId } },
-      createdBy: { connect: { id: callerId } },
-      ...(input.subject?.type === 'lead' && {
-        relatedToType: 'lead',
-        relatedToLabel: input.subject.label,
-        lead: { connect: { id: input.subject.id } },
-      }),
-      ...(input.subject?.type === 'contact' && {
-        relatedToType: 'contact',
-        relatedToLabel: input.subject.label,
-        contact: { connect: { id: input.subject.id } },
-      }),
-      ...(input.subject?.type === 'deal' && {
-        relatedToType: 'deal',
-        relatedToLabel: input.subject.label,
-        deal: { connect: { id: input.subject.id } },
-      }),
+    withTransaction(async (tx) => {
+      const created = await dbCreateTask(
+        scope,
+        {
+          id: input.id,
+          title,
+          dueDate,
+          priority: input.priority,
+          type,
+          owner: { connect: { id: assigneeId } },
+          createdBy: { connect: { id: callerId } },
+          ...(input.subject?.type === 'lead' && {
+            relatedToType: 'lead',
+            relatedToLabel: input.subject.label,
+            lead: { connect: { id: input.subject.id } },
+          }),
+          ...(input.subject?.type === 'contact' && {
+            relatedToType: 'contact',
+            relatedToLabel: input.subject.label,
+            contact: { connect: { id: input.subject.id } },
+          }),
+          ...(input.subject?.type === 'deal' && {
+            relatedToType: 'deal',
+            relatedToLabel: input.subject.label,
+            deal: { connect: { id: input.subject.id } },
+          }),
+        },
+        tx,
+      )
+      // No separate activityId exists for a task create (tasks don't log a "created" activity)
+      // — the task's own client-generated id is just as fresh/unique per creation.
+      await writeAssignedNotification(tx, {
+        orgId, recipientId: assigneeId, actorId: callerId,
+        subjectType: 'task', subjectId: created.id, dedupeKey: input.id,
+      })
+      return created
     }),
   )
   revalidatePath('/', 'layout')

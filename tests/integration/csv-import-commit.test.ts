@@ -48,6 +48,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await prisma.notification.deleteMany({ where: { orgId: { in: [org.id, otherOrg.id] } } })
   await prisma.activity.deleteMany({ where: { orgId: { in: [org.id, otherOrg.id] } } })
   await prisma.task.deleteMany({ where: { orgId: org.id } })
   await prisma.deal.deleteMany({ where: { orgId: org.id } })
