@@ -92,6 +92,7 @@ export function mapLead(
     location: l.location,
     createdAt: l.createdAt.toISOString(),
     lastTouchedAt: l.lastTouchedAt.toISOString(),
+    followUpAt: l.followUpAt?.toISOString() ?? null,
     convertedDealId: l.convertedDeal?.id,
     convertedContactId: l.convertedContact?.id,
   }

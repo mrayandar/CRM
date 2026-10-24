@@ -96,6 +96,8 @@ export interface UpdateLeadInput {
   companyId: string
   source: LeadSource
   ownerId: string
+  /** A calendar date (e.g. "2026-03-10"), not an instant. Empty/undefined clears it. */
+  followUpAt?: string
 }
 
 export interface NewLeadInput {
@@ -107,6 +109,8 @@ export interface NewLeadInput {
   status: LeadStatus
   ownerId: string
   notes?: string
+  /** A calendar date (e.g. "2026-03-10"), not an instant. Empty/undefined means none scheduled. */
+  followUpAt?: string
 }
 
 export interface NewContactInput {
@@ -641,6 +645,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         location: '',
         createdAt: now,
         lastTouchedAt: now,
+        followUpAt: input.followUpAt || null,
       }
       const subject: SubjectRef = { type: 'lead', id, label: name }
       const noteActivityId = notes ? newEntityId() : undefined
@@ -844,6 +849,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         companyId: input.companyId,
         source: input.source,
         ownerId: input.ownerId,
+        followUpAt: input.followUpAt || null,
       }
 
       const changed: string[] = []
@@ -854,6 +860,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       if (lead.companyId !== trimmed.companyId) changed.push('company')
       if (lead.source !== trimmed.source) changed.push('source')
       if (lead.ownerId !== trimmed.ownerId) changed.push('owner')
+      if ((lead.followUpAt ?? null) !== trimmed.followUpAt) changed.push('follow-up date')
 
       // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
       // and the activity rather than bump lastTouchedAt / log an empty "edited" entry for it.

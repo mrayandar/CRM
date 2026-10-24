@@ -63,3 +63,30 @@ export function resolveOrgTimezone(input: {
 }): string {
   return input.orgTimezoneConfigured ? input.orgTimezone : input.viewerTimezone
 }
+
+const DAY_MS = 86_400_000
+
+/** "YYYY-MM-DD" as the given instant reads in `timezone` — `en-CA` is the one standard locale
+ *  whose formatted output is already exactly that shape, with no further parsing. */
+function ymdInZone(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+}
+
+/**
+ * Whole calendar days from the recipient's *local* today (in `timezone`) to the calendar date
+ * `iso` represents — negative means that date has already passed for them. Deliberately not
+ * instant arithmetic: a Task.dueDate/Lead.followUpAt is a calendar date, stored as UTC midnight
+ * of whatever date was picked (an HTML date input's "YYYY-MM-DD" parses that way) — reading its
+ * UTC year/month/day back out recovers the exact picked date regardless of the caller's own
+ * zone, which then gets compared against "today" as computed in the *recipient's* zone, not the
+ * server's or the caller's. This is what makes the comparison correct right around midnight: at
+ * 23:58 UTC, a recipient in Asia/Karachi (UTC+5) is already living in tomorrow, and this returns
+ * one day earlier than a same-moment comparison in, say, America/Los_Angeles (UTC-7/8) would.
+ */
+export function localDayDelta(iso: string, timezone: string): number {
+  const storedYmd = ymdInZone(new Date(iso), 'UTC')
+  const todayYmd = ymdInZone(new Date(), timezone)
+  const storedMs = new Date(`${storedYmd}T00:00:00Z`).getTime()
+  const todayMs = new Date(`${todayYmd}T00:00:00Z`).getTime()
+  return Math.round((storedMs - todayMs) / DAY_MS)
+}

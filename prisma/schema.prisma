@@ -280,6 +280,13 @@ model Lead {
   /// see lib/data/import.ts).
   importBatchId String?
 
+  /// A calendar date, not an instant — stored as midnight UTC of the date picked (same convention
+  /// Task.dueDate already uses: an HTML date input's "YYYY-MM-DD" parses to UTC midnight via
+  /// `new Date(dateString)`). Every comparison against it (the Leads filter, the lead_follow_up
+  /// notification) must compare calendar dates in the *recipient's own* timezone, never by raw
+  /// instant arithmetic — see lib/timezones.ts's localDayDelta. Null means no follow-up scheduled.
+  followUpAt DateTime?
+
   createdAt     DateTime @default(now())
   lastTouchedAt DateTime @default(now())
 
@@ -295,6 +302,7 @@ model Lead {
   @@index([orgId])
   @@index([orgId, status])
   @@index([orgId, ownerId])
+  @@index([orgId, followUpAt])
   @@index([orgId, lastTouchedAt])
   @@index([orgId, companyId])
   @@index([orgId, importBatchId])

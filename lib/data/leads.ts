@@ -100,6 +100,11 @@ export interface UpdateLeadInput {
   companyId: string
   source: LeadSource
   ownerId: string
+  /** Omitted (not just `null`) means "leave it alone" — CSV import's update path never maps a
+   *  follow-up column, so it never passes this key at all; a direct lead edit always passes a
+   *  concrete `Date | null` (null clears it). Prisma itself treats a `data` key whose value is
+   *  `undefined` as "don't include this column in the update", which is exactly this distinction. */
+  followUpAt?: Date | null
 }
 
 /**
@@ -140,6 +145,12 @@ export async function updateLead(
     if (existing.companyId !== data.companyId) changed.push('company')
     if (existing.source !== data.source) changed.push('source')
     if (existing.ownerId !== data.ownerId) changed.push('owner')
+    if (
+      data.followUpAt !== undefined &&
+      (existing.followUpAt?.getTime() ?? null) !== (data.followUpAt?.getTime() ?? null)
+    ) {
+      changed.push('follow-up date')
+    }
 
     if (changed.length === 0) return existing
 

@@ -64,6 +64,9 @@ export interface Lead {
   location: string
   createdAt: string
   lastTouchedAt: string
+  /** A calendar date (e.g. "2026-03-10"), not an instant — see Lead.followUpAt's schema doc
+   *  comment. Undefined/null means no follow-up scheduled. */
+  followUpAt?: string | null
   convertedDealId?: string
   /** Set once this lead has been converted (with or without a deal) — the persisted "already converted" flag. */
   convertedContactId?: string

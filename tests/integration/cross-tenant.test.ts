@@ -424,6 +424,53 @@ describe('client-supplied id collisions fail identically whether the id already 
   })
 })
 
+describe('createLeadAction/updateLeadAction: followUpAt is a validated calendar date', () => {
+  it('createLeadAction rejects a malformed followUpAt string', async () => {
+    loginAs(A)
+    await expect(
+      actions.createLeadAction({
+        id: randomUUID(), name: 'Bad Follow-up', email: '', phone: '', companyId: A.company.id,
+        source: 'Inbound', status: 'new', ownerId: A.owner.id, activityId: randomUUID(),
+        followUpAt: 'not-a-date',
+      }),
+    ).rejects.toThrow('Invalid follow-up date')
+  })
+
+  it('createLeadAction accepts a well-formed followUpAt and stores it', async () => {
+    loginAs(A)
+    const id = randomUUID()
+    await actions.createLeadAction({
+      id, name: 'Good Follow-up', email: '', phone: '', companyId: A.company.id,
+      source: 'Inbound', status: 'new', ownerId: A.owner.id, activityId: randomUUID(),
+      followUpAt: '2026-05-01',
+    })
+    const lead = await prisma.lead.findUnique({ where: { id } })
+    expect(lead?.followUpAt?.toISOString()).toBe(new Date('2026-05-01').toISOString())
+
+    await prisma.activity.deleteMany({ where: { leadId: id } })
+    await prisma.lead.delete({ where: { id } })
+  })
+
+  it('updateLeadAction rejects a malformed followUpAt string', async () => {
+    loginAs(A)
+    const id = randomUUID()
+    await actions.createLeadAction({
+      id, name: 'Lead To Edit', email: '', phone: '', companyId: A.company.id,
+      source: 'Inbound', status: 'new', ownerId: A.owner.id, activityId: randomUUID(),
+    })
+
+    await expect(
+      actions.updateLeadAction({
+        id, name: 'Lead To Edit', title: '', email: '', phone: '', companyId: A.company.id,
+        source: 'Inbound', ownerId: A.owner.id, activityId: randomUUID(), followUpAt: 'nope',
+      }),
+    ).rejects.toThrow('Invalid follow-up date')
+
+    await prisma.activity.deleteMany({ where: { leadId: id } })
+    await prisma.lead.delete({ where: { id } })
+  })
+})
+
 describe('server actions: reject a client-supplied ownerId/contactId/stageId from another org', () => {
   beforeEach(() => loginAs(B))
 

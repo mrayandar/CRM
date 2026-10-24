@@ -33,7 +33,7 @@ import {
   type LeadSource,
   type LeadStatus,
 } from '@/data/types'
-import { cn, currency, currencyCompact, exportCsv, sortBy, sum } from '@/lib/utils'
+import { cn, currency, currencyCompact, dayDelta, dueLabel, exportCsv, sortBy, sum } from '@/lib/utils'
 import { RelativeTime } from '@/components/common/RelativeTime'
 
 type SortKey = 'name' | 'company' | 'score' | 'estValue' | 'lastTouchedAt'
@@ -54,6 +54,7 @@ export function Leads() {
   const [query, setQuery] = useState('')
   const [owner, setOwner] = useState('all')
   const [source, setSource] = useState('all')
+  const [followUpDue, setFollowUpDue] = useState(false)
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({
     key: 'lastTouchedAt',
     dir: 'desc',
@@ -72,6 +73,7 @@ export function Leads() {
       if (status !== 'all' && lead.status !== status) return false
       if (owner !== 'all' && lead.ownerId !== owner) return false
       if (source !== 'all' && lead.source !== source) return false
+      if (followUpDue && !(lead.followUpAt && dayDelta(lead.followUpAt) <= 0)) return false
       if (!q) return true
       return `${lead.name} ${lead.company} ${lead.email} ${lead.title}`.toLowerCase().includes(q)
     })
@@ -88,7 +90,7 @@ export function Leads() {
               : lead[sort.key].toLowerCase(),
       sort.dir,
     )
-  }, [leads, status, owner, source, query, sort])
+  }, [leads, status, owner, source, followUpDue, query, sort])
 
   const toggleSort = (key: SortKey) =>
     setSort((prev) =>
@@ -178,6 +180,18 @@ export function Leads() {
               </option>
             ))}
           </Select>
+          <button
+            type="button"
+            onClick={() => setFollowUpDue((v) => !v)}
+            className={cn(
+              'h-8 rounded-control border px-2.5 text-[12.5px] font-medium transition-colors',
+              followUpDue
+                ? 'border-brand-600 bg-brand-50 text-brand-700'
+                : 'border-line-strong bg-surface text-ink-600 hover:border-[#cfcfd6]',
+            )}
+          >
+            Follow-up due
+          </button>
           <div className="ml-auto flex items-center gap-2">
             {selected.size > 0 ? (
               <div className="flex animate-fade-in items-center gap-2">
@@ -227,6 +241,7 @@ export function Leads() {
                     setQuery('')
                     setOwner('all')
                     setSource('all')
+                    setFollowUpDue(false)
                     setStatus('all')
                   }}
                 >
@@ -259,6 +274,7 @@ export function Leads() {
                 <Th>Status</Th>
                 <Th>Source</Th>
                 <Th>Owner</Th>
+                <Th>Follow-up</Th>
                 <Th
                   align="right"
                   sortable
@@ -350,6 +366,20 @@ export function Leads() {
                             {ownerRecord.name.split(' ')[0]}
                           </span>
                         </div>
+                      </Td>
+                      <Td>
+                        {lead.followUpAt ? (
+                          <span
+                            className={cn(
+                              'text-[12.5px]',
+                              dueLabel(lead.followUpAt).tone === 'overdue' ? 'text-negative' : 'text-ink-600',
+                            )}
+                          >
+                            {dueLabel(lead.followUpAt).text}
+                          </span>
+                        ) : (
+                          <span className="text-[12.5px] text-ink-300">—</span>
+                        )}
                       </Td>
                       <Td align="right">
                         <ScoreCell score={lead.score} />
@@ -496,6 +526,7 @@ function NewLeadModal({ onClose }: { onClose: () => void }) {
   const [status, setStatus] = useState<LeadStatus>('new')
   const [ownerId, setOwnerId] = useState(currentUser.id)
   const [notes, setNotes] = useState('')
+  const [followUpAt, setFollowUpAt] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -507,7 +538,7 @@ function NewLeadModal({ onClose }: { onClose: () => void }) {
     setSaving(true)
     setError(null)
     try {
-      await addLead({ name, companyId, email, phone, source, status, ownerId, notes })
+      await addLead({ name, companyId, email, phone, source, status, ownerId, notes, followUpAt })
       onClose()
     } catch {
       setError('Could not save the lead. Please try again.')
@@ -574,6 +605,9 @@ function NewLeadModal({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </Select>
+          </Field>
+          <Field label="Follow-up date">
+            <Input type="date" value={followUpAt} onChange={(e) => setFollowUpAt(e.target.value)} />
           </Field>
         </div>
 

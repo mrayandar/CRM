@@ -238,6 +238,9 @@ export async function createLeadAction(input: {
   status: LeadStatus
   ownerId: string
   notes?: string
+  /** A calendar date (e.g. "2026-03-10"), not an instant — see Lead.followUpAt's schema doc
+   *  comment. Omit/empty clears it. */
+  followUpAt?: string
   /** Client-generated id for the "created lead" activity (see logActivityAction's `id` param). */
   activityId: string
   /** Same, for the optional note activity — only used when `notes` is set. */
@@ -259,6 +262,8 @@ export async function createLeadAction(input: {
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
   if (!LEAD_STATUSES.includes(input.status)) throw new Error('Invalid status')
   if (notes) assertClientId(input.noteActivityId)
+  const followUpAt = input.followUpAt ? new Date(input.followUpAt) : null
+  if (followUpAt && Number.isNaN(followUpAt.getTime())) throw new Error('Invalid follow-up date')
 
   // ownerId and companyId come from the client — both must belong to this org before connecting
   // them, and (once scoped) a Member may only create a lead owned by themselves.
@@ -280,6 +285,7 @@ export async function createLeadAction(input: {
       location: '',
       status: input.status,
       source: input.source,
+      followUpAt,
       owner: { connect: { id: owner.id } },
       activities: {
         create: [
@@ -588,6 +594,9 @@ export async function updateLeadAction(input: {
   companyId: string
   source: LeadSource
   ownerId: string
+  /** A calendar date, not an instant — see createLeadAction's identical param. Omit/empty clears
+   *  it. */
+  followUpAt?: string
   /** Client-generated id for the "edited" activity (see logActivityAction's `id` param). */
   activityId: string
 }) {
@@ -604,6 +613,8 @@ export async function updateLeadAction(input: {
   if (email && (email.length > 320 || !EMAIL_RE.test(email))) throw new Error('Invalid email')
   if (phone.length > 60) throw new Error('Invalid phone')
   if (!LEAD_SOURCES.includes(input.source)) throw new Error('Invalid source')
+  const followUpAt = input.followUpAt ? new Date(input.followUpAt) : null
+  if (followUpAt && Number.isNaN(followUpAt.getTime())) throw new Error('Invalid follow-up date')
 
   // ownerId and companyId come from the client — both must belong to this org before connecting
   // them. Reassignment (the destination owner) is unrestricted even when scoped — see
@@ -617,7 +628,7 @@ export async function updateLeadAction(input: {
     dbUpdateLead(
       scope,
       input.id,
-      { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id },
+      { name, title, email, phone, companyId: company.id, source: input.source, ownerId: owner.id, followUpAt },
       actorId,
       input.activityId,
     ),

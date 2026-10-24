@@ -789,6 +789,7 @@ function EditLeadModal({
     companyId: string
     source: Lead['source']
     ownerId: string
+    followUpAt?: string
   }) => void
 }) {
   const { owners } = useCrm()
@@ -799,6 +800,7 @@ function EditLeadModal({
   const [companyId, setCompanyId] = useState(lead.companyId)
   const [source, setSource] = useState<Lead['source']>(lead.source)
   const [ownerId, setOwnerId] = useState(lead.ownerId)
+  const [followUpAt, setFollowUpAt] = useState(lead.followUpAt?.slice(0, 10) ?? '')
 
   // Re-seed from the lead whenever the modal (re)opens, not on every render, so it doesn't
   // clobber an in-progress edit while it's open (e.g. if the lead is revalidated in the background).
@@ -811,6 +813,7 @@ function EditLeadModal({
     setCompanyId(lead.companyId)
     setSource(lead.source)
     setOwnerId(lead.ownerId)
+    setFollowUpAt(lead.followUpAt?.slice(0, 10) ?? '')
   }, [open, lead])
 
   const emailInvalid = email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
@@ -818,7 +821,7 @@ function EditLeadModal({
 
   const submit = () => {
     if (!canSubmit) return
-    updateLead(lead.id, { name, title, email, phone, companyId, source, ownerId })
+    updateLead(lead.id, { name, title, email, phone, companyId, source, ownerId, followUpAt })
     onClose()
   }
 
@@ -878,6 +881,9 @@ function EditLeadModal({
                 </option>
               ))}
             </Select>
+          </Field>
+          <Field label="Follow-up date">
+            <Input type="date" value={followUpAt} onChange={(e) => setFollowUpAt(e.target.value)} />
           </Field>
         </div>
 
