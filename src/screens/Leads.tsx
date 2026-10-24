@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   Plus,
   Trash2,
+  Upload,
   UserPlus,
 } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
@@ -23,6 +24,7 @@ import { EmptyState } from '@/components/ui/Display'
 import { Td, TableShell, Th, Thead, Tr } from '@/components/ui/Table'
 import { LeadFunnel } from '@/components/common/LeadFunnel'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
+import { ImportWizard } from '@/components/common/ImportWizard'
 import { useCrm } from '@/store/crm'
 import {
   LEAD_STATUS_LABEL,
@@ -46,6 +48,7 @@ export function Leads() {
   const [params, setParams] = useSearchParams()
   const [newLeadOpen, setNewLeadOpen] = useState(false)
   const [reassignOpen, setReassignOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
 
   const status = (params.get('status') as LeadStatus | null) ?? 'all'
   const [query, setQuery] = useState('')
@@ -132,6 +135,9 @@ export function Leads() {
         <>
           <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportLeads}>
             Export
+          </Button>
+          <Button variant="secondary" size="sm" icon={<Upload size={14} />} onClick={() => setImportOpen(true)}>
+            Import
           </Button>
           <Button
             variant="primary"
@@ -388,6 +394,8 @@ export function Leads() {
       </div>
 
       {newLeadOpen && <NewLeadModal onClose={() => setNewLeadOpen(false)} />}
+
+      <ImportWizard entityType="lead" open={importOpen} onClose={() => setImportOpen(false)} />
 
       {reassignOpen && (
         <ReassignModal

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from '@/lib/router-compat'
 import { Check, Plus, Loader2, TriangleAlert, UserX, X } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
@@ -20,9 +20,10 @@ import { CURRENCY_CODES, CURRENCY_LABEL } from '@/data/types'
 import { resolveBrowserTimezone } from '@lib/timezones'
 import { useOrganization, useUser } from '@clerk/nextjs'
 import { inviteMemberAction } from '@lib/actions/crm'
+import { getOrgRecordCountsAction, type OrgRecordCounts } from '@lib/actions/import'
 import { REP_VISIBILITY_ENABLE_CONFIRM, REP_VISIBILITY_DISABLE_CONFIRM } from '@/components/common/repVisibilityConfirmCopy'
 
-type Section = 'profile' | 'pipeline' | 'team' | 'notifications'
+type Section = 'profile' | 'pipeline' | 'team' | 'notifications' | 'data'
 
 const formatQuota = (quota: number | null) => (quota !== null ? quota.toLocaleString('en-US') : '')
 
@@ -42,7 +43,7 @@ export function Settings() {
   const [params] = useSearchParams()
   const initialSection = params.get('section')
   const [section, setSection] = useState<Section>(
-    initialSection === 'pipeline' || initialSection === 'team' || initialSection === 'notifications'
+    initialSection === 'pipeline' || initialSection === 'team' || initialSection === 'notifications' || initialSection === 'data'
       ? initialSection
       : 'profile',
   )
@@ -119,6 +120,9 @@ export function Settings() {
             { value: 'pipeline', label: 'Pipeline' },
             { value: 'team', label: 'Team' },
             { value: 'notifications', label: 'Notifications' },
+            // Admin-only, own org only — see PROGRESS.md's CSV-import entry on why this isn't a
+            // cross-org platform view (no such role exists in this app).
+            ...(isAdmin ? [{ value: 'data' as const, label: 'Data' }] : []),
           ]}
         />
       }
@@ -358,6 +362,8 @@ export function Settings() {
 
         {section === 'team' && <TeamSection />}
 
+        {section === 'data' && isAdmin && <RecordCountsSection />}
+
         {section === 'notifications' && (
           <Card>
             <CardHeader title="Notifications" subtitle="Choose what reaches your inbox" />
@@ -532,6 +538,52 @@ function RepVisibilitySection() {
         </Modal>
       )}
     </div>
+  )
+}
+
+const RECORD_LABELS: Record<keyof OrgRecordCounts, string> = {
+  leads: 'Leads', contacts: 'Contacts', deals: 'Deals', tasks: 'Tasks', activities: 'Activities', companies: 'Companies',
+}
+
+/** Admin-only, own org only — lets an admin see their own org approaching the per-import record
+ *  cap (lib/data/import.ts's PER_ORG_RECORD_CAP) before it becomes a surprise mid-import. */
+function RecordCountsSection() {
+  const [counts, setCounts] = useState<OrgRecordCounts | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    getOrgRecordCountsAction().then((result) => {
+      if ('ok' in result && result.ok) setCounts(result.counts)
+      else setError("Couldn't load record counts.")
+    })
+  }, [])
+
+  return (
+    <Card>
+      <CardHeader title="Record counts" subtitle="This workspace's current totals" />
+      <div className="p-4">
+        {error && <p className="text-[12.5px] text-negative">{error}</p>}
+        {!counts && !error && <p className="text-[13px] text-ink-500">Loading…</p>}
+        {counts && (
+          <TableShell>
+            <Thead>
+              <Tr>
+                <Th>Entity</Th>
+                <Th align="right">Count</Th>
+              </Tr>
+            </Thead>
+            <tbody>
+              {(Object.keys(RECORD_LABELS) as Array<keyof OrgRecordCounts>).map((key) => (
+                <Tr key={key}>
+                  <Td>{RECORD_LABELS[key]}</Td>
+                  <Td align="right">{counts[key].toLocaleString('en-US')}</Td>
+                </Tr>
+              ))}
+            </tbody>
+          </TableShell>
+        )}
+      </div>
+    </Card>
   )
 }
 

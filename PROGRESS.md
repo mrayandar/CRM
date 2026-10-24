@@ -2,6 +2,95 @@
 
 > Living context file. Updated at the end of every task.
 
+## CSV import for leads and contacts (Oct 24 2026)
+
+Built in four commits per the approved design. 399 tests passing (20 files), up from 320 at the
+start. Verified live against a real production build in every commit that touched behavior —
+26/26 live checks pass on the final build (upload → map → preview → progress → done, both
+entities, all three duplicate strategies, OWN-mode scoping, an unknown owner email, both undo
+skip cases, malformed/over-limit files, and the admin-only Data tab).
+
+**Commit 1 — phone-aware CSV export fix.** `csvCell()`'s formula-injection guard was treating a
+leading `+` as an injection attempt, which mangled every phone number on export (this app formats
+them "+1 555 010 0199"). Added a narrow exemption: a leading `+` followed by only digits/spaces/
+parens/dots/dashes is left alone; a bare leading `-`, or a `+` hiding a real formula (e.g.
+`+=cmd`), still gets neutralized.
+
+**Commit 2 — schema, shared validation, parse/validate routes.** Added `ImportBatch` (tracks one
+import run, needed for undo) and a nullable `importBatchId` on `Lead`/`Contact` — both additive,
+no drift, no data loss. Extracted the field-validation rules `createLeadAction`/
+`createContactAction` already enforced into `lib/validation.ts`, and `assertOwnerInScope` into
+`lib/scope.ts` (it was only ever a scope helper, not an action — exporting it from
+`lib/actions/crm.ts` broke that file's own action-exhaustiveness test), so import validates a row
+to the exact same standard as the single-record form. `lib/data/import.ts` handles encoding (BOM
+strip, strict-UTF-8-then-Windows-1252 fallback, rejects unreadable binary), delimiter/quoted-
+newline-safe parsing via Papa Parse, column-mapping suggestion, and duplicate-email/company/owner
+resolution. `POST /api/import/parse` and `POST /api/import/validate` are Route Handlers (not
+Server Actions, same reasoning as `GET /api/crm-refetch`), `force-dynamic`, `no-store`. Found and
+fixed a real leak before it shipped: a scoped Member's duplicate-email match on another rep's
+record was returning that record's id/name in the response. Fixed at the type level —
+`DuplicateMatch` is now `{editable: true, recordId, name} | {editable: false}`, so there's no
+field left to leak on the non-editable branch.
+
+**Commit 3 — chunked commit, idempotency, scope, cap, undo.** `POST /api/import/batches` creates
+the `ImportBatch` up front; `POST /api/import/commit` processes one chunk, re-verifying on every
+call that the batch belongs to the caller's org/importer and is still open. Found and fixed a real
+bug: the idempotent-retry check (does this row's id already exist under this batch?) ran *after*
+duplicate-email detection, so a retried chunk's own successful create looked like a duplicate of
+itself on the second attempt and got diverted into the skip/update path. Moved it to run first.
+OWN-mode Members get their cross-rep duplicate matches force-skipped with a generic message
+regardless of the chosen strategy; the owner-column mapping is admin-only, stripped server-side
+independent of validate's own stripping; update preserves every blank cell's existing value and
+never touches `ownerId` or a lead's `status`. The per-org cap (5,000 leads/contacts) is checked
+after the idempotent-retry check, so a retry past the cap doesn't double-fail. Undo (admin-only,
+24h window) removes only rows with no Activity beyond the import's own "created" one and no
+dependents (a conversion, or a linked Task/Deal) — everything else is kept and reported.
+
+Real finding from sizing the commit chunk: couldn't reach a deployed Vercel preview (behind
+deployment protection; generating a bypass secret would have weakened that project-wide —
+correctly refused, not attempted). Measured directly against the real production DB instead:
+creating one lead with its nested "created" activity took 2.0-4.3s across 20 consecutive calls
+(median 2.7s) — genuine write cost from `Lead`'s two GIN trigram search indexes (name/email),
+not network noise. Sized the commit chunk to 10 rows and `maxDuration` to 60s from that real
+number. **This cost applies to every single lead/contact creation in this app today, not just
+import** — worth a dedicated look on its own. A full 2,000-row import is ~200 sequential chunks,
+on the order of two hours of real wall-clock time at this rate, which is why the progress bar in
+the UI isn't cosmetic.
+
+**Separately found while measuring**: a leftover `"Scale Test Org (synthetic, safe to delete)"`
+in production with 5,000 leads / 10,000 contacts / 5,000 deals / 50,000 activities / 1,500
+companies — right at the import cap, and very likely the single biggest contributor to the
+measured write cost (GIN index maintenance cost scales with total table size, not per-org size).
+**Not deleted** — it's real production data I didn't create this session, and bulk-deleting it is
+exactly the kind of action to confirm first. Its own name says it's safe to delete; recommend
+doing so and re-measuring the real per-row cost on a cleaner table.
+
+Also found: running 20 test files in parallel (vitest's default) against the same real Neon
+database exhausted its pooled-connection limit outright once this suite grew past 20 files —
+several files failed from their very first query, not a timeout. `vitest.config.mts` now sets
+`fileParallelism: false` (one file at a time) and raised `testTimeout`/`hookTimeout` from 30s to
+60s for the slower-but-correct operations the GIN-index finding surfaced.
+
+Extended the action-exhaustiveness matrix (`tests/integration/action-route-matrix.test.ts`) to
+`lib/actions/import.ts`, and demonstrated it actually fails on an unbucketed export (added a
+dummy export, watched the test fail, removed it) before moving on.
+
+**Commit 4 — UI, admin record-count view, operator script.** `src/components/common/
+ImportWizard.tsx`: upload → column mapping (auto-suggested, admin-only owner column) → preview
+(per-row errors, duplicate-strategy picker) → chunked commit with a progress bar → done (summary,
+downloadable error-report CSV via the existing `exportCsv()`, admin-only undo button). Wired into
+Leads and Contacts via a new "Import" button next to Export. Found and fixed a real accessibility
+gap during live verification: the mapping and duplicate-strategy `<Select>`s had a visual
+`<Label>` next to them with no `htmlFor`/`id` association, so a screen reader (and Playwright's
+`getByLabel`) couldn't connect the two — fixed for both.
+
+Settings → a new admin-only "Data" tab (hidden entirely for a Member) shows this org's own
+leads/contacts/deals/tasks/activities/companies counts (`getOrgRecordCountsAction`, own org only
+— no platform-operator role exists in this app's auth model). For the cross-org view ("see orgs
+approaching the scale limit"), `scripts/org-counts.js` — a local, read-only script for the app
+operator, run against whatever `.env` points at, never exposed as a route or action. Flags any org
+above 80% of the import cap; running it is what surfaced the leftover Scale Test Org above.
+
 ## Production hardening pass (Oct 24 2026)
 
 314 tests passing (17 files) at the end of this pass, up from 280 at the start. All work below

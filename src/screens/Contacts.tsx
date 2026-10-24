@@ -9,6 +9,7 @@ import {
   Download,
   MoreHorizontal,
   Plus,
+  Upload,
   Users,
 } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
@@ -16,6 +17,7 @@ import { Card } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
 import { Badge, Tag, type Tone } from '@/components/ui/Badge'
 import { Avatar, CompanyMark } from '@/components/ui/Avatar'
+import { ImportWizard } from '@/components/common/ImportWizard'
 import { Input, Label, SearchInput, Segmented, Select } from '@/components/ui/Field'
 import { Modal } from '@/components/ui/Modal'
 import { MenuDivider, MenuItem, Popover } from '@/components/ui/Menu'
@@ -46,6 +48,7 @@ export function Contacts() {
 
   const tagFilter = params.get('tag')
   const [newContactOpen, setNewContactOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [owner, setOwner] = useState('all')
   const [lifecycle, setLifecycle] = useState('all')
@@ -120,6 +123,9 @@ export function Contacts() {
         <>
           <Button variant="secondary" size="sm" icon={<Download size={14} />} onClick={exportContacts}>
             Export
+          </Button>
+          <Button variant="secondary" size="sm" icon={<Upload size={14} />} onClick={() => setImportOpen(true)}>
+            Import
           </Button>
           <Button
             variant="primary"
@@ -304,6 +310,8 @@ export function Contacts() {
       </div>
 
       {newContactOpen && <NewContactModal onClose={() => setNewContactOpen(false)} />}
+
+      <ImportWizard entityType="contact" open={importOpen} onClose={() => setImportOpen(false)} />
     </PageShell>
   )
 }
