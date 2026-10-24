@@ -1105,7 +1105,8 @@ describe('Role-rule audit: actions confirmed Member-accessible by design (pinned
     expect(await actions.reorderStageAction(B.stage.id, 'up')).toEqual({ ok: false, error: 'forbidden' })
     expect(await actions.deleteStageAction(B.stage.id)).toEqual({ ok: false, error: 'forbidden' })
     const stageUntouched = await prisma.pipelineStage.findUniqueOrThrow({ where: { id: B.stage.id } })
-    expect(stageUntouched.label).not.toBe('Hijacked by Member')
+    expect(stageUntouched.label).not.toBe('Hijacked by Member') // renameStageAction wrote nothing
+    expect(stageUntouched.order).toBe(B.stage.order) // reorderStageAction wrote nothing
   })
 
   it('a Member can update their own profile (name/timezone) — never an org-wide setting', async () => {
