@@ -64,6 +64,16 @@ const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reas
     reason:
       "Clerk's own signed webhook (Svix signature verified in-handler) — not a per-user session route, so Scope doesn't apply; it writes Organization/Owner rows directly from Clerk's own payload, before any Owner/session exists to scope against.",
   },
+  'import/parse/route.ts': {
+    kind: 'exempt',
+    reason:
+      'POST /api/import/parse — requireAuth()-gated but pure file parsing, no Scope-filtered read or write at all; see tests/integration/csv-import.test.ts',
+  },
+  'import/validate/route.ts': {
+    kind: 'scoped',
+    reason:
+      'POST /api/import/validate — findDuplicateByEmail respects Scope (an OWN-mode match outside it reveals nothing); see tests/integration/csv-import.test.ts',
+  },
 }
 
 describe('exhaustiveness: lib/actions/payments.ts and every app/api/**/route.ts file is bucketed', () => {

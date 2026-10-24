@@ -25,6 +25,15 @@ export function getOwnerByEmail(orgId: string, email: string) {
   })
 }
 
+/** Case-insensitive variant, for CSV import's admin-only owner-column mapping — a spreadsheet's
+ *  casing shouldn't matter where getOwnerByEmail's exact match (used for Clerk-sync paths, where
+ *  the email is already normalized) is right to be strict. */
+export function getOwnerByEmailInsensitive(orgId: string, email: string) {
+  return prisma.owner.findFirst({
+    where: { orgId, email: { equals: email, mode: 'insensitive' } },
+  })
+}
+
 export function getOwnerByClerkUserId(orgId: string, clerkUserId: string) {
   return prisma.owner.findUnique({
     where: { orgId_clerkUserId: { orgId, clerkUserId } },

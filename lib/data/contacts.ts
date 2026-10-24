@@ -59,7 +59,7 @@ export function getContactById(scope: Scope, id: string) {
 export function getContactByEmail(scope: Scope, email: string) {
   return prisma.contact.findFirst({
     where: { orgId: scope.orgId, email: { equals: email, mode: 'insensitive' } },
-    select: { id: true },
+    select: { id: true, ownerId: true, name: true },
   })
 }
 

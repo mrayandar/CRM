@@ -7,6 +7,7 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { requireAuth, requireAdmin, requireLiveAdminAccess } from '@lib/auth'
 import { tryAdminSession, FORBIDDEN, type ForbiddenResult } from '@lib/actions/shared'
 import type { Scope } from '@lib/scope'
+import { assertOwnerInScope } from '@lib/scope'
 import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone, updateRepVisibility } from '@lib/data/organizations'
 import { isValidIanaTimezone } from '@lib/timezones'
 import { CURRENCY_CODES } from '@/data/types'
@@ -52,14 +53,11 @@ import {
   deleteStage as dbDeleteStage,
 } from '@lib/data/stages'
 import type { LeadSource, LeadStatus, Priority, ActivityKind, TaskType, RepVisibility } from '@prisma/client'
+import { EMAIL_RE, LEAD_SOURCES, LEAD_STATUSES, assertClientId } from '@lib/validation'
 
-const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualified', 'lost']
 const PRIORITIES: Priority[] = ['low', 'medium', 'high']
 const TASK_TYPES: TaskType[] = ['call', 'email', 'meeting', 'todo']
-const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
 const ACTIVITY_KINDS: ActivityKind[] = ['call', 'email', 'meeting', 'note', 'stage', 'created', 'edited', 'task', 'won', 'lost', 'payment']
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** A lead/contact/deal id from the client must belong to the caller's scope before it is linked —
  *  a cross-tenant id and (once scoped) another rep's id are rejected identically. Returns the
@@ -78,21 +76,6 @@ async function assertSubjectInScope(
         : await getDealById(scope, subject.id)
   if (!found) throw new Error(`${subject.type} not found`)
   return found
-}
-
-/** A scoped Member may only create/convert a record owned by themselves — `ownerId` on a
- *  create/convert action is otherwise a free client-chosen value (any teammate), same as an
- *  Admin or an ALL-mode org's Member. Reassignment (editing an existing record's owner away from
- *  the caller) is NOT restricted by this — only creation/conversion. */
-function assertOwnerInScope(scope: Scope, ownerId: string) {
-  if (scope.scopeOwnerId && ownerId !== scope.scopeOwnerId) {
-    throw new Error('Owner not found')
-  }
-}
-
-/** Optimistic creates use a client-generated UUID as the row id; reject anything else. */
-function assertClientId(id: unknown): asserts id is string {
-  if (typeof id !== 'string' || !UUID_RE.test(id)) throw new Error('Invalid id')
 }
 
 /**

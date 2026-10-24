@@ -67,6 +67,18 @@ export function createLead(scope: Scope, data: Omit<Prisma.LeadCreateInput, 'org
   return prisma.lead.create({ data: { ...data, orgId: scope.orgId } })
 }
 
+/** Case-insensitive lookup within the WHOLE org, deliberately ignoring `scope.scopeOwnerId` —
+ *  mirrors getContactByEmail's identical note: email-match duplicate detection (CSV import) is an
+ *  org-level question ("does this email already exist at all"), not a per-owner one. The caller
+ *  decides what a scoped Member is allowed to DO with a match found outside their own scope
+ *  (lib/data/import.ts never lets that match reveal the other owner's identity). */
+export function getLeadByEmail(scope: Scope, email: string) {
+  return prisma.lead.findFirst({
+    where: { orgId: scope.orgId, email: { equals: email, mode: 'insensitive' } },
+    select: { id: true, ownerId: true, name: true },
+  })
+}
+
 export async function updateLeadStatus(scope: Scope, id: string, status: LeadStatus) {
   return withTransaction(async (tx) => {
     const existing = await tx.lead.findFirst({

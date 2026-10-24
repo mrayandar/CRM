@@ -32,3 +32,14 @@ export function computeScopeOwnerId(input: {
   const isRealAdmin = input.ownerRole === 'Admin' && input.sessionOrgRole === 'org:admin'
   return isRealAdmin ? null : input.ownerId
 }
+
+/** A scoped Member may only create/convert/import a record owned by themselves — `ownerId` on a
+ *  create/convert/import is otherwise a free client-chosen value (any teammate), same as an Admin
+ *  or an ALL-mode org's Member. Reassignment (editing an existing record's owner away from the
+ *  caller) is NOT restricted by this — only creation. Shared by lib/actions/crm.ts and the CSV-
+ *  import feature (lib/data/import.ts) so the one rule can't drift between the two. */
+export function assertOwnerInScope(scope: Scope, ownerId: string) {
+  if (scope.scopeOwnerId && ownerId !== scope.scopeOwnerId) {
+    throw new Error('Owner not found')
+  }
+}

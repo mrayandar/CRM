@@ -117,6 +117,11 @@ enum RepVisibility {
   OWN
 }
 
+enum ImportEntityType {
+  lead
+  contact
+}
+
 // ---------------------------------------------------------------------------
 // Identity & multi-tenancy
 // ---------------------------------------------------------------------------
@@ -204,9 +209,10 @@ model Owner {
   contacts        Contact[]
   deals           Deal[]
   tasks           Task[]
-  tasksCreated    Task[]     @relation("TaskCreatedBy")
+  tasksCreated    Task[]        @relation("TaskCreatedBy")
   activities      Activity[]
   paymentsCreated Payment[]
+  importBatches   ImportBatch[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -268,6 +274,12 @@ model Lead {
   owner   Owner  @relation(fields: [ownerId], references: [id])
   ownerId String
 
+  /// Set when this row came from a CSV import, null otherwise. Lets an admin undo a whole import
+  /// (see ImportBatch) and lets the import route detect a retried chunk idempotently (a row whose
+  /// client-generated id already exists under THIS batch is a safe no-op retry, not a collision —
+  /// see lib/data/import.ts).
+  importBatchId String?
+
   createdAt     DateTime @default(now())
   lastTouchedAt DateTime @default(now())
 
@@ -285,6 +297,7 @@ model Lead {
   @@index([orgId, ownerId])
   @@index([orgId, lastTouchedAt])
   @@index([orgId, companyId])
+  @@index([orgId, importBatchId])
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "leads_name_trgm_idx")
   @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "leads_email_trgm_idx")
   @@map("leads")
@@ -312,6 +325,9 @@ model Contact {
   originLead   Lead?   @relation(fields: [originLeadId], references: [id])
   originLeadId String? @unique
 
+  /// See Lead.importBatchId's identical doc comment.
+  importBatchId String?
+
   accountValue Int @default(0)
 
   createdAt         DateTime @default(now())
@@ -326,6 +342,7 @@ model Contact {
   @@index([orgId, ownerId])
   @@index([orgId, lastInteractionAt])
   @@index([orgId, companyId])
+  @@index([orgId, importBatchId])
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "contacts_name_trgm_idx")
   @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "contacts_email_trgm_idx")
   @@map("contacts")
@@ -534,4 +551,39 @@ model Activity {
   @@index([contactId])
   @@index([dealId])
   @@map("activities")
+}
+
+/// One row per CSV import run (see lib/data/import.ts). Created up front, before any chunk is
+/// processed — every chunk of that import re-verifies against this row that it belongs to the
+/// same org and the same importer, and is still open (`committedAt == null`), before writing
+/// anything. `undoneAt`/`undoneById` record an admin's undo (within the 24h window enforced in
+/// code, not in the schema) — a batch is never deleted, so its history (including a failed or
+/// partially-undone import) stays visible.
+model ImportBatch {
+  id         String           @id @default(cuid())
+  orgId      String
+  entityType ImportEntityType
+  totalRows  Int
+
+  importedBy   Owner  @relation(fields: [importedById], references: [id])
+  importedById String
+
+  createdCount Int @default(0)
+  updatedCount Int @default(0)
+  skippedCount Int @default(0)
+  failedCount  Int @default(0)
+
+  /// Null while chunks are still being accepted. Set the moment the last expected row has been
+  /// processed (or the client explicitly signals the final chunk) — no further chunk is accepted
+  /// against this batch once set.
+  committedAt DateTime?
+
+  undoneAt   DateTime?
+  undoneById String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId])
+  @@index([orgId, createdAt])
+  @@map("import_batches")
 }
