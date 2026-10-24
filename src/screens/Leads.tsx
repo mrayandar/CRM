@@ -33,7 +33,7 @@ import {
   type LeadSource,
   type LeadStatus,
 } from '@/data/types'
-import { cn, currency, currencyCompact, dayDelta, dueLabel, exportCsv, sortBy, sum } from '@/lib/utils'
+import { calendarDueLabel, cn, currency, currencyCompact, exportCsv, isLeadFollowUpDue, sortBy, sum } from '@/lib/utils'
 import { RelativeTime } from '@/components/common/RelativeTime'
 
 type SortKey = 'name' | 'company' | 'score' | 'estValue' | 'lastTouchedAt'
@@ -73,7 +73,7 @@ export function Leads() {
       if (status !== 'all' && lead.status !== status) return false
       if (owner !== 'all' && lead.ownerId !== owner) return false
       if (source !== 'all' && lead.source !== source) return false
-      if (followUpDue && !(lead.followUpAt && dayDelta(lead.followUpAt) <= 0)) return false
+      if (followUpDue && !isLeadFollowUpDue(lead)) return false
       if (!q) return true
       return `${lead.name} ${lead.company} ${lead.email} ${lead.title}`.toLowerCase().includes(q)
     })
@@ -114,6 +114,7 @@ export function Leads() {
         score: lead.score,
         estValue: lead.estValue,
         currency: orgCurrency,
+        followUpAt: lead.followUpAt?.slice(0, 10) ?? '',
         lastTouchedAt: lead.lastTouchedAt,
       })),
     )
@@ -372,10 +373,10 @@ export function Leads() {
                           <span
                             className={cn(
                               'text-[12.5px]',
-                              dueLabel(lead.followUpAt).tone === 'overdue' ? 'text-negative' : 'text-ink-600',
+                              calendarDueLabel(lead.followUpAt).tone === 'overdue' ? 'text-negative' : 'text-ink-600',
                             )}
                           >
-                            {dueLabel(lead.followUpAt).text}
+                            {calendarDueLabel(lead.followUpAt).text}
                           </span>
                         ) : (
                           <span className="text-[12.5px] text-ink-300">—</span>

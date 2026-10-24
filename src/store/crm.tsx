@@ -860,7 +860,15 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       if (lead.companyId !== trimmed.companyId) changed.push('company')
       if (lead.source !== trimmed.source) changed.push('source')
       if (lead.ownerId !== trimmed.ownerId) changed.push('owner')
-      if ((lead.followUpAt ?? null) !== trimmed.followUpAt) changed.push('follow-up date')
+      // Compared by value, not by raw string — `lead.followUpAt` is the server's full ISO
+      // instant (mapLead's toISOString()) while `trimmed.followUpAt` is the date input's bare
+      // "YYYY-MM-DD"; both parse to the identical UTC midnight for the same calendar date, but
+      // a plain `!==` on the two different-shaped strings would call every resubmission
+      // "changed" even when nothing was touched — the exact no-op-save bug this guards against.
+      const followUpChanged =
+        (lead.followUpAt ? new Date(lead.followUpAt).getTime() : null) !==
+        (trimmed.followUpAt ? new Date(trimmed.followUpAt).getTime() : null)
+      if (followUpChanged) changed.push('follow-up date')
 
       // A no-op save: nothing actually differs. Matches the data layer, which also skips the write
       // and the activity rather than bump lastTouchedAt / log an empty "edited" entry for it.

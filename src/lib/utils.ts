@@ -129,6 +129,69 @@ export function dueLabel(iso: string): { text: string; tone: 'overdue' | 'today'
   return { text: formatDate(iso), tone: 'later' }
 }
 
+/**
+ * Reinterprets a calendar-date field (stored as midnight UTC of the day picked — true of
+ * Lead.followUpAt) as a plain local Date carrying the identical year/month/day, by reading the
+ * stored value's UTC components directly rather than letting `new Date(iso)` + a local-time
+ * method (`setHours`, `getDate`, `toLocaleDateString` with no explicit zone) reinterpret it
+ * through the *viewer's* offset. That reinterpretation is exactly the bug this works around: for
+ * any viewer west of UTC (most of the Americas), midnight UTC of a date already fell on the
+ * previous local evening, so `new Date(iso).toLocaleDateString()` silently shows one calendar day
+ * earlier than what was actually picked. The value this returns is safe to feed directly into
+ * `toLocaleDateString()`/`getFullYear()` etc. — its *local* y/m/d already equal the stored date,
+ * so no further conversion can shift it again.
+ */
+export function asCalendarDate(iso: string): Date {
+  const stored = new Date(iso)
+  return new Date(stored.getUTCFullYear(), stored.getUTCMonth(), stored.getUTCDate())
+}
+
+/** Whole days from the viewer's own local today to the calendar date `iso` represents — see
+ *  `asCalendarDate`'s doc comment for why this isn't just `dayDelta(iso)`. */
+export function calendarDayDelta(iso: string): number {
+  const then = asCalendarDate(iso).getTime()
+  const today = startOfDay(new Date()).getTime()
+  return Math.round((then - today) / DAY)
+}
+
+/** Same shape as `dueLabel`, for a calendar-date field — see `asCalendarDate`. */
+export function calendarDueLabel(iso: string): { text: string; tone: 'overdue' | 'today' | 'soon' | 'later' } {
+  const delta = calendarDayDelta(iso)
+  if (delta < 0) return { text: delta === -1 ? 'Overdue by 1d' : `Overdue by ${-delta}d`, tone: 'overdue' }
+  if (delta === 0) return { text: 'Due today', tone: 'today' }
+  if (delta === 1) return { text: 'Due tomorrow', tone: 'soon' }
+  if (delta <= 7) return { text: `Due in ${delta}d`, tone: 'soon' }
+  const asLocal = asCalendarDate(iso)
+  const sameYear = asLocal.getFullYear() === new Date().getFullYear()
+  return {
+    text: asLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: sameYear ? undefined : 'numeric' }),
+    tone: 'later',
+  }
+}
+
+/** A lead whose status is one of these is done — a follow-up date on it is stale, not pending. */
+export const CLOSED_LEAD_STATUSES: readonly string[] = ['lost', 'unqualified']
+
+/**
+ * Whether a lead's follow-up date should count as "due" anywhere in the app — used by the Leads
+ * screen's "Follow-up due" filter today, and by Stage C's server-side lead_follow_up notification
+ * generation (which can't import this directly, since it reads a Prisma row, not this frontend
+ * Lead shape — but must encode the identical exclusion: status check against the same closed set,
+ * and "already converted" via the row's own convertedDeal/convertedContact relations). A
+ * converted lead, or one in a closed status, is done regardless of what its follow-up date says.
+ */
+export function isLeadFollowUpDue(lead: {
+  followUpAt?: string | null
+  status: string
+  convertedDealId?: string
+  convertedContactId?: string
+}): boolean {
+  if (!lead.followUpAt) return false
+  if (lead.convertedDealId || lead.convertedContactId) return false
+  if (CLOSED_LEAD_STATUSES.includes(lead.status)) return false
+  return calendarDayDelta(lead.followUpAt) <= 0
+}
+
 export function groupBy<T, K extends string>(items: T[], key: (item: T) => K): Record<K, T[]> {
   return items.reduce((acc, item) => {
     const k = key(item)
