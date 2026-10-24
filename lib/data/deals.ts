@@ -5,7 +5,7 @@
 // includes both in every `where` clause. Never call these with a bare orgId or an id alone —
 // that would let a client read or write across tenants, or across reps within the same org.
 import type { Prisma } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
 
@@ -102,7 +102,7 @@ function closeDateOnStageChange(previousIsWon: boolean, nextIsWon: boolean): Dat
 /** Moves a deal to a new stage — what a kanban drag-and-drop drop handler would call. `stage`
  *  must already be tenant-checked by the caller (getStageById), same convention as owner/contact. */
 export async function moveDealToStage(scope: Scope, id: string, stage: ResolvedStage) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.deal.findFirst({
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })
@@ -149,7 +149,7 @@ export async function updateDeal(
   /** Client-generated id for the "edited" activity — see updateLead's identical param. */
   activityId: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.deal.findFirst({
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })

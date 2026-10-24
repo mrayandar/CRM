@@ -5,7 +5,7 @@
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
 import type { Prisma } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 
 export function listOwners(orgId: string) {
   return prisma.owner.findMany({
@@ -49,7 +49,7 @@ export function updateOwnerProfile(
   id: string,
   data: { name: string; timezone: string | null },
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.owner.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Owner ${id} not found in org ${orgId}`)
     return tx.owner.update({ where: { id }, data })

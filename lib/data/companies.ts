@@ -4,7 +4,7 @@
 // Every function requires `orgId` as its first argument and includes it in
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 
 export interface ListCompaniesOptions {
   search?: string
@@ -66,7 +66,7 @@ export interface UpdateCompanyInput {
 }
 
 export async function updateCompany(orgId: string, id: string, data: UpdateCompanyInput) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.company.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Company ${id} not found in org ${orgId}`)
 
@@ -87,7 +87,7 @@ export async function updateCompany(orgId: string, id: string, data: UpdateCompa
  * constraint error) so the caller gets a clear, actionable message.
  */
 export async function deleteCompany(orgId: string, id: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.company.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Company ${id} not found in org ${orgId}`)
 

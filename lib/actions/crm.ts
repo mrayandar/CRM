@@ -57,6 +57,7 @@ const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'unqualifi
 const PRIORITIES: Priority[] = ['low', 'medium', 'high']
 const TASK_TYPES: TaskType[] = ['call', 'email', 'meeting', 'todo']
 const LEAD_SOURCES: LeadSource[] = ['Inbound', 'Outbound', 'Referral', 'Event', 'Partner', 'Website']
+const ACTIVITY_KINDS: ActivityKind[] = ['call', 'email', 'meeting', 'note', 'stage', 'created', 'edited', 'task', 'won', 'lost', 'payment']
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -643,6 +644,7 @@ export async function updateLeadAction(input: {
 
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {
   const { orgId, scopeOwnerId } = await requireAuth()
+  if (!LEAD_STATUSES.includes(status)) throw new Error('Invalid status')
   await dbUpdateLeadStatus({ orgId, scopeOwnerId }, leadId, status)
   revalidatePath('/', 'layout')
 }
@@ -679,6 +681,21 @@ export async function convertLeadAction(
   const stage = input.deal ? await getStageById(orgId, input.deal.stageId) : null
   if (input.deal && !stage) throw new Error('Stage not found')
 
+  // The opened deal's fields get the identical validation createDealAction gives the same fields
+  // — nothing distinguishes "created via conversion" from "created directly" in how trustworthy
+  // the client's input is.
+  let convertedDealClose: Date | undefined
+  if (input.deal) {
+    const dealName = input.deal.name.trim()
+    convertedDealClose = new Date(input.deal.closeDate)
+    if (!dealName || dealName.length > 200) throw new Error('Deal name is required')
+    if (!Number.isInteger(input.deal.value) || input.deal.value <= 0 || input.deal.value > 1_000_000_000) {
+      throw new Error('Invalid value')
+    }
+    if (!PRIORITIES.includes(input.deal.priority)) throw new Error('Invalid priority')
+    if (Number.isNaN(convertedDealClose.getTime())) throw new Error('Invalid close date')
+  }
+
   const result = await guardAgainstIdCollision(() =>
     dbConvertLeadToDeal(scope, leadId, {
       ownerId: input.ownerId,
@@ -689,11 +706,11 @@ export async function convertLeadAction(
       deal:
         input.deal && stage
           ? {
-              name: input.deal.name,
+              name: input.deal.name.trim(),
               value: input.deal.value,
               priority: input.deal.priority,
               stage: { id: stage.id, probability: stage.probability },
-              closeDate: new Date(input.deal.closeDate),
+              closeDate: convertedDealClose!,
             }
           : undefined,
     }),
@@ -707,6 +724,7 @@ export async function convertLeadAction(
 
 export async function toggleTaskAction(taskId: string, done: boolean) {
   const { orgId, scopeOwnerId } = await requireAuth()
+  if (typeof done !== 'boolean') throw new Error('Invalid value')
   await dbToggleTaskDone({ orgId, scopeOwnerId }, taskId, done)
   revalidatePath('/', 'layout')
 }
@@ -732,6 +750,7 @@ export async function addTaskAction(input: {
   if (Number.isNaN(dueDate.getTime())) throw new Error('Invalid due date')
   if (!PRIORITIES.includes(input.priority)) throw new Error('Invalid priority')
   if (!TASK_TYPES.includes(type)) throw new Error('Invalid task type')
+  if (input.subject && input.subject.label.length > 200) throw new Error('Label is too long')
 
   // ownerId comes from the client — an assignee other than the caller must be verified to belong
   // to this org. Task assignment is unrestricted even when scoped: a scoped Member may assign a
@@ -833,13 +852,19 @@ export async function logActivityAction(
   const { orgId, ownerId, scopeOwnerId } = await requireAuth()
   const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(id)
+  if (!ACTIVITY_KINDS.includes(kind)) throw new Error('Invalid activity kind')
+  const trimmedTitle = title.trim()
+  const trimmedBody = body?.trim()
+  if (!trimmedTitle || trimmedTitle.length > 500) throw new Error('Title is required')
+  if (trimmedBody && trimmedBody.length > 5000) throw new Error('Note is too long')
+  if (subject && subject.label.length > 200) throw new Error('Label is too long')
   const foundSubject = await assertSubjectInScope(scope, subject)
   await guardAgainstIdCollision(() =>
     dbLogActivity(scope, {
       id,
       kind,
-      title,
-      body,
+      title: trimmedTitle,
+      body: trimmedBody,
       actor: { connect: { id: ownerId } },
       ownerId: foundSubject ? foundSubject.ownerId : ownerId,
       ...(subject?.type === 'lead' && {
@@ -989,6 +1014,7 @@ export async function renameStageAction(stageId: string, label: string): Promise
 export async function reorderStageAction(stageId: string, direction: 'up' | 'down'): Promise<{ ok: true } | ForbiddenResult> {
   const session = await tryAdminSession(requireAdmin)
   if (!session) return FORBIDDEN
+  if (direction !== 'up' && direction !== 'down') throw new Error('Invalid direction')
   await dbReorderStage(session.orgId, stageId, direction)
   revalidatePath('/', 'layout')
   return { ok: true }

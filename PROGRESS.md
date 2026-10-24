@@ -2,6 +2,150 @@
 
 > Living context file. Updated at the end of every task.
 
+## Production hardening pass (Oct 24 2026)
+
+314 tests passing (17 files) at the end of this pass, up from 280 at the start. All work below
+verified against the real app (production build, real Clerk sessions, real DB) — not just unit
+tests.
+
+### Confirmations
+
+**A. OWN-mode CSV export and command-palette search are correctly scoped.** Live-verified as a
+real Member (Jordan Ellis) in an OWN-mode org: the Leads CSV export's name set matched a direct
+`prisma.lead.findMany({ownerId: Jordan.id})` query exactly, and searching the command palette for
+another rep's lead name and another rep's contact name both returned the exact "No matches for
+…" empty state. No code change needed.
+
+**B. `requireLiveAdminAccess()` shares `requirePaymentWriteAccess()`'s membership-pagination logic.**
+It didn't — each had copy-pasted the same "page through every Clerk membership, confirm
+`org:admin`" logic. Extracted into one shared `confirmLiveOrgAdmin()` helper in `lib/auth.ts`, so
+the two checks can never silently drift apart. Added two tests in
+`tests/integration/cross-tenant.test.ts` mirroring the existing >100-membership tests, now run
+against `requireLiveAdminAccess()` directly.
+
+**C. Production Vercel deployment matches `origin/main`.** Confirmed via the Vercel REST API
+(`gitSource.sha` on the latest Ready/Production deployment): `516763e6cefa5cd832a2b980daa01c858e01ee0e`,
+an exact match for `origin/main` — the GitHub integration is auto-deploying and production is
+current.
+
+**G. The six admin-gated actions without `persist()` show a clear message when demoted mid-session.**
+Live-verified for `deleteCompanyAction`, `deleteStageAction`, `deletePaymentAction`,
+`updateRepVisibilityAction`, `splitPaymentAction`, and `inviteMemberAction`: sign in as Admin,
+demote the Owner row in the DB with no page reload, interact with the already-rendered control.
+All six already returned their typed `{ ok: false }` result and the UI already showed a specific
+message (e.g. "Only admins can delete companies") — none showed silence or a raw error. No code
+change needed (this is what the prior `tryAdminSession`/`FORBIDDEN` conversion was for).
+
+### Build
+
+**1. Security headers + CSP.** `next.config.ts` now sets HSTS, X-Content-Type-Options,
+X-Frame-Options (+ CSP's own `frame-ancestors 'none'`), Referrer-Policy, and Permissions-Policy on
+every route, plus a CSP built from an actual audit of what the app loads (only Clerk — no
+analytics, no Google Fonts, no third-party scripts). Verified report-only first, then enforced,
+against a real production build (`next build && next start`) through sign-in, sign-up, org
+switching, navigation, and sign-out — zero violations either way. `CSP_ENFORCE=false` is a one-env-
+var rollback with no redeploy if a future change introduces a real violation. Added
+`app/api/webhooks/clerk/route.ts`'s missing `Cache-Control: private, no-store` (it had none at
+all, unlike the other two routes), and `tests/integration/cache-control.test.ts`, which discovers
+every `app/api/**/route.ts` file from the filesystem and statically verifies every returned
+`Response`/`NextResponse.json` carries that header.
+
+**2. Error handling.** Added `app/error.tsx` and `app/global-error.tsx` (friendly message + Try
+again/Back to dashboard, never a stack trace) and rewrote `app/not-found.tsx`, which used to just
+`redirect('/')` — silently bouncing every 404 with no explanation. Added `app/(app)/loading.tsx`
+for the one async gap that runs on every navigation into that segment (Clerk's dynamic `auth()`
+forces `resolveAuth()` + `loadCrmData()` to re-run on every navigation, not just a hard reload —
+see next.config.ts's CSP comment for the same mechanism). That gap used to be a blank screen.
+
+**3. Input validation.** Audited every server action in `lib/actions/crm.ts`/`payments.ts` and all
+three route handlers. Found and fixed real gaps: `setLeadStatusAction` and `reorderStageAction`
+took their enum-typed argument with zero runtime check; `convertLeadAction`'s embedded deal fields
+(`name`/`value`/`priority`) had none of `createDealAction`'s validation on the identical fields;
+`toggleTaskAction`'s `done` wasn't checked to actually be a boolean; `logActivityAction`'s `kind`
+had no enum check and `title`/`body`/subject `label` had no length caps; the webhook's
+`handleOrgCreated` was missing the `if (!clerkOrgId) return` guard every sibling handler has, and
+had no length cap on `name`; `splitPaymentAction`'s `parts` array had no explicit upper bound
+(implicitly ~99 via the percent-sum constraint, now an explicit, documented check). Fixed CSV
+formula injection: `csvCell()` in `src/lib/utils.ts` (the one function every export — Leads,
+Contacts, Companies, Payments, Pipeline, Reports — funnels through) now prefixes a cell starting
+with `=`, `+`, `-`, or `@` with a single quote. Live-verified: created a lead named
+`=HYPERLINK("http://evil.test")`, exported via the real Export button, confirmed the downloaded
+CSV contains the neutralized form, not the raw formula. New tests:
+`tests/unit/csv-formula-injection.test.ts`.
+
+**4. Secrets and logging.** No `NEXT_PUBLIC_` variable exposes a secret (checked `.env`/
+`.env.example`; the only `NEXT_PUBLIC_*` values are Clerk's publishable key, Stripe's publishable
+key, route paths, and the app URL — all designed to be public). `.env` was never committed and is
+gitignored. Scanned the full git history (`git log --all -p`) for secret-shaped strings
+(`sk_live_`, `whsec_`, AWS keys, PEM blocks) — none found. The handful of `console.error` calls in
+the codebase log generic messages/error digests only, never request bodies, personal data, or
+amounts.
+
+**5. Test guard.** New `tests/integration/test-guard.test.ts`: maintains its own list of every
+expected `*.test.ts` file and fails if the real filesystem (discovered the same way
+`vitest.config.mts`'s `include` glob would) has one more or one fewer, and greps every discovered
+file for `.skip`/`.todo`/`xit`/`xdescribe` — fails if any are found. Caught one real gap
+immediately: `tests/types/scope-required.test.ts` existed on disk but wasn't in any
+exhaustiveness list anywhere.
+
+**6. Dependencies.** `npm audit fix` (no `--force`) resolved 5 of 10 flagged vulnerabilities
+(`@vitest/mocker`, `vite`, `source-map-js`, `sharp` — all patch/minor bumps, `package.json`
+unchanged, only `package-lock.json`). The remaining 5 (Next.js critical cache-poisoning/RCE
+advisories, `postcss`, `deepmerge-ts`/`prisma`) all require a major-version bump
+(`next@16`, `prisma@8`) — **not applied**, since a Next.js major bump is exactly the kind of
+auth-routing-adjacent change that caused the earlier redirect loop, and deserves its own
+deliberate, tested migration, not a bundled fix in this pass. Pinned `@clerk/nextjs` to an exact
+version (`7.9.5`, no `^` range at all) so no future `npm install` can silently change Clerk's auth
+behavior. `middleware.ts`'s `createRouteMatcher` was not touched, per instruction.
+
+**7. Database reliability.** Every `prisma.$transaction(...)` call across `lib/data/*.ts` (25 call
+sites) now goes through one new `withTransaction()` helper in `lib/prisma.ts`, which sets explicit
+`maxWait: 10_000, timeout: 20_000` (Prisma's 5s default was too tight for a cold Neon pooler
+spin-up) and retries the whole transaction once on a connection-level error only (`P1001`, `P1002`,
+`P1008`, `P1017`, `P2024` — codes that all mean "never committed," so a retry can't double a
+write; the one remaining edge, a committed write whose acknowledgment was lost, is already covered
+because every create takes a client-generated id and goes through `guardAgainstIdCollision`).
+`loadCrmData()`'s top-level `Promise.all([...])` of reads gets the same one-retry via a new
+`withRetry()` helper (reads have no side effect to worry about doubling). Confirmed the local
+`DATABASE_URL` uses Neon's pooled connection string (`-pooler` hostname, unpooled alternative
+explicitly commented out). **Could not confirm the production Vercel env var's value directly** —
+it's stored as a Vercel "sensitive" secret and the sandboxed session is blocked from decrypting
+secrets via the API (by design). Please confirm directly in the Vercel dashboard (Project →
+Settings → Environment Variables → `DATABASE_URL`) that it also contains `-pooler`.
+
+### Report only — needs an external service and your decision, not built
+
+**8. Rate limiting.** Needed on every mutation, `GET /api/crm-refetch`, `GET /api/activities`,
+`inviteMemberAction`, and the Clerk webhook. In-memory counters don't work here: Vercel runs each
+request on an isolated, often-cold serverless instance, so a module-level counter resets per cold
+start and isn't shared across concurrent instances — trivially bypassed by any real load, not just
+an attacker. Recommended: **Upstash Redis** via `@upstash/ratelimit` (sliding-window/token-bucket
+out of the box, one-click provisioning through Vercel's integrations marketplace, which also wires
+the env vars automatically). Free tier covers roughly 10K commands/day; paid usage is metered per
+100K commands and should stay in the low dollars/month range at this app's likely traffic. Setup:
+provision the integration, `npm install @upstash/ratelimit @upstash/redis`, then a `limit()` check
+at the top of each sensitive action/route, keyed by `ownerId` (actions/GETs) or source IP (the
+public webhook, defensive only since Svix already verifies the signature).
+
+**9. Error monitoring.** Recommended: **Sentry** (`@sentry/nextjs` — official Next.js SDK, auto-
+instruments server actions, route handlers, and the `error.tsx`/`global-error.tsx` boundaries just
+added). PII scrubbing: keep `sendDefaultPii: false` (the default — strips headers/cookies/IP),
+and add a `beforeSend` hook that drops `request.data` entirely for any payment- or activity-
+related error, so a Lead/Contact's email/phone, a Payment's amount, or an Activity's note/body text
+can never leave the server inside an error report — matching the same discipline this pass's
+`console.error` calls already follow. Free tier (5K errors/month) likely covers this app to start;
+Team plan is roughly $26/mo beyond that.
+
+**10. Backups.** Neon's restore mechanism is branching, not separate backup files: a new branch
+can be created from any point-in-time within the plan's retention window (Free: ~1 day; Launch:
+up to 7 days; Scale: up to 30 days — confirm the org's actual plan and window in Neon console →
+Project → Settings → Backup/Restore). Test-restore steps: (1) Neon console → Branches → Create
+branch → pick the source branch and a past timestamp within the window; (2) wait for the
+copy-on-write branch (seconds); (3) connect to its own connection string from `psql`/Prisma Studio
+— never the production string — and confirm the expected data is present at that point in time;
+(4) delete the test branch once verified. Promoting a branch to replace production is the same
+mechanism, reserved for an actual incident, not a drill.
+
 ## Fixed: Members hitting a raw production error on every admin-only action (Oct 24 2026)
 
 A Member who tried to invite a teammate got Next's generic "An error occurred in the Server

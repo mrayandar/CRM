@@ -183,8 +183,19 @@ export async function canAccessPayments(): Promise<boolean> {
  * rejected as "not found" even though they really are org:admin here. `totalCount` (returned by
  * every page) tells us when to stop.
  */
-export async function requirePaymentWriteAccess() {
-  const session = await requirePaymentAccess()
+/**
+ * Shared by `requirePaymentWriteAccess()` and `requireLiveAdminAccess()` so the two live-Clerk-
+ * role checks can never silently drift apart — both need the exact same "page through every
+ * membership, confirm `org:admin` for THIS org" logic, for the same reason (a stale DB `Owner.role`
+ * must never grant a sensitive permission), just gating two different sensitive writes.
+ *
+ * Pages through *every* membership the Backend API has for this user rather than trusting a
+ * single 100-row page: a real admin who belongs to more than 100 Clerk organizations would
+ * otherwise have their own org's membership silently missing from page one, and get wrongly
+ * rejected as "not found" even though they really are org:admin here. `totalCount` (returned by
+ * every page) tells us when to stop.
+ */
+async function confirmLiveOrgAdmin(session: { clerkUserId: string; clerkOrgId: string }): Promise<void> {
   const clerk = await clerkClient()
 
   const pageSize = 100
@@ -198,12 +209,18 @@ export async function requirePaymentWriteAccess() {
     const current = page.data.find((m) => m.organization.id === session.clerkOrgId)
     if (current) {
       if (current.role !== 'org:admin') throw new Error('Forbidden')
-      return session
+      return
     }
     offset += page.data.length
     if (page.data.length < pageSize || offset >= page.totalCount) break
   }
   throw new Error('Forbidden')
+}
+
+export async function requirePaymentWriteAccess() {
+  const session = await requirePaymentAccess()
+  await confirmLiveOrgAdmin(session)
+  return session
 }
 
 /**
@@ -213,28 +230,10 @@ export async function requirePaymentWriteAccess() {
  * Flipping this switch is sensitive in EITHER direction — turning OWN mode on restricts every
  * Member's visibility, and turning it back off hands every Member visibility into every other
  * rep's records again — so both directions go through this, not `requireAdmin()`'s DB-only check
- * alone. Pages through every membership the same way, for the same reason (see that function's
- * doc comment).
+ * alone.
  */
 export async function requireLiveAdminAccess() {
   const session = await requireAdmin()
-  const clerk = await clerkClient()
-
-  const pageSize = 100
-  let offset = 0
-  for (;;) {
-    const page = await clerk.users.getOrganizationMembershipList({
-      userId: session.clerkUserId,
-      limit: pageSize,
-      offset,
-    })
-    const current = page.data.find((m) => m.organization.id === session.clerkOrgId)
-    if (current) {
-      if (current.role !== 'org:admin') throw new Error('Forbidden')
-      return session
-    }
-    offset += page.data.length
-    if (page.data.length < pageSize || offset >= page.totalCount) break
-  }
-  throw new Error('Forbidden')
+  await confirmLiveOrgAdmin(session)
+  return session
 }

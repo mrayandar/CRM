@@ -229,8 +229,20 @@ export function seededRandom(seed: string): () => number {
   }
 }
 
-function csvCell(value: unknown): string {
-  const s = value == null ? '' : String(value)
+/**
+ * A cell starting with `=`, `+`, `-`, or `@` is interpreted as a formula by Excel/Sheets when the
+ * CSV is opened — a lead/contact/company name or note containing one (typed by any rep, or an
+ * attacker seeding a record precisely to exploit whoever exports it later) would otherwise execute
+ * on open. Prefixing with a single quote neutralizes it in every spreadsheet app while staying a
+ * no-op for every normal value, which never starts with one of these four characters by coincidence
+ * in this app's own data (names, emails, amounts, dates).
+ */
+function neutralizeFormula(s: string): string {
+  return /^[=+\-@]/.test(s) ? `'${s}` : s
+}
+
+export function csvCell(value: unknown): string {
+  const s = neutralizeFormula(value == null ? '' : String(value))
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 

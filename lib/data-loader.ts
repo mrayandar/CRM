@@ -35,6 +35,7 @@ import type {
   Payment,
 } from '@/data/types'
 import { DEFAULT_ORG_TIMEZONE } from '@lib/timezones'
+import { withRetry } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 
 export interface CrmInitialData {
@@ -108,6 +109,8 @@ export async function loadCrmData(
   currentOwnerId: string,
   includePayments: boolean,
 ): Promise<CrmInitialData> {
+  // One retry on a transient connection error (a cold Neon pooler, a dropped connection) — every
+  // one of these is a plain read, so re-running all of them has no side effect to worry about.
   const [
     rawOwners,
     rawLeads,
@@ -119,18 +122,20 @@ export async function loadCrmData(
     rawCompanies,
     rawPayments,
     org,
-  ] = await Promise.all([
-    listOwners(scope.orgId),
-    listLeads(scope),
-    listContacts(scope),
-    listDeals(scope),
-    listTasks(scope),
-    listActivities(scope, { excludeKinds: includePayments ? [] : ['payment'] }),
-    listStages(scope.orgId),
-    listCompanies(scope.orgId, { scopeOwnerId: scope.scopeOwnerId }),
-    includePayments ? listPayments(scope.orgId) : Promise.resolve([]),
-    getOrgById(scope.orgId),
-  ])
+  ] = await withRetry(() =>
+    Promise.all([
+      listOwners(scope.orgId),
+      listLeads(scope),
+      listContacts(scope),
+      listDeals(scope),
+      listTasks(scope),
+      listActivities(scope, { excludeKinds: includePayments ? [] : ['payment'] }),
+      listStages(scope.orgId),
+      listCompanies(scope.orgId, { scopeOwnerId: scope.scopeOwnerId }),
+      includePayments ? listPayments(scope.orgId) : Promise.resolve([]),
+      getOrgById(scope.orgId),
+    ]),
+  )
 
   const owners = rawOwners.map(mapOwner)
   const currentUser =

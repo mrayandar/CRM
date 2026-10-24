@@ -136,8 +136,12 @@ export async function splitPaymentAction(input: {
   if (!session) return FORBIDDEN
   const { orgId, ownerId: actorId } = session
 
-  if (!Array.isArray(input.parts) || input.parts.length < 2) {
-    throw new Error('Need at least two installments to split a payment')
+  // Each part must be a whole 1-99% below, summing to exactly 100, which already bounds this to
+  // at most 99 parts — the explicit cap here just makes that bound a validation error instead of
+  // an implicit consequence, and stops a client from sending an oversized array before that
+  // per-part/sum math even runs.
+  if (!Array.isArray(input.parts) || input.parts.length < 2 || input.parts.length > 99) {
+    throw new Error('Need between two and ninety-nine installments to split a payment')
   }
   const dueDates: Array<Date | null> = []
   for (const part of input.parts) {

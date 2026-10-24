@@ -5,7 +5,7 @@
 // includes both in every `where` clause. Never call these with a bare orgId or an id alone —
 // that would let a client read or write across tenants, or across reps within the same org.
 import type { ActivityKind, Prisma } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 
 export interface ListActivitiesOptions {
@@ -103,7 +103,7 @@ export async function listActivitiesForSubject(
  * subject already knows its current ownerId, so this never re-queries for it).
  */
 export function logActivity(scope: Scope, data: Omit<Prisma.ActivityCreateInput, 'orgId'>) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const activity = await tx.activity.create({ data: { ...data, orgId: scope.orgId } })
     if (activity.leadId) {
       await tx.lead.updateMany({

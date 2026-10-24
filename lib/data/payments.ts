@@ -10,7 +10,7 @@
 // lib/actions/payments.ts or the data loader — this module itself does no role
 // checking, same division of responsibility as every other lib/data/*.ts file.
 import type { PaymentLabel, PaymentStatus } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 
 export interface ListPaymentsOptions {
   dealId?: string
@@ -41,7 +41,7 @@ export interface CreatePaymentInput {
 }
 
 export function createPayment(orgId: string, data: CreatePaymentInput, dealLabel: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const payment = await tx.payment.create({
       data: {
         id: data.id,
@@ -104,7 +104,7 @@ export function createPaymentsSplit(
   createdById: string,
   dealLabel: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "deals" WHERE id = ${dealId} FOR UPDATE`
 
     const existingCount = await tx.payment.count({ where: { orgId, dealId } })
@@ -163,7 +163,7 @@ export async function updatePayment(
   actorId: string,
   dealLabel: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.payment.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Payment ${id} not found in org ${orgId}`)
 
@@ -198,7 +198,7 @@ export async function updatePayment(
 }
 
 export async function markPaymentPaid(orgId: string, id: string, actorId: string, dealLabel: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.payment.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Payment ${id} not found in org ${orgId}`)
     if (existing.status === 'paid') return existing
@@ -232,7 +232,7 @@ export async function markPaymentPaid(orgId: string, id: string, actorId: string
  * `paidAt`, so this doesn't double-count anything.
  */
 export async function cancelPayment(orgId: string, id: string, actorId: string, dealLabel: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.payment.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Payment ${id} not found in org ${orgId}`)
     if (existing.status === 'cancelled') return existing
@@ -266,7 +266,7 @@ export async function cancelPayment(orgId: string, id: string, actorId: string, 
  * Without this, paid -> cancel -> delete would erase the one row that proves money was received.
  */
 export async function deletePayment(orgId: string, id: string, actorId: string, dealLabel: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.payment.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Payment ${id} not found in org ${orgId}`)
     if (existing.paidAt) {

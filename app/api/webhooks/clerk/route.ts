@@ -11,12 +11,18 @@ interface WebhookEvent {
   data: Record<string, unknown>
 }
 
+// Same guarantee as GET /api/crm-refetch and GET /api/activities: never cacheable by any
+// shared/intermediary cache, even though this one has no per-user data to leak — consistency
+// across every app/api/**/route.ts response is what tests/integration/action-route-matrix.test.ts
+// (extended to check this) now enforces.
+const NO_STORE_HEADERS = { 'Cache-Control': 'private, no-store' }
+
 export async function POST(request: Request) {
   const SIGNING_SECRET = process.env.CLERK_WEBHOOK_SECRET
 
   if (!SIGNING_SECRET) {
     console.error('CLERK_WEBHOOK_SECRET is not set')
-    return new Response('Webhook secret not configured', { status: 500 })
+    return new Response('Webhook secret not configured', { status: 500, headers: NO_STORE_HEADERS })
   }
 
   const wh = new Webhook(SIGNING_SECRET)
@@ -26,7 +32,7 @@ export async function POST(request: Request) {
   const svixSignature = headerPayload.get('svix-signature')
 
   if (!svixId || !svixTimestamp || !svixSignature) {
-    return new Response('Missing svix headers', { status: 400 })
+    return new Response('Missing svix headers', { status: 400, headers: NO_STORE_HEADERS })
   }
 
   const body = await request.text()
@@ -42,7 +48,7 @@ export async function POST(request: Request) {
     event = JSON.parse(body) as WebhookEvent
   } catch (err) {
     console.error('Webhook verification failed:', err)
-    return new Response('Invalid signature', { status: 400 })
+    return new Response('Invalid signature', { status: 400, headers: NO_STORE_HEADERS })
   }
 
   try {
@@ -71,10 +77,10 @@ export async function POST(request: Request) {
     }
   } catch (err) {
     console.error(`Webhook handler error for ${event.type}:`, err)
-    return new Response('Webhook handler error', { status: 500 })
+    return new Response('Webhook handler error', { status: 500, headers: NO_STORE_HEADERS })
   }
 
-  return new Response('OK', { status: 200 })
+  return new Response('OK', { status: 200, headers: NO_STORE_HEADERS })
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +89,9 @@ export async function POST(request: Request) {
 
 async function handleOrgCreated(data: Record<string, unknown>) {
   const clerkOrgId = data.id as string
-  const name = (data.name as string) ?? 'Untitled organization'
+  if (!clerkOrgId) return
+  const rawName = typeof data.name === 'string' ? data.name : 'Untitled organization'
+  const name = rawName.slice(0, 200)
 
   // upsertOrg is atomic: if resolveAuth() already created the row, this is
   // a no-op (update: {} leaves the existing row unchanged). A plain

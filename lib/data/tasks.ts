@@ -5,7 +5,7 @@
 // includes both in every `where` clause. Never call these with a bare orgId or an id alone —
 // that would let a client read or write across tenants, or across reps within the same org.
 import type { Prisma, Priority, TaskType } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 
 export interface ListTasksOptions {
@@ -112,7 +112,7 @@ export function createTask(scope: Scope, data: Omit<Prisma.TaskCreateInput, 'org
 }
 
 export async function toggleTaskDone(scope: Scope, id: string, done: boolean) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.task.findFirst({
       where: {
         id,
@@ -162,7 +162,7 @@ export async function updateTask(
    *  under its own generated id, since there's no optimistic row on the client to reconcile with. */
   activityId?: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.task.findFirst({
       where: {
         id,
@@ -236,7 +236,7 @@ export async function updateTask(
  * has no "task" subject type to attach one to anyway); it's routine list cleanup.
  */
 export async function deleteTask(scope: Scope, id: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.task.findFirst({
       where: {
         id,

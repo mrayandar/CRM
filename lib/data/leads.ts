@@ -6,7 +6,7 @@
 // `where` clause. Never call these with a bare orgId or an id alone — that would let a client
 // read or write across tenants, or (once an org is in OWN mode) across reps within the same org.
 import type { LeadSource, LeadStatus, Priority, Prisma } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
 
@@ -68,7 +68,7 @@ export function createLead(scope: Scope, data: Omit<Prisma.LeadCreateInput, 'org
 }
 
 export async function updateLeadStatus(scope: Scope, id: string, status: LeadStatus) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.lead.findFirst({
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })
@@ -114,7 +114,7 @@ export async function updateLead(
    *  text has no way to tell its own two distinct optimistic rows apart from one real row. */
   activityId: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.lead.findFirst({
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })
@@ -197,7 +197,7 @@ export async function convertLeadToDeal(
     deal?: ConvertLeadDealInput
   },
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const lead = await tx.lead.findFirst({
       where: { id: leadId, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })

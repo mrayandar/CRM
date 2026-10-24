@@ -5,7 +5,7 @@
 // includes both in every `where` clause. Never call these with a bare orgId or an id alone —
 // that would let a client read or write across tenants, or across reps within the same org.
 import type { Prisma } from '@prisma/client'
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
 
@@ -96,7 +96,7 @@ export async function updateContact(
   /** Client-generated id for the "edited" activity — see updateLead's identical param. */
   activityId: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.contact.findFirst({
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })
@@ -141,7 +141,7 @@ export async function updateContact(
 }
 
 export function addContactTag(scope: Scope, id: string, tag: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const contact = await tx.contact.findFirst({
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })

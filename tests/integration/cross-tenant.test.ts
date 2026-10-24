@@ -36,7 +36,7 @@ import { getContactById, listContacts, updateContact, addContactTag } from '@lib
 import { getDealById, listDeals, updateDeal, moveDealToStage } from '@lib/data/deals'
 import { getCompanyById, deleteCompany } from '@lib/data/companies'
 import { getOwnerById, listOwners, deactivateOwner } from '@lib/data/owners'
-import { requirePaymentAccess, requirePaymentWriteAccess } from '@lib/auth'
+import { requirePaymentAccess, requirePaymentWriteAccess, requireLiveAdminAccess } from '@lib/auth'
 import { getPaymentById, listPayments } from '@lib/data/payments'
 import * as paymentActions from '@lib/actions/payments'
 import { loadCrmData } from '@lib/data-loader'
@@ -1379,6 +1379,48 @@ describe('requireLiveAdminAccess / updateRepVisibilityAction: Stage 1c switch, l
     })
   })
 
+  it('requireLiveAdminAccess() pages through every membership, same as requirePaymentWriteAccess() — same shared helper, not a parallel copy (Org A\'s own membership only appears on page two)', async () => {
+    loginAs(A)
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async ({ offset }: { offset: number }) => {
+          if (offset === 0) {
+            return {
+              data: Array.from({ length: 100 }, (_, i) => ({
+                organization: { id: `unrelated-org-${i}` },
+                role: 'org:member',
+              })),
+              totalCount: 101,
+            }
+          }
+          return { data: [{ organization: { id: A.org.clerkOrgId }, role: 'org:admin' }], totalCount: 101 }
+        },
+      },
+    })
+    await expect(requireLiveAdminAccess()).resolves.toBeTruthy()
+  })
+
+  it('requireLiveAdminAccess() rejects when the matching membership found on a later page is not org:admin', async () => {
+    loginAs(A)
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getOrganizationMembershipList: async ({ offset }: { offset: number }) => {
+          if (offset === 0) {
+            return {
+              data: Array.from({ length: 100 }, (_, i) => ({
+                organization: { id: `unrelated-org-${i}` },
+                role: 'org:member',
+              })),
+              totalCount: 101,
+            }
+          }
+          return { data: [{ organization: { id: A.org.clerkOrgId }, role: 'org:member' }], totalCount: 101 }
+        },
+      },
+    })
+    await expect(requireLiveAdminAccess()).rejects.toThrow(/Forbidden/)
+  })
+
   function mockLiveRole(org: Fixture, role: 'org:admin' | 'org:member') {
     mockClerkClient.mockResolvedValue({
       users: {
@@ -1803,7 +1845,7 @@ describe('splitPaymentAction: tenant, role, and rounding correctness', () => {
         dealId: A.deal.id,
         parts: [{ id: randomUUID(), percent: 100, label: 'Final' }],
       }),
-    ).rejects.toThrow(/at least two/)
+    ).rejects.toThrow(/between two and ninety-nine/)
   })
 
   it('30/40/30 of a real deal value: amounts sum exactly, last part absorbs the rounding remainder', async () => {

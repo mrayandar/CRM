@@ -4,7 +4,7 @@
 // Every function requires `orgId` as its first argument and includes it in
 // every `where` clause. Never call these with an id alone — that would let
 // a client that guessed/enumerated an id read across tenants.
-import { prisma } from '@lib/prisma'
+import { prisma, withTransaction } from '@lib/prisma'
 
 /** The 6 stages every org used to get for free from the old DealStage enum — now the seed for
  *  every org's own, editable PipelineStage rows. */
@@ -29,7 +29,7 @@ export function getStageById(orgId: string, id: string) {
  *  (both the on-demand path in resolveAuth() and the Clerk webhook's organization.created), and
  *  safe to call again — a no-op once the org already has stages. */
 export async function ensureDefaultStages(orgId: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.pipelineStage.count({ where: { orgId } })
     if (existing > 0) return
     await tx.pipelineStage.createMany({
@@ -46,7 +46,7 @@ export interface CreateStageInput {
 /** New stages are always open (not closed/won) and always sort right before the first closed
  *  stage — Won/Lost stay pinned as the last two columns, same as the old fixed enum order. */
 export async function createStage(orgId: string, input: CreateStageInput) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const stages = await tx.pipelineStage.findMany({ where: { orgId }, orderBy: { order: 'asc' } })
     const firstClosedIndex = stages.findIndex((s) => s.isClosed)
     const insertAt = firstClosedIndex === -1 ? stages.length : firstClosedIndex
@@ -74,7 +74,7 @@ export async function createStage(orgId: string, input: CreateStageInput) {
 /** Renames a stage. Order/isClosed/isWon are structural (only set at creation/seeding) and are
  *  not editable through this — see reorderStages for moving a stage. */
 export async function renameStage(orgId: string, id: string, label: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.pipelineStage.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Stage ${id} not found in org ${orgId}`)
     if (existing.label === label) return existing
@@ -86,7 +86,7 @@ export async function renameStage(orgId: string, id: string, label: string) {
  *  Closed stages (Won/Lost) always stay pinned after every open stage, so they're not
  *  reachable through this — and an open stage can never be moved past them. */
 export async function reorderStage(orgId: string, id: string, direction: 'up' | 'down') {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const stages = await tx.pipelineStage.findMany({ where: { orgId }, orderBy: { order: 'asc' } })
     const openStages = stages.filter((s) => !s.isClosed)
     const index = openStages.findIndex((s) => s.id === id)
@@ -108,7 +108,7 @@ export async function reorderStage(orgId: string, id: string, direction: 'up' | 
  *  sit), or if any deal currently occupies it — never silently orphans a deal onto a deleted
  *  stage. */
 export async function deleteStage(orgId: string, id: string) {
-  return prisma.$transaction(async (tx) => {
+  return withTransaction(async (tx) => {
     const existing = await tx.pipelineStage.findFirst({ where: { id, orgId } })
     if (!existing) throw new Error(`Stage ${id} not found in org ${orgId}`)
     if (existing.isClosed) throw new Error('The Won/Lost stages cannot be deleted')
