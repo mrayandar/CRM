@@ -13,7 +13,59 @@ import type { LeadStatus, NotificationKind, Prisma, SubjectType } from '@prisma/
 const CLOSED_LEAD_STATUSES: LeadStatus[] = ['lost', 'unqualified']
 
 // ---------------------------------------------------------------------------
-// Writing (assigned kind only, in this stage)
+// Preferences (Stage E)
+// ---------------------------------------------------------------------------
+
+export const NOTIFICATION_KINDS: NotificationKind[] = ['assigned', 'task_due', 'lead_follow_up']
+
+/** Every owner starts opted in to every kind — absence of a row means "enabled", not "unset" (see
+ *  the schema's own doc comment on NotificationPreference). Used by both the write-time gate
+ *  (`isNotificationEnabled`) and the read-time one (`listNotifications`/`getUnreadCount`), and by
+ *  Settings' Notifications panel to show the current state. */
+export async function getNotificationPreferences(orgId: string, ownerId: string): Promise<Record<NotificationKind, boolean>> {
+  const rows = await prisma.notificationPreference.findMany({ where: { orgId, ownerId } })
+  const byKind = new Map(rows.map((r) => [r.kind, r.enabled]))
+  const result = {} as Record<NotificationKind, boolean>
+  for (const kind of NOTIFICATION_KINDS) result[kind] = byKind.get(kind) ?? true
+  return result
+}
+
+/** A Member or Admin changing their OWN preference only — there is no "set someone else's"
+ *  concept at this layer (the action layer never passes another owner's id; see
+ *  updateNotificationPreferenceAction). */
+export function setNotificationPreference(
+  orgId: string,
+  ownerId: string,
+  kind: NotificationKind,
+  enabled: boolean,
+) {
+  return prisma.notificationPreference.upsert({
+    where: { orgId_ownerId_kind: { orgId, ownerId, kind } },
+    create: { orgId, ownerId, kind, enabled },
+    update: { enabled },
+  })
+}
+
+/** The write-time gate every write function below checks before creating a row — a disabled kind
+ *  creates nothing new, not even one this owner will never see (see this file's own module note
+ *  on why read-time hiding ALONE isn't enough: it would still leave rows accumulating in the
+ *  table forever behind a disabled kind). Takes a plain client or a transaction client — the
+ *  per-item scan loop checks this once per kind, outside any transaction, before even querying
+ *  for due items; the per-event action writes check it inside their own transaction. */
+async function isNotificationEnabled(
+  client: Prisma.TransactionClient | typeof prisma,
+  orgId: string,
+  ownerId: string,
+  kind: NotificationKind,
+): Promise<boolean> {
+  const row = await client.notificationPreference.findUnique({
+    where: { orgId_ownerId_kind: { orgId, ownerId, kind } },
+  })
+  return row?.enabled ?? true
+}
+
+// ---------------------------------------------------------------------------
+// Writing (assigned kind)
 // ---------------------------------------------------------------------------
 
 /**
@@ -55,6 +107,7 @@ export async function writeAssignedNotification(
   if (input.recipientId === input.actorId) return
   const recipient = await tx.owner.findFirst({ where: { id: input.recipientId, orgId: input.orgId, active: true } })
   if (!recipient) return
+  if (!(await isNotificationEnabled(tx, input.orgId, input.recipientId, 'assigned'))) return
   await tx.notification.createMany({
     data: [{
       orgId: input.orgId,
@@ -90,6 +143,7 @@ export async function writeCoalescedAssignedNotification(
   if (input.recipientId === input.actorId) return
   const recipient = await tx.owner.findFirst({ where: { id: input.recipientId, orgId: input.orgId, active: true } })
   if (!recipient) return
+  if (!(await isNotificationEnabled(tx, input.orgId, input.recipientId, 'assigned'))) return
   await tx.notification.createMany({
     data: [{
       orgId: input.orgId,
@@ -129,6 +183,7 @@ async function writeTimeBasedNotification(
 ): Promise<void> {
   const recipient = await tx.owner.findFirst({ where: { id: input.recipientId, orgId: input.orgId, active: true } })
   if (!recipient) return
+  if (!(await isNotificationEnabled(tx, input.orgId, input.recipientId, input.kind))) return
   await tx.notification.createMany({
     data: [{
       orgId: input.orgId,
@@ -160,6 +215,7 @@ async function writeTimeBasedSummary(
   if (input.count <= 0) return
   const recipient = await tx.owner.findFirst({ where: { id: input.recipientId, orgId: input.orgId, active: true } })
   if (!recipient) return
+  if (!(await isNotificationEnabled(tx, input.orgId, input.recipientId, input.kind))) return
   await tx.notification.createMany({
     data: [{
       orgId: input.orgId,
@@ -272,12 +328,22 @@ export async function scanAndNotify(orgId: string, ownerId: string): Promise<voi
   })
   const effectiveTimezone = owner.timezone ?? (org?.timezoneConfigured ? org.timezone : 'UTC')
 
+  // A disabled kind skips its own fetch entirely — not just the write — so turning task_due or
+  // lead_follow_up off also saves the query, not only the notification (the write functions
+  // check this again too, but there's no reason to even look up due items for a kind nobody
+  // wants to hear about).
+  const prefs = await getNotificationPreferences(orgId, ownerId)
+
   const [openTasks, openLeads] = await Promise.all([
-    prisma.task.findMany({ where: { orgId, ownerId, done: false }, select: { id: true, dueDate: true } }),
-    prisma.lead.findMany({
-      where: { orgId, ownerId, followUpAt: { not: null }, status: { notIn: CLOSED_LEAD_STATUSES } },
-      select: { id: true, followUpAt: true, convertedDeal: { select: { id: true } }, convertedContact: { select: { id: true } } },
-    }),
+    prefs.task_due
+      ? prisma.task.findMany({ where: { orgId, ownerId, done: false }, select: { id: true, dueDate: true } })
+      : Promise.resolve([]),
+    prefs.lead_follow_up
+      ? prisma.lead.findMany({
+          where: { orgId, ownerId, followUpAt: { not: null }, status: { notIn: CLOSED_LEAD_STATUSES } },
+          select: { id: true, followUpAt: true, convertedDeal: { select: { id: true } }, convertedContact: { select: { id: true } } },
+        })
+      : Promise.resolve([]),
   ])
 
   const dueTasks = openTasks
@@ -380,11 +446,29 @@ export function retractNotificationsForSubject(
 // Reading
 // ---------------------------------------------------------------------------
 
-/** Polled every ~60s from the bell — a single indexed COUNT, deliberately as cheap as possible.
- *  See `retractAssignedNotifications` for why this never needs to re-validate rows against their
- *  live subject: a stale row for this recipient was already deleted at the moment it went stale. */
-export function getUnreadCount(orgId: string, recipientId: string): Promise<number> {
-  return prisma.notification.count({ where: { orgId, recipientId, readAt: null } })
+/** Polled every ~60s from the bell — kept as cheap as possible. See
+ *  `retractAssignedNotifications` for why this never needs to re-validate an 'assigned' row
+ *  against its live subject: a stale one for this recipient was already deleted at the moment it
+ *  went stale. task_due/lead_follow_up rows DO still rely on `listNotifications`'s read-time
+ *  filter for subject-level staleness (done/deleted/closed/date-moved) — a bare COUNT can't check
+ *  that without a join per subject type, which would defeat the point of keeping this cheap; the
+ *  gap this leaves is bounded by how stale a row can get before someone reads the list (rare and
+ *  short-lived in practice, documented rather than engineered away — see Stage B's own sign-off
+ *  note on this exact trade-off). Checks disabled-kind preferences — a disabled kind's existing
+ *  notifications must disappear from the count too, not just stop accumulating new ones — but
+ *  only issues that extra query when it finds at least one (most owners have never touched their
+ *  defaults, so there's nothing to filter and the common case stays a single indexed COUNT). */
+export async function getUnreadCount(orgId: string, recipientId: string): Promise<number> {
+  const disabled = await prisma.notificationPreference.findMany({
+    where: { orgId, ownerId: recipientId, enabled: false },
+    select: { kind: true },
+  })
+  if (disabled.length === 0) {
+    return prisma.notification.count({ where: { orgId, recipientId, readAt: null } })
+  }
+  return prisma.notification.count({
+    where: { orgId, recipientId, readAt: null, kind: { notIn: disabled.map((d) => d.kind) } },
+  })
 }
 
 export interface NotificationListItem {
@@ -501,8 +585,18 @@ function buildNotificationView(
  *  handler) already has it from its own `requireAuth()`, since this is always "list my own
  *  notifications," never anyone else's. */
 export async function listNotifications(scope: Scope, recipientId: string): Promise<NotificationListItem[]> {
+  // A disabled kind's EXISTING notifications must disappear from the list too, not just stop
+  // accumulating new ones — same reasoning as getUnreadCount's identical check.
+  const disabled = await prisma.notificationPreference.findMany({
+    where: { orgId: scope.orgId, ownerId: recipientId, enabled: false },
+    select: { kind: true },
+  })
   const rows = await prisma.notification.findMany({
-    where: { orgId: scope.orgId, recipientId },
+    where: {
+      orgId: scope.orgId,
+      recipientId,
+      ...(disabled.length > 0 && { kind: { notIn: disabled.map((d) => d.kind) } }),
+    },
     orderBy: { createdAt: 'desc' },
     take: 50,
   })

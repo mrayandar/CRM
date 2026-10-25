@@ -39,6 +39,8 @@ export function Settings() {
     orgTimezoneConfigured,
     updateOrgTimezone,
     orgName,
+    notificationPreferences,
+    updateNotificationPreference,
   } = useCrm()
   const [params] = useSearchParams()
   const initialSection = params.get('section')
@@ -98,14 +100,6 @@ export function Settings() {
     updateCurrency(currencyInput)
     setConfirmCurrencyOpen(false)
   }
-
-  const [notifications, setNotifications] = useState({
-    dealStage: true,
-    mentions: true,
-    dailyDigest: false,
-    overdueTasks: true,
-    leadAssigned: true,
-  })
 
   return (
     <PageShell
@@ -369,9 +363,9 @@ export function Settings() {
             <CardHeader title="Notifications" subtitle="Choose what reaches your inbox" />
             <div className="px-5 py-4">
               <div className="mb-4 flex items-center gap-2 rounded-[8px] bg-subtle px-3 py-2">
-                <Tag>Coming soon</Tag>
+                <Tag>In-app only</Tag>
                 <p className="text-[12px] text-ink-500">
-                  Notification delivery isn&apos;t built yet — these switches don&apos;t do anything.
+                  These control the bell at the top of the app. Email delivery isn&apos;t built yet.
                 </p>
               </div>
               <SectionLabel>Deals & pipeline</SectionLabel>
@@ -379,16 +373,16 @@ export function Settings() {
                 <Toggle
                   label="Deal stage changes"
                   description="When a deal you own moves between stages"
-                  checked={notifications.dealStage}
-                  onChange={(v) => setNotifications((n) => ({ ...n, dealStage: v }))}
+                  checked={false}
+                  onChange={() => {}}
                   disabled
+                  comingSoon
                 />
                 <Toggle
-                  label="New lead assigned to me"
-                  description="Immediately when routing assigns you a lead"
-                  checked={notifications.leadAssigned}
-                  onChange={(v) => setNotifications((n) => ({ ...n, leadAssigned: v }))}
-                  disabled
+                  label="Record assigned to me"
+                  description="Immediately when a lead, contact, deal, or task is assigned to you"
+                  checked={notificationPreferences.assigned}
+                  onChange={(v) => updateNotificationPreference('assigned', v)}
                 />
               </div>
 
@@ -397,22 +391,28 @@ export function Settings() {
                 <Toggle
                   label="Mentions and comments"
                   description="When a teammate @mentions you on a record"
-                  checked={notifications.mentions}
-                  onChange={(v) => setNotifications((n) => ({ ...n, mentions: v }))}
+                  checked={false}
+                  onChange={() => {}}
                   disabled
+                  comingSoon
                 />
                 <Toggle
-                  label="Overdue task reminders"
-                  description="A single reminder each morning for overdue work"
-                  checked={notifications.overdueTasks}
-                  onChange={(v) => setNotifications((n) => ({ ...n, overdueTasks: v }))}
-                  disabled
+                  label="Task due or overdue"
+                  description="When a task assigned to you is due today or overdue"
+                  checked={notificationPreferences.task_due}
+                  onChange={(v) => updateNotificationPreference('task_due', v)}
+                />
+                <Toggle
+                  label="Lead follow-up due"
+                  description="When a lead you own has a follow-up date due today or overdue"
+                  checked={notificationPreferences.lead_follow_up}
+                  onChange={(v) => updateNotificationPreference('lead_follow_up', v)}
                 />
                 <Toggle
                   label="Daily pipeline digest"
-                  description="Summary of pipeline movement from the previous day"
-                  checked={notifications.dailyDigest}
-                  onChange={(v) => setNotifications((n) => ({ ...n, dailyDigest: v }))}
+                  description="Summary of pipeline movement from the previous day — needs a sending domain"
+                  checked={false}
+                  onChange={() => {}}
                   disabled
                 />
               </div>
@@ -911,18 +911,27 @@ function Toggle({
   checked,
   onChange,
   disabled = false,
+  comingSoon = false,
 }: {
   label: string
   description: string
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
+  /** Same as `disabled`, plus a trailing "Coming soon" label — for a planned-but-unbuilt kind
+   *  (Deal stage changes, Mentions and comments), as opposed to a built, live preference. */
+  comingSoon?: boolean
 }) {
   return (
     <div className="flex items-start justify-between gap-4 py-3">
       <div className="min-w-0">
-        <p className={cn('text-[13px] font-medium', disabled ? 'text-ink-400' : 'text-ink-800')}>
+        <p className={cn('flex items-center gap-1.5 text-[13px] font-medium', disabled ? 'text-ink-400' : 'text-ink-800')}>
           {label}
+          {comingSoon && (
+            <span className="rounded-[4px] bg-subtle px-1.5 py-[1px] text-[10px] font-medium text-ink-400">
+              Coming soon
+            </span>
+          )}
         </p>
         <p className="mt-0.5 text-[12px] leading-4 text-ink-500">{description}</p>
       </div>

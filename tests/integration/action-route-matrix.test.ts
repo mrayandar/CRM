@@ -76,6 +76,7 @@ const IMPORT_ACTION_BUCKETS: Record<string, string> = {
 const NOTIFICATION_ACTION_BUCKETS: Record<string, string> = {
   markNotificationReadAction: 'Member or Admin — scoped to the caller\'s own recipientId, not Scope/RepVisibility',
   markAllNotificationsReadAction: 'same as markNotificationReadAction',
+  updateNotificationPreferenceAction: 'Member or Admin — always the caller\'s own preference, no ownerId param exists to scope',
 }
 
 const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reason: string }> = {

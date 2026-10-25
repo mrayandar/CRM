@@ -20,6 +20,7 @@ import type {
   Lead,
   LeadSource,
   LeadStatus,
+  NotificationKind,
   Owner,
   Payment,
   PaymentLabel,
@@ -62,6 +63,7 @@ import {
   deleteStageAction,
 } from '@lib/actions/crm'
 import { isRefetchStale, startLivePoll } from '@/store/livePoll'
+import { updateNotificationPreferenceAction } from '@lib/actions/notifications'
 import {
   createPaymentAction,
   updatePaymentAction,
@@ -276,6 +278,10 @@ interface CrmState {
   /** Read-only — there's no "rename workspace" action in this app; see orgName's doc comment in
    *  lib/data-loader.ts for why it can lag a rename made directly in Clerk. */
   orgName: string
+  /** The caller's own preferences only (Settings -> Notifications) — see
+   *  updateNotificationPreferenceAction's doc comment for why there's no per-owner param. */
+  notificationPreferences: Record<NotificationKind, boolean>
+  updateNotificationPreference: (kind: NotificationKind, enabled: boolean) => void
   ownerById: (id: string) => Owner
   stageById: (id: string) => PipelineStage
   companyById: (id: string) => Company | undefined
@@ -435,6 +441,9 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
   const [scopeOwnerId, setScopeOwnerId] = useState<string | null>(initialData.scopeOwnerId)
   const isScopedMember = scopeOwnerId !== null
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
+  const [notificationPreferences, setNotificationPreferences] = useState<Record<NotificationKind, boolean>>(
+    initialData.notificationPreferences,
+  )
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   // --- Live-update refetch bookkeeping (see src/store/livePoll.ts for the scheduling logic) ---
@@ -1150,6 +1159,25 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       )
     },
     [orgCurrency, persist],
+  )
+
+  /** The caller's own preference only — there's no ownerId param anywhere in this call, by
+   *  design (see updateNotificationPreferenceAction's identical note). A disabled kind also hides
+   *  any of its existing notifications, handled server-side (listNotifications/getUnreadCount) —
+   *  nothing extra to do here beyond the preference flag itself; the bell's own poll picks up the
+   *  change on its next tick. */
+  const updateNotificationPreference = useCallback(
+    (kind: NotificationKind, enabled: boolean) => {
+      const prev = notificationPreferences
+      setNotificationPreferences((p) => ({ ...p, [kind]: enabled }))
+      persist(
+        () => updateNotificationPreferenceAction({ kind, enabled }),
+        () => setNotificationPreferences(prev),
+        undefined,
+        "Couldn't save that notification setting, please try again.",
+      )
+    },
+    [notificationPreferences, persist],
   )
 
   const updateOrgTimezone = useCallback(
@@ -1988,6 +2016,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       scopeOwnerId,
       isScopedMember,
       orgName,
+      notificationPreferences,
+      updateNotificationPreference,
       ownerById,
       stageById,
       companyById,
@@ -2054,6 +2084,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       scopeOwnerId,
       isScopedMember,
       orgName,
+      notificationPreferences,
+      updateNotificationPreference,
       ownerById,
       stageById,
       companyById,

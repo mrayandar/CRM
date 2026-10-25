@@ -10,6 +10,11 @@ export type LeadSource =
 
 export type Priority = 'low' | 'medium' | 'high'
 
+/** Mirrors Prisma's NotificationKind enum (lib/data/notifications.ts), re-declared here rather
+ *  than imported — same convention LeadStatus/LeadSource above already use, so a client component
+ *  never pulls in `@prisma/client`. */
+export type NotificationKind = 'assigned' | 'task_due' | 'lead_follow_up'
+
 /** A per-org, renameable/reorderable pipeline stage — replaces the old fixed DealStage enum.
  *  `id` is what Deal.stageId points at; there's no more fixed set of keys to switch on, check
  *  `isWon`/`isClosed` instead of comparing against a specific stage. */

@@ -447,10 +447,10 @@ describe('GET /api/notifications query count with mixed subject types (Stage B s
     expect(body.notifications.length).toBe(50)
 
     // Bounded: 1 query to list the notifications + at most 4 (one per subject type present) to
-    // fetch their names — never one per row. Report the real number rather than hiding it behind
-    // a loose upper bound: it should be close to 5-7 (plus requireAuth's own 2 lookups), nowhere
-    // near 50.
+    // fetch their names + 1 to check for disabled-kind preferences (Stage E) — never one per
+    // row. Report the real number rather than hiding it behind a loose upper bound: it should be
+    // close to 6-8 (plus requireAuth's own 2 lookups), nowhere near 50.
     console.log(`GET /api/notifications issued ${queryCount} Prisma queries for 50 mixed-subject-type notifications`)
-    expect(queryCount).toBeLessThanOrEqual(10)
+    expect(queryCount).toBeLessThanOrEqual(12)
   })
 })

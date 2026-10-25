@@ -37,6 +37,8 @@ import type {
 import { DEFAULT_ORG_TIMEZONE } from '@lib/timezones'
 import { withRetry } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
+import { getNotificationPreferences } from '@lib/data/notifications'
+import type { NotificationKind } from '@prisma/client'
 
 export interface CrmInitialData {
   owners: Owner[]
@@ -85,6 +87,11 @@ export interface CrmInitialData {
    *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
    *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
   orgName: string
+  /** The CALLER's own notification preferences (Settings -> Notifications) — never another
+   *  owner's, and never per-org: every owner has their own. Absence of a key means "enabled" is
+   *  already resolved server-side by getNotificationPreferences, so every one of the 3 kinds is
+   *  always present here. */
+  notificationPreferences: Record<NotificationKind, boolean>
 }
 
 /**
@@ -122,6 +129,7 @@ export async function loadCrmData(
     rawCompanies,
     rawPayments,
     org,
+    notificationPreferences,
   ] = await withRetry(() =>
     Promise.all([
       listOwners(scope.orgId),
@@ -134,6 +142,7 @@ export async function loadCrmData(
       listCompanies(scope.orgId, { scopeOwnerId: scope.scopeOwnerId }),
       includePayments ? listPayments(scope.orgId) : Promise.resolve([]),
       getOrgById(scope.orgId),
+      getNotificationPreferences(scope.orgId, currentOwnerId),
     ]),
   )
 
@@ -169,5 +178,6 @@ export async function loadCrmData(
     repVisibilityChangedAt: org?.repVisibilityChangedAt?.toISOString() ?? null,
     scopeOwnerId: scope.scopeOwnerId,
     orgName: org?.name ?? '',
+    notificationPreferences,
   }
 }

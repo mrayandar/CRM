@@ -235,6 +235,7 @@ model Owner {
   paymentsCreated Payment[]
   importBatches   ImportBatch[]
   notifications   Notification[]
+  notificationPreferences NotificationPreference[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -669,4 +670,27 @@ model Notification {
   @@unique([orgId, recipientId, dedupeKey])
   @@index([orgId, recipientId, readAt])
   @@map("notifications")
+}
+
+/// One row per (owner, kind) that owner has ever EXPLICITLY changed from the default — absence of
+/// a row means "enabled", not "unset", so every owner starts opted in to every kind without a
+/// backfill migration having to create rows for them (see isNotificationEnabled in
+/// lib/data/notifications.ts). A disabled kind is enforced at both ends: no new notification of
+/// that kind is written (checked in every write-function and before scanAndNotify even queries
+/// for it) and any existing one of that kind is hidden at read time (listNotifications/
+/// getUnreadCount) — so turning a kind off also clears it from the bell, not just future ones.
+model NotificationPreference {
+  id      String  @id @default(cuid())
+  orgId   String
+  owner   Owner   @relation(fields: [ownerId], references: [id])
+  ownerId String
+  kind    NotificationKind
+  enabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, ownerId, kind])
+  @@index([orgId, ownerId])
+  @@map("notification_preferences")
 }

@@ -2,6 +2,102 @@
 
 > Living context file. Updated at the end of every task.
 
+## Reminders and notifications — Stage B sign-off checks + Stages C, D, E (Oct 25 2026)
+
+Built in one batch, three commits (plus a preliminary one for the three sign-off checks), per the
+user's explicit instruction not to push until the full suite passed at the end. **521 tests
+passing (28 files)**, up from 445 at the end of the testing-policy work.
+
+### Stage B sign-off checks (commit 1)
+
+1. **bulkReassignLeads parity.** The original implementation rejected the WHOLE batch if any one
+   lead was outside the caller's scope — not actually matching the old per-lead `updateLeadAction`
+   loop it replaced, where one lead failing never blocked the others. Redesigned: chunks into
+   transactions of 25 leads, reports a per-lead outcome (`moved`/`skipped`/`failed`) instead of
+   throwing, and only a lead actually moved counts toward the coalesced notification. Updated the
+   OWN-mode test (was asserting a throw; now asserts repA's own lead moves while repB's comes back
+   `failed`, nothing written for it) and the client store (reconciles any non-`moved` lead's
+   optimistic state back to its real owner on success).
+2. **Orphaned task notifications.** `deleteTask` never deleted the task's own `Notification` row
+   (`subjectId` is a soft polymorphic reference, not an enforced FK) — the unread count and the
+   list could disagree after a delete. New `retractNotificationsForSubject`, wired into
+   `deleteTask`.
+3. **A real N+1 in `GET /api/notifications`.** One query per row to build each title (up to 50
+   for a full page). Batched into one scoped `findMany` per subject type present (at most 4),
+   verified with a query-count test using Prisma's `query` log event (`lib/prisma.ts` now emits it
+   as an event in `NODE_ENV=test` only).
+
+Also fixed a real transaction-correctness bug surfaced while building Stage C:
+`writeAssignedNotification` et al. caught a `P2002` dedupe collision inside a transaction, but
+Postgres aborts the WHOLE transaction on any statement error — a later legitimate write (or Stage
+C's own retention `DELETE`) in the same transaction would then fail with "current transaction is
+aborted" even though the catch block looked like it had recovered. Every notification write now
+uses `createMany({ skipDuplicates: true })`, which resolves the conflict at the SQL level instead
+of raising one.
+
+### Stage C: time-based kinds, task_due and lead_follow_up (commit 2)
+
+No cron (Vercel Hobby has none) — `scanAndNotify` runs inside the polled unread-count route,
+claimed atomically at most once per 5 minutes per owner via a conditional `UPDATE` on the new
+`Owner.lastScannedAt`. Dedupe keys include the triggering date (task id + due date, lead id +
+follow-up date), so a postponed/rescheduled item notifies again while an unchanged one is a safe
+no-op. The first-ever scan writes one summary per kind for everything already overdue; later scans
+write individually unless a single scan's batch exceeds `SCAN_FLOOD_CAP` (20, a proposed number —
+enough for a genuinely busy day without flooding the bell), which also collapses into a summary.
+Read-time visibility (`buildNotificationView`) hides a stale row — task done/deleted, lead
+converted/closed, the date moved, or the subject left the recipient's OWN-mode scope — backed by
+write-time retraction in every action that invalidates one (task completion/reassignment, lead
+status-close/reassignment/conversion), so the unread count stays accurate immediately in the
+common case rather than only on the next read. Day boundaries use the recipient's
+`Owner.timezone`, falling back to the org's effective timezone, via `localDayDelta` — tested
+around a UTC midnight boundary for Asia/Karachi vs. America/Los_Angeles (same instant, different
+"today"). Retention deletes read notifications older than 30 days inside the scan, bounded by a
+`LIMIT`'d subquery (Postgres `DELETE` has no native `LIMIT`).
+
+New additive migration (`Owner.lastScannedAt`, `Notification.triggerDate`,
+`tasks_orgId_ownerId_done_idx`, `leads_orgId_ownerId_followUpAt_idx`). EXPLAIN ANALYZE against the
+real Neon DB confirmed the lead index is used (Index Scan); the task index isn't yet, on a `tasks`
+table this small (~25-50 rows total) — the planner correctly prefers a Seq Scan at that size, same
+documented caveat as the existing unread-count index's own Stage B note.
+
+### Stage D: the bell UI (commit 3)
+
+`NotificationsProvider` (`src/store/notifications.tsx`), mounted in `AppLayout`, polls
+`GET /api/notifications/unread-count` every 60s with its own `startLivePoll` instance (pauses when
+hidden, refetches on focus/visibility — same scheduling CrmProvider's own refetch already uses).
+Replaced `PageShell`'s "Notifications aren't available yet" placeholder with a real panel: unread
+badge, newest-50 list (lazily fetched when the panel opens), mark read / mark all read (optimistic,
+reusing CrmProvider's own `persist` for rollback-on-failure + toast — the same pattern
+`bulkReassignLeads` already uses, not a second copy of that plumbing), click-through to the record
+(lead/contact get their detail page, deal goes to Pipeline, task to the Tasks list — neither has a
+per-record page), an empty state, and a "couldn't load, try again" state. Uses the existing
+`Popover` component (same one the account menu uses) and existing design tokens throughout — no
+new UI primitives. `notificationHref` (the one pure routing decision) lives in `src/lib/utils.ts`,
+not the `'use client'` `PageShell.tsx`, specifically so it's unit-testable without a DOM (this
+repo's vitest runs in plain Node, no jsdom). Verified with a full `next build` (clean) — no browser
+tool was available in this session to click through the live panel, so that's the limit of this
+pass's own verification; said so rather than claiming a manual check that didn't happen.
+
+### Stage E: preferences (commit 4)
+
+New `NotificationPreference` model — additive migration, one row per (owner, kind) that owner has
+ever EXPLICITLY changed; **absence of a row means "enabled"**, so every owner starts opted in to
+every kind without a backfill migration. Enforced at both ends: every write function (and
+`scanAndNotify`, before it even queries for due items) checks the preference; `listNotifications`/
+`getUnreadCount` also exclude a disabled kind's EXISTING rows (checked via one extra query, issued
+only when at least one preference row exists — most owners never touch the default, so the common
+case stays as cheap as before). Settings → Notifications: relabeled "New lead assigned to me" →
+"Record assigned to me" and "Overdue task reminders" → "Task due or overdue"; added "Lead
+follow-up due"; all three now live and wired through `CrmProvider` (`notificationPreferences` is
+part of `loadCrmData`'s hydration, same as every other per-user setting). "Deal stage changes" and
+"Mentions and comments" stay disabled with a "Coming soon" tag (new prop on the existing `Toggle`
+component, mirroring `MenuItem`'s identical one); "Daily pipeline digest" stays disabled, labeled
+"needs a sending domain" instead. `updateNotificationPreferenceAction` always writes the CALLER's
+own preference — no `ownerId` param exists to pass someone else's.
+
+Report of the exact totals, run at the end per the user's instruction: full suite 521 tests
+passing, 28 files, 0 failures.
+
 ## Test suite speed: diagnosis + testing policy (Oct 25 2026)
 
 The suite had grown too slow to run after every small change (806s / 445 tests across 24 files).
@@ -192,6 +288,8 @@ built or investigated yet.
   report's items 8-10 — recommended, not built).
 - **Upgrade Vercel to Pro before taking paying customers** (Hobby is non-commercial; Pro also
   gives proper cron and higher function limits).
+- **Hard gate: the full test suite must be green, with the local-Postgres test setup built first
+  if the suite is still slow, before any real user touches the app.**
 
 ## CSV import for leads and contacts (Oct 24 2026)
 
