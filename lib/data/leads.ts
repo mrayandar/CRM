@@ -11,9 +11,17 @@ import type { Scope } from '@lib/scope'
 import { cascadeActivityOwner } from '@lib/data/activities'
 import {
   retractAssignedNotifications,
+  retractNotificationsForSubject,
   writeAssignedNotification,
   writeCoalescedAssignedNotification,
 } from '@lib/data/notifications'
+
+/** Server-side mirror of src/lib/utils.ts's identical constant — a lead in one of these statuses
+ *  is closed and must never be treated as "follow-up due", in the Leads filter or in the
+ *  lead_follow_up notification scan (see scanAndNotify in lib/data/notifications.ts). Kept as its
+ *  own constant, not shared code, since the frontend one lives in a client-importable file
+ *  (`src/`) this server-only module (`lib/`) can't import from — see this file's own header. */
+export const CLOSED_LEAD_STATUSES: LeadStatus[] = ['lost', 'unqualified']
 
 export interface ListLeadsOptions {
   status?: LeadStatus
@@ -97,6 +105,15 @@ export async function updateLeadStatus(scope: Scope, id: string, status: LeadSta
       where: { id, orgId: scope.orgId, ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }) },
     })
     if (!existing) throw new Error(`Lead ${id} not found in org ${scope.orgId}`)
+    // A lead moving INTO a closed status can no longer be "follow-up due" — retract any
+    // lead_follow_up notification about it now, rather than waiting for the next scan's
+    // read-time filter to catch up (keeps the unread count accurate immediately, not just
+    // eventually — see getUnreadCount's own doc comment on this trade-off).
+    if (CLOSED_LEAD_STATUSES.includes(status) && !CLOSED_LEAD_STATUSES.includes(existing.status)) {
+      await retractNotificationsForSubject(tx, {
+        orgId: scope.orgId, subjectType: 'lead', subjectId: id, kind: 'lead_follow_up',
+      })
+    }
     return tx.lead.update({
       where: { id },
       data: { status, lastTouchedAt: new Date() },
@@ -188,6 +205,23 @@ export async function updateLead(
       await writeAssignedNotification(tx, {
         orgId: scope.orgId, recipientId: data.ownerId, actorId,
         subjectType: 'lead', subjectId: id, dedupeKey: activityId,
+      })
+      // Reassigned away — a lead_follow_up notification is "yours because you own this lead",
+      // same reasoning as 'assigned'; the new owner gets a fresh one on their next scan, not
+      // here (scanAndNotify, not updateLead, decides whether a follow-up is actually due).
+      await retractNotificationsForSubject(tx, {
+        orgId: scope.orgId, subjectType: 'lead', subjectId: id, kind: 'lead_follow_up',
+      })
+    }
+    // The follow-up date itself moved — the old trigger date no longer matches, so the next
+    // read would already hide it (see buildNotificationView's date-match check), but retracting
+    // now keeps the unread count accurate immediately rather than waiting for a read.
+    if (
+      data.followUpAt !== undefined &&
+      (existing.followUpAt?.getTime() ?? null) !== (data.followUpAt?.getTime() ?? null)
+    ) {
+      await retractNotificationsForSubject(tx, {
+        orgId: scope.orgId, subjectType: 'lead', subjectId: id, kind: 'lead_follow_up',
       })
     }
 
@@ -419,6 +453,12 @@ export async function convertLeadToDeal(
         subjectType: 'lead', subjectId: leadId, dedupeKey: `${input.activityId}:lead`,
       })
     }
+    // A converted lead can never be "follow-up due" (same rule as CLOSED_LEAD_STATUSES — see
+    // isLeadFollowUpDue's frontend mirror) — retract immediately rather than relying on the next
+    // scan's read-time filter.
+    await retractNotificationsForSubject(tx, {
+      orgId: scope.orgId, subjectType: 'lead', subjectId: leadId, kind: 'lead_follow_up',
+    })
     // Distinct dedupe keys (suffixed off the one activityId the caller provides) — the new
     // contact, the optional new deal, and the lead reassignment above are three independently
     // notifiable events that can all land on the SAME recipient in one conversion; a shared key

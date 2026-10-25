@@ -44,6 +44,7 @@ const KNOWN_TEST_FILES = [
   'integration/csv-import.test.ts',
   'integration/csv-import-commit.test.ts',
   'integration/lead-follow-up.test.ts',
+  'integration/notification-scan.test.ts',
   'integration/notifications.test.ts',
   'integration/own-mode.test.ts',
   'integration/test-guard.test.ts',

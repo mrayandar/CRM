@@ -131,7 +131,16 @@ export async function toggleTaskDone(scope: Scope, id: string, done: boolean) {
       },
     })
     if (!existing) throw new Error(`Task ${id} not found in org ${scope.orgId}`)
-    return tx.task.update({ where: { id }, data: { done } })
+    const updated = await tx.task.update({ where: { id }, data: { done } })
+    // A completed task can never be "due" — retract immediately rather than relying on the next
+    // scan's read-time filter (keeps the unread count accurate right away, same reasoning as
+    // every other write-time retraction in this file's sibling modules).
+    if (done) {
+      await retractNotificationsForSubject(tx, {
+        orgId: scope.orgId, subjectType: 'task', subjectId: id, kind: 'task_due',
+      })
+    }
+    return updated
   })
 }
 
@@ -218,6 +227,18 @@ export async function updateTask(
       await writeAssignedNotification(tx, {
         orgId: scope.orgId, recipientId: data.ownerId, actorId,
         subjectType: 'task', subjectId: id, dedupeKey: activityId ?? crypto.randomUUID(),
+      })
+      // Reassigned away — same reasoning as updateLead's identical lead_follow_up retraction;
+      // the new assignee gets a fresh one on their own next scan, if actually due.
+      await retractNotificationsForSubject(tx, {
+        orgId: scope.orgId, subjectType: 'task', subjectId: id, kind: 'task_due',
+      })
+    }
+    if (+existing.dueDate !== +data.dueDate) {
+      // The due date moved — the old trigger date no longer matches (see
+      // buildNotificationView's date-match check), so retract now rather than waiting for a read.
+      await retractNotificationsForSubject(tx, {
+        orgId: scope.orgId, subjectType: 'task', subjectId: id, kind: 'task_due',
       })
     }
 

@@ -219,6 +219,13 @@ model Owner {
   /// historical activity/ownership attribution intact instead of erasing who actually did what.
   active Boolean @default(true)
 
+  /// Last time this owner's time-based notifications (task_due/lead_follow_up) were scanned —
+  /// null until their first scan. The scan is claimed atomically by an UPDATE conditioned on this
+  /// column (see scanAndNotify in lib/data/notifications.ts), which is what lets two open tabs
+  /// polling the unread-count route at the same moment never both scan: whichever UPDATE commits
+  /// first changes this value out from under the second one's WHERE clause.
+  lastScannedAt DateTime?
+
   leads           Lead[]
   contacts        Contact[]
   deals           Deal[]
@@ -318,6 +325,7 @@ model Lead {
   @@index([orgId, status])
   @@index([orgId, ownerId])
   @@index([orgId, followUpAt])
+  @@index([orgId, ownerId, followUpAt])
   @@index([orgId, lastTouchedAt])
   @@index([orgId, companyId])
   @@index([orgId, importBatchId])
@@ -533,6 +541,7 @@ model Task {
   @@index([orgId, ownerId])
   @@index([orgId, createdById])
   @@index([orgId, done, dueDate])
+  @@index([orgId, ownerId, done])
   @@map("tasks")
 }
 
@@ -644,6 +653,15 @@ model Notification {
   /// same batch-finalization step twice (a retry) can never double-write the same summary — see
   /// each write site in lib/actions/*.ts for which key it uses and why.
   dedupeKey String
+
+  /// The exact calendar-date string ("YYYY-MM-DD", in UTC — the same convention
+  /// Task.dueDate/Lead.followUpAt already store their date in) that triggered a task_due or
+  /// lead_follow_up notification. Read-time visibility compares this against the subject's
+  /// CURRENT dueDate/followUpAt: a mismatch means the date moved since this notification was
+  /// written (postponed task, rescheduled follow-up), so the notification is stale and hidden —
+  /// see buildNotificationView in lib/data/notifications.ts. Null for 'assigned' (no date
+  /// involved) and for a coalesced summary row (no single subject to compare against).
+  triggerDate String?
 
   createdAt DateTime  @default(now())
   readAt    DateTime?
