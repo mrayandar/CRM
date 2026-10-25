@@ -110,3 +110,14 @@ export function updateRepVisibility(orgId: string, repVisibility: RepVisibility,
     data: { repVisibility, repVisibilityChangedBy: changedByOwnerId, repVisibilityChangedAt: new Date() },
   })
 }
+
+/** Sets the org's `aiAssistEnabled` AND stamps who changed it and when — the only writer of
+ *  `aiAssistEnabledChangedBy`/`aiAssistEnabledChangedAt`. Same orgId-from-auth, caller-id-not-
+ *  client-supplied reasoning as updateRepVisibility — the admin-only + allowlist checks happen
+ *  one layer up, in updateAiAssistEnabledAction. */
+export function updateAiAssistEnabled(orgId: string, enabled: boolean, changedByOwnerId: string) {
+  return prisma.organization.update({
+    where: { id: orgId },
+    data: { aiAssistEnabled: enabled, aiAssistEnabledChangedBy: changedByOwnerId, aiAssistEnabledChangedAt: new Date() },
+  })
+}

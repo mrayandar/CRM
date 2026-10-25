@@ -190,10 +190,88 @@ model Organization {
   repVisibilityChangedBy String?
   repVisibilityChangedAt DateTime?
 
+  /// AI assist, Stage 2: admin-only org toggle (Settings -> Team), gated by the same
+  /// requireLiveAdminAccess() live-Clerk-role check as repVisibility above, for the same reason —
+  /// turning this on exposes record text (lead/contact fields, note bodies) to an external AI
+  /// provider, which is sensitive enough that a stale DB Owner.role must never grant or revoke it.
+  /// Also gated by the AI_ASSIST_ALLOWED_ORG_IDS env allowlist (lib/ai/allowlist.ts) — an org not
+  /// on that list can never flip this true regardless of admin role, until billing/limits exist.
+  aiAssistEnabled Boolean @default(false)
+
+  /// Who last changed `aiAssistEnabled` (Owner.id) and when — both null until the first change.
+  /// Same bare-string, no-FK convention as repVisibilityChangedBy above.
+  aiAssistEnabledChangedBy String?
+  aiAssistEnabledChangedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("organizations")
+}
+
+/// What an AI-assist request is for — kept as a closed enum (not a free string) so AiUsage rows
+/// stay aggregable and the route can validate the request body against a known set.
+enum AiCapability {
+  draft_email
+  summarize
+  next_step
+}
+
+/// Monthly, per-org, per-capability usage metering — written once a provider call actually
+/// succeeds (lib/ai/usage.ts's recordAiUsage), never used for cap enforcement itself (see
+/// AiRateLimitCounter for that). Powers a future usage/cost view; not read by any route yet.
+model AiUsage {
+  id           String       @id @default(cuid())
+  orgId        String
+  /// "YYYY-MM" in UTC — matches this table's own monthly grain, independent of
+  /// AiRateLimitCounter's bucketStart (a real DateTime, used for atomic cap checks).
+  yearMonth    String
+  capability   AiCapability
+  requestCount Int          @default(0)
+  inputTokens  Int          @default(0)
+  outputTokens Int          @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, yearMonth, capability])
+  @@index([orgId])
+  @@map("ai_usage")
+}
+
+/// Generic atomic counter backing every AI-assist cap — per-user-per-hour, per-org-per-hour, and
+/// per-org-per-month all share this one table, distinguished by `scopeType`/`scopeId`/
+/// `bucketStart` rather than three separate tables, since the reservation mechanism (lib/ai/
+/// rateLimiter.ts) is identical for all three: an atomic INSERT ... ON CONFLICT DO UPDATE ...
+/// WHERE "requestCount" < cap ... RETURNING, which only ever returns a row when the reservation
+/// actually succeeded (either the first request in a bucket, via plain INSERT, or an UPDATE whose
+/// WHERE passed) — two concurrent requests racing a cap of 1 can never both get a row back.
+model AiRateLimitCounter {
+  id           String   @id @default(cuid())
+  /// 'user_hour' | 'org_hour' | 'org_month'
+  scopeType    String
+  /// The Owner.id or Organization.id this counter is for, depending on scopeType.
+  scopeId      String
+  /// Start of the hour (user_hour/org_hour) or start of the month (org_month), in UTC.
+  bucketStart  DateTime
+  requestCount Int      @default(0)
+
+  @@unique([scopeType, scopeId, bucketStart])
+  @@map("ai_rate_limit_counters")
+}
+
+/// Platform-wide (never org-scoped) key/value settings. Stage 2's only use is the AI-assist kill
+/// flag (key "ai_kill_switch", value "true"/"false") — deliberately changeable only by
+/// scripts/ai-kill.js run locally against DATABASE_URL, never by any route or Server Action, so
+/// no session or org membership can ever flip it. A second, independent kill path (the
+/// AI_ASSIST_KILL_SWITCH env var, checked first and without a DB round-trip) exists for when the
+/// database itself is the thing misbehaving.
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("platform_settings")
 }
 
 /// A user within a tenant org (e.g. an AE, SDR, Admin). Linked to a Clerk

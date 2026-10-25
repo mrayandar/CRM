@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 import * as paymentActions from '@lib/actions/payments'
 import * as importActions from '@lib/actions/import'
 import * as notificationActions from '@lib/actions/notifications'
+import * as aiActions from '@lib/actions/ai'
 
 const REPO_ROOT = resolve(__dirname, '../..')
 
@@ -79,6 +80,16 @@ const NOTIFICATION_ACTION_BUCKETS: Record<string, string> = {
   updateNotificationPreferenceAction: 'Member or Admin — always the caller\'s own preference, no ownerId param exists to scope',
 }
 
+/**
+ * updateAiAssistEnabledAction is admin-only (requireLiveAdminAccess) plus the
+ * AI_ASSIST_ALLOWED_ORG_IDS env allowlist — an org-level toggle, same category as
+ * updateRepVisibilityAction in lib/actions/crm.ts (covered by tests/integration/
+ * ai-settings-action.test.ts), not a per-record Scope concern.
+ */
+const AI_ACTION_BUCKETS: Record<string, string> = {
+  updateAiAssistEnabledAction: 'admin-only (requireLiveAdminAccess) + env allowlist — org-level toggle, not Scope/RepVisibility',
+}
+
 const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reason: string }> = {
   'activities/route.ts': {
     kind: 'scoped',
@@ -128,6 +139,11 @@ const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reas
     reason:
       'GET /api/calendar — builds a Scope and passes it to listTasksForCalendar/listLeadFollowUpsForCalendar/listOpenDealsForCalendar, each of which ANDs scope.scopeOwnerId into its own query; see tests/integration/calendar.test.ts.',
   },
+  'ai/generate/route.ts': {
+    kind: 'scoped',
+    reason:
+      'POST /api/ai/generate — builds a Scope and passes it to getLeadById/getContactById/listActivitiesForAiPrompt, each of which ANDs scope.scopeOwnerId into its own query; see tests/integration/ai-generate.test.ts.',
+  },
 }
 
 describe('exhaustiveness: lib/actions/payments.ts, lib/actions/import.ts, and every app/api/**/route.ts file is bucketed', () => {
@@ -152,6 +168,12 @@ describe('exhaustiveness: lib/actions/payments.ts, lib/actions/import.ts, and ev
       (k) => typeof (notificationActions as Record<string, unknown>)[k] === 'function',
     )
     const uncovered = actual.filter((k) => !(k in NOTIFICATION_ACTION_BUCKETS))
+    expect(uncovered).toEqual([])
+  })
+
+  it('every export of lib/actions/ai.ts is covered by the admin-only + allowlist bucket', () => {
+    const actual = Object.keys(aiActions).filter((k) => typeof (aiActions as Record<string, unknown>)[k] === 'function')
+    const uncovered = actual.filter((k) => !(k in AI_ACTION_BUCKETS))
     expect(uncovered).toEqual([])
   })
 

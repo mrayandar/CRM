@@ -39,6 +39,9 @@ function discoverTestFiles(dir: string, base: string = dir): string[] {
 // included so it can never "discover" its way to zero and vacuously pass.
 const KNOWN_TEST_FILES = [
   'integration/action-route-matrix.test.ts',
+  'integration/ai-generate.test.ts',
+  'integration/ai-rate-limiter.test.ts',
+  'integration/ai-settings-action.test.ts',
   'integration/cache-control.test.ts',
   'integration/calendar.test.ts',
   'integration/calendar-task-create.test.ts',

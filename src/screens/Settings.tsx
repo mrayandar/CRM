@@ -320,6 +320,7 @@ export function Settings() {
                   </p>
                 </div>
                 <RepVisibilitySection />
+                <AiAssistSection />
               </div>
             </Card>
           </>
@@ -447,6 +448,54 @@ export function Settings() {
         </Modal>
       )}
     </PageShell>
+  )
+}
+
+/**
+ * Settings -> Team, admin-only. AI assist, Stage 2: the org-wide on/off switch for sending
+ * record text (lead/contact fields, note bodies — never Payments data) to an AI provider. No
+ * confirm modal, unlike RepVisibilitySection below — this isn't retroactive (it only gates future
+ * requests) and has no "every Member's visibility changes right now" blast radius.
+ */
+function AiAssistSection() {
+  const { currentUser, owners, aiAssistEnabled, aiAssistEnabledChangedBy, aiAssistEnabledChangedAt, aiAssistAllowlisted, updateAiAssistEnabled } =
+    useCrm()
+  const isAdmin = currentUser.role === 'Admin'
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const changedByOwner = aiAssistEnabledChangedBy ? owners.find((o) => o.id === aiAssistEnabledChangedBy) : undefined
+
+  const toggle = async (next: boolean) => {
+    setSaving(true)
+    setError(null)
+    const result = await updateAiAssistEnabled(next)
+    setSaving(false)
+    if (!result.ok) setError(result.error)
+  }
+
+  return (
+    <div>
+      <Toggle
+        label="AI assist"
+        description={
+          isAdmin
+            ? 'Lets this workspace use AI to draft follow-up emails and summarize records. Record text — including note bodies — is sent to our AI provider as written; Payments data is never sent.'
+            : 'Only admins can turn AI assist on or off.'
+        }
+        checked={aiAssistEnabled}
+        onChange={toggle}
+        disabled={!isAdmin || saving || (!aiAssistEnabled && !aiAssistAllowlisted)}
+      />
+      {isAdmin && !aiAssistAllowlisted && (
+        <p className="mt-1 text-[11px] text-ink-400">Not available for your organization yet.</p>
+      )}
+      {error && <p className="mt-1 text-[11px] text-red-600">{error}</p>}
+      {aiAssistEnabledChangedAt && (
+        <p className="mt-1 text-[11px] text-ink-400">
+          Changed by {changedByOwner?.name ?? 'a former member'} on {formatDate(aiAssistEnabledChangedAt)}.
+        </p>
+      )}
+    </div>
   )
 }
 

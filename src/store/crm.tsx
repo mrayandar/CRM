@@ -62,6 +62,7 @@ import {
   reorderStageAction,
   deleteStageAction,
 } from '@lib/actions/crm'
+import { updateAiAssistEnabledAction } from '@lib/actions/ai'
 import { isRefetchStale, startLivePoll } from '@/store/livePoll'
 import { updateNotificationPreferenceAction } from '@lib/actions/notifications'
 import {
@@ -275,6 +276,16 @@ interface CrmState {
    *  Every Stage 1b UI gate (hiding the Mine/Team and all/my toggles, owner filter dropdowns, the
    *  Tasks "Team" view, restricting the Reports leaderboard to one row) reads this single flag. */
   isScopedMember: boolean
+  /** Settings -> Team. See lib/data-loader.ts's identical fields for what each one means. */
+  aiAssistEnabled: boolean
+  aiAssistEnabledChangedBy: string | null
+  aiAssistEnabledChangedAt: string | null
+  aiAssistAllowlisted: boolean
+  /** Admin-only (requireLiveAdminAccess), same pattern as updateRepVisibility. Rejects with
+   *  'not_allowlisted' before even attempting the write when the org isn't on the env allowlist —
+   *  the Settings UI shows that as "Not available for your organization yet" rather than a
+   *  generic failure. */
+  updateAiAssistEnabled: (enabled: boolean) => Promise<{ ok: true } | { ok: false; error: string }>
   /** Read-only — there's no "rename workspace" action in this app; see orgName's doc comment in
    *  lib/data-loader.ts for why it can lag a rename made directly in Clerk. */
   orgName: string
@@ -439,6 +450,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
   const [repVisibilityChangedBy, setRepVisibilityChangedBy] = useState<string | null>(initialData.repVisibilityChangedBy)
   const [repVisibilityChangedAt, setRepVisibilityChangedAt] = useState<string | null>(initialData.repVisibilityChangedAt)
   const [scopeOwnerId, setScopeOwnerId] = useState<string | null>(initialData.scopeOwnerId)
+  const [aiAssistEnabled, setAiAssistEnabled] = useState<boolean>(initialData.aiAssistEnabled)
+  const [aiAssistEnabledChangedBy, setAiAssistEnabledChangedBy] = useState<string | null>(initialData.aiAssistEnabledChangedBy)
+  const [aiAssistEnabledChangedAt, setAiAssistEnabledChangedAt] = useState<string | null>(initialData.aiAssistEnabledChangedAt)
+  const aiAssistAllowlisted = initialData.aiAssistAllowlisted
   const isScopedMember = scopeOwnerId !== null
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [notificationPreferences, setNotificationPreferences] = useState<Record<NotificationKind, boolean>>(
@@ -1212,6 +1227,30 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : "Couldn't save record visibility" }
+      } finally {
+        endMutation()
+      }
+    },
+    [beginMutation, endMutation, currentUser.id],
+  )
+
+  const updateAiAssistEnabled = useCallback(
+    async (enabled: boolean): Promise<{ ok: true } | { ok: false; error: string }> => {
+      beginMutation()
+      try {
+        const result = await updateAiAssistEnabledAction(enabled)
+        if (!result.ok) {
+          return {
+            ok: false,
+            error: result.error === 'not_allowlisted' ? 'Not available for your organization yet.' : 'Only admins can change this.',
+          }
+        }
+        setAiAssistEnabled(result.aiAssistEnabled)
+        setAiAssistEnabledChangedBy(currentUser.id)
+        setAiAssistEnabledChangedAt(result.changedAt)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Couldn't save this setting" }
       } finally {
         endMutation()
       }
@@ -2015,6 +2054,11 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       updateRepVisibility,
       scopeOwnerId,
       isScopedMember,
+      aiAssistEnabled,
+      aiAssistEnabledChangedBy,
+      aiAssistEnabledChangedAt,
+      aiAssistAllowlisted,
+      updateAiAssistEnabled,
       orgName,
       notificationPreferences,
       updateNotificationPreference,
@@ -2083,6 +2127,11 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       updateRepVisibility,
       scopeOwnerId,
       isScopedMember,
+      aiAssistEnabled,
+      aiAssistEnabledChangedBy,
+      aiAssistEnabledChangedAt,
+      aiAssistAllowlisted,
+      updateAiAssistEnabled,
       orgName,
       notificationPreferences,
       updateNotificationPreference,

@@ -2,7 +2,85 @@
 
 > Living context file. Updated at the end of every task.
 
-## AI assist, Stage 1 of 6: provider interface, dev provider, pure prompt builders (Oct 26 2026)
+## AI assist, Stage 2 of 5: backend (schema, caps, kill switches, the generate route) + org toggle (Oct 26 2026)
+
+Stage 1's report-only verification (commit `fc1a4a4`, confirmed pushed, tree clean):
+- The dev-only guard test: `tests/unit/ai-dev-provider.test.ts` -> `describe('openAiCompatibleProvider: dev-only guard')` -> `it('refuses without AI_ALLOW_DEV_PROVIDERS=true, before ever reading the key or calling fetch')`.
+- The injection test with a note containing `</crm_data>` followed by instructions: `tests/unit/ai-prompt-builder.test.ts` -> `describe('prompt injection: a lead name containing a fake closing tag')` -> `it('escapes the same injection attempt when it appears in an activity body, after the closing tag position')`. Live-ran `buildTimelineSummaryPrompt` with that exact fixture: the fake closing tag and the fake "SYSTEM:" instructions that follow it both come back HTML-escaped (`&lt;/crm_data&gt;`) inside the one real `<crm_data>...</crm_data>` block, never able to close it early.
+- "Payments-module data is never sent, but a note's literal content is" is documented at this file's own (then-top) Stage 1 entry, lines 9-10 — the one place that exact claim is written down; no standalone privacy-policy file exists yet (deferred to the pre-launch checklist).
+- The API key: confirmed absent from this file (the two prior entries only ever describe *that* a key is needed, never its value) and from every test's assertions (`tests/unit/ai-dev-provider.test.ts`'s own log-scrubbing tests assert the fixture key string never appears in any captured `console.error` call).
+
+Stage 2 built per the revised 5-stage plan below. Schema: `Organization.aiAssistEnabled` (+
+`aiAssistEnabledChangedBy`/`At`, same pattern as `repVisibility`), a monthly per-org-per-capability
+`AiUsage` metering table, a generic `AiRateLimitCounter` table backing all three caps (per-user-
+hour, per-org-hour, per-org-month) via one atomic `INSERT ... ON CONFLICT DO UPDATE ... WHERE
+"requestCount" < cap ... RETURNING` statement per cap, and a non-org-scoped `PlatformSetting`
+key/value table for the DB kill flag — changeable only by `scripts/ai-kill.js`, run locally, never
+by any route or action.
+
+`POST /api/ai/generate`'s check order (an unauthorized or invalid request never burns quota):
+session -> body validation -> env kill switch -> DB kill flag -> org `aiAssistEnabled` -> env
+allowlist (`AI_ASSIST_ALLOWED_ORG_IDS`) -> scoped by-id read of the subject (404, identical for
+out-of-scope and cross-org) -> atomic cap reservation (all three caps, refunded together on any
+later failure) -> the provider call -> usage recorded only on success. The fake provider is only
+ever reachable outside `NODE_ENV=production`; in production, with no real adapter wired yet (Stage
+4), the route always returns the generic unavailable message — the correct Stage 2 behavior, not a
+gap. Plain-text-only response (`{ text }`, nothing else); structured logging records capability,
+orgId, token counts, latency, error type, and a prompt hash — never prompt content, the response
+text, or any key.
+
+Settings -> Team gained an "AI assist" toggle: admin-only via `requireLiveAdminAccess` (the same
+live-Clerk-role check as the RepVisibility switch, since this is sensitive in either direction),
+also rejected server-side when the org isn't on the allowlist ("Not available for your organization
+yet"), read-only for Members.
+
+Full suite not run — nothing in this stage's own test list needed it, but the change touches
+`lib/actions`, `lib/data`, and `prisma/schema.prisma`, so the explicit cross-tenant/own-mode/
+exhaustiveness set was run instead: `tests/integration/cross-tenant.test.ts`, `own-mode.test.ts`,
+`action-route-matrix.test.ts`, `tests/unit/scope.test.ts`, `tests/types/scope-required.test.ts` —
+216/216 passed. `test:related` against every changed/added Stage 2 file (which pulled in 15 of 35
+test files via `src/store/crm.tsx`'s and `lib/data-loader.ts`'s own wide import graph) — 370/370
+passed.
+
+### Revised staged plan (each stage ships on its own)
+
+| Stage | What ships |
+|---|---|
+| 1 | Provider interface, fake provider (default everywhere), OpenAI-compatible dev adapter (dev-only guard), pure prompt builders, `scripts/ai-try.js` |
+| **2 (this entry)** | Schema (usage metering, atomic caps, kill switches), `POST /api/ai/generate`, the org on/off toggle in Settings |
+| **3** | UI on Lead/Contact pages — draft follow-up email, summarize, next step |
+| **4** | The real Anthropic adapter, credential resolution, the org allowlist moving from env to a real admin flow, a platform spend ceiling |
+| **5** | BYOK: encrypted key storage, fixed provider registry (no customer-supplied URL), admin set/rotate/remove |
+
+### File list, Stage 2
+
+```
+prisma/schema.prisma                                 — Organization.aiAssistEnabled*, AiUsage, AiRateLimitCounter, PlatformSetting, AiCapability
+prisma/migrations/20261025200931_ai_assist_stage2_backend/
+lib/ai/caps.ts                                        — the 3 cap constants, the only place they live
+lib/ai/rateLimiter.ts                                 — atomic reserveSlot/refundSlot + bucket helpers
+lib/ai/usage.ts                                       — recordAiUsage (metering, non-atomic increment)
+lib/ai/allowlist.ts                                   — isOrgAllowlistedForAi (AI_ASSIST_ALLOWED_ORG_IDS)
+lib/ai/killSwitch.ts                                  — env + DB kill-switch checks
+lib/ai/logging.ts                                     — logAiRequest + promptHash (never content/keys)
+lib/data/organizations.ts                             — updateAiAssistEnabled (extended)
+lib/data/activities.ts                                — listActivitiesForAiPrompt (extended, payment-excluded at the query level)
+lib/actions/ai.ts                                     — updateAiAssistEnabledAction
+app/api/ai/generate/route.ts                          — POST /api/ai/generate
+scripts/ai-kill.js                                    — the only way to flip the DB kill flag
+lib/data-loader.ts, src/store/crm.tsx, src/screens/Settings.tsx — the Settings -> Team toggle, wired end to end
+.env.example                                          — AI_ASSIST_ALLOWED_ORG_IDS, AI_ASSIST_KILL_SWITCH
+tests/integration/ai-rate-limiter.test.ts             — atomic reservation, concurrency, refund
+tests/integration/ai-generate.test.ts                 — the route's full check order
+tests/integration/ai-settings-action.test.ts          — the toggle action, admin-only + allowlist
+tests/integration/action-route-matrix.test.ts         — extended (ai/generate/route.ts, lib/actions/ai.ts)
+tests/integration/test-guard.test.ts                  — extended (3 new test files)
+PROGRESS.md                                           — this entry
+```
+
+## AI assist, Stage 1 of 5: provider interface, dev provider, pure prompt builders (Oct 26 2026)
+
+(Stage plan below is superseded by the revised 5-stage plan in the Stage 2 entry above.)
 
 Design approved, then built per the explicit decisions: dev uses a free-tier provider (Google AI
 Studio's Gemini, via its OpenAI-compatible endpoint) with fake/synthetic data only; real customers

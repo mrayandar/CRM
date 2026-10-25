@@ -93,6 +93,26 @@ export async function listActivitiesForSubject(
 }
 
 /**
+ * Feeds the AI-assist prompt builders (lib/ai/promptBuilder.ts's buildTimelineSummaryPrompt /
+ * buildNextStepPrompt), which need `actor.name` to label each timeline entry — unlike
+ * `listActivitiesForSubject`, which never includes the actor relation (its own callers resolve
+ * that from the already-loaded owners list client-side). Payment-kind rows are excluded
+ * unconditionally here, not via an `excludeKinds` option the caller could forget to pass: the
+ * prompt builders filter them again themselves (see their own doc comments), so this is
+ * belt-and-suspenders, not the only place that enforcement happens. The caller is responsible for
+ * the scoped by-id read on the subject first, same as `listActivitiesForSubject`.
+ */
+export async function listActivitiesForAiPrompt(scope: Scope, subject: { type: 'lead' | 'contact'; id: string }) {
+  const subjectWhere = subject.type === 'lead' ? { leadId: subject.id } : { contactId: subject.id }
+  return prisma.activity.findMany({
+    where: { orgId: scope.orgId, ...subjectWhere, kind: { not: 'payment' } },
+    include: { actor: true },
+    orderBy: { at: 'desc' },
+    take: 20,
+  })
+}
+
+/**
  * Records an activity and, in the same transaction, moves the parent record's "last activity"
  * timestamp (Lead.lastTouchedAt / Contact.lastInteractionAt) to the activity's time. Without this
  * the UI's optimistic bump is lost on reload. The updates are filtered by `orgId` so an id from
