@@ -60,6 +60,37 @@ export function listLeads(scope: Scope, options: ListLeadsOptions = {}) {
   })
 }
 
+export interface CalendarLeadFollowUp {
+  id: string
+  name: string
+  followUpAt: Date
+}
+
+/**
+ * Lead follow-ups due within [from, to] inclusive, for the Calendar screen (GET /api/calendar).
+ * Reuses the same closed-lead exclusion `isLeadFollowUpDue` (src/lib/utils.ts) already applies on
+ * the Leads list filter: converted (has a `convertedDeal`/`convertedContact`) or in a
+ * `CLOSED_LEAD_STATUSES` status never counts as a follow-up, here or there. Scoped by `ownerId`;
+ * only `id`/`name`/`followUpAt` selected — the calendar never shows a lead's score/estValue.
+ */
+export async function listLeadFollowUpsForCalendar(scope: Scope, from: Date, to: Date): Promise<CalendarLeadFollowUp[]> {
+  const rows = await prisma.lead.findMany({
+    where: {
+      orgId: scope.orgId,
+      ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }),
+      followUpAt: { gte: from, lte: to },
+      status: { notIn: CLOSED_LEAD_STATUSES },
+    },
+    select: {
+      id: true, name: true, followUpAt: true,
+      convertedDeal: { select: { id: true } }, convertedContact: { select: { id: true } },
+    },
+  })
+  return rows
+    .filter((l) => !l.convertedDeal && !l.convertedContact)
+    .map((l) => ({ id: l.id, name: l.name, followUpAt: l.followUpAt! }))
+}
+
 export function getLeadById(scope: Scope, id: string) {
   return prisma.lead.findFirst({
     where: {

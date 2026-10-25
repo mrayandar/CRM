@@ -4,6 +4,7 @@ import { NavLink, useNavigate } from '@/lib/router-compat'
 import {
   BarChart3,
   Building2,
+  Calendar as CalendarIcon,
   CheckSquare,
   Columns3,
   LayoutDashboard,
@@ -58,6 +59,7 @@ export function Sidebar() {
       count: overdueTasks || openTasks,
       countTone: overdueTasks ? 'alert' : 'neutral',
     },
+    { to: '/calendar', label: 'Calendar', icon: CalendarIcon },
     { to: '/reports', label: 'Reports', icon: BarChart3 },
     ...(canAccessPayments ? [{ to: '/payments', label: 'Payments', icon: Wallet }] : []),
     { to: '/settings', label: 'Settings', icon: Settings },

@@ -95,6 +95,36 @@ export async function listTasks(scope: Scope, options: ListTasksOptions = {}) {
   return rows.map((row) => redactOutOfScopeParent(row, scope.scopeOwnerId))
 }
 
+export interface CalendarTask {
+  id: string
+  title: string
+  dueDate: Date
+  done: boolean
+}
+
+/**
+ * Tasks due within [from, to] inclusive, for the Calendar screen (GET /api/calendar). Same
+ * assignee-OR-creator visibility as `listTasks` (`taskVisibilityWhere`) — a task's own
+ * independent visibility rule, distinct from every other list here. Deliberately selects only
+ * `id`/`title`/`dueDate`/`done` — no `relatedTo*` fields at all, so there is nothing to redact:
+ * the calendar never shows which lead/contact/deal a task is attached to, in scope or out of it,
+ * which trivially satisfies "never reveal an out-of-scope parent's name" (compare `listTasks`,
+ * which DOES need `redactOutOfScopeParent` because it shows `relatedTo`). Returns both done and
+ * not-done tasks in range — the client's own "show completed" toggle decides what to hide/mute,
+ * not this query (no server-side filter param for it, by design — see the Calendar route's own
+ * doc comment).
+ */
+export function listTasksForCalendar(scope: Scope, from: Date, to: Date): Promise<CalendarTask[]> {
+  return prisma.task.findMany({
+    where: {
+      orgId: scope.orgId,
+      ...(scope.scopeOwnerId && taskVisibilityWhere(scope.scopeOwnerId)),
+      dueDate: { gte: from, lte: to },
+    },
+    select: { id: true, title: true, dueDate: true, done: true },
+  })
+}
+
 export async function getTaskById(scope: Scope, id: string) {
   const row = await prisma.task.findFirst({
     where: {

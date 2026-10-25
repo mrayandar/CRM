@@ -2,6 +2,73 @@
 
 > Living context file. Updated at the end of every task.
 
+## Calendar view (Oct 25 2026)
+
+New `/calendar` route + sidebar entry: a month grid (Monday-start, a fixed constant) plus an
+agenda panel for the selected day, falling back to a day-by-day agenda list on narrow screens
+(the grid is hidden there). Per this task's explicit testing-policy override, only `tsc` and
+`npm run test:related` were run — the full suite stays reserved for the pre-launch gate.
+
+**Data: `GET /api/calendar?from=&to=`**, not the CrmProvider arrays — a month view routinely needs
+dates outside what `loadCrmData` ever bulk-fetches, and re-fetching this one range per month
+navigation is far cheaper than loading an org's entire task/lead/deal history. Validates `from`/
+`to` as real "YYYY-MM-DD" calendar dates (rejects a malformed string and a non-existent date like
+"2026-02-30", which `new Date(...)` would otherwise silently roll into March), `from <= to`, and
+at most 62 days — 400 on any failure. `force-dynamic` + `Cache-Control: private, no-store`, same
+`requireAuth()`/Scope gating as every other route. New data-layer functions, one per entity
+(`listTasksForCalendar`, `listLeadFollowUpsForCalendar`, `listOpenDealsForCalendar`), each scoped
+by `ownerId` (or the task's own assignee-OR-creator rule) exactly like their list-screen
+counterparts. Open deals only — Won and Lost excluded via `stage.isClosed` (a closed deal's
+`closeDate` is the instant it actually closed, not an expected date to plan around). Closed leads
+excluded via the same `CLOSED_LEAD_STATUSES`/converted check the Leads filter and Stage C's scan
+already use. No payment dates — Payments stays admin-only and isn't imported by this route at
+all. Each item returns a plain "YYYY-MM-DD" `date` string, not an ISO instant — removing any
+chance of the client re-deriving the wrong day via a local-time `Date` method, the exact class of
+bug Stage A's own sign-off check found and fixed for `Lead.followUpAt`'s display.
+
+New additive migration: `deals_orgId_ownerId_closeDate_idx`. EXPLAIN ANALYZE against the real Neon
+DB: the lead and deal queries each use their own dedicated index via an Index Scan; the task query
+is a Seq Scan — same documented caveat as Stage C's identical finding (the `tasks` table is tiny,
+~25-50 rows total today, so the planner correctly prefers a sequential scan over any index at this
+size).
+
+**Tasks never reveal an out-of-scope parent's name** — not via a redaction check, but by design:
+`listTasksForCalendar` selects only `id`/`title`/`dueDate`/`done`, no `relatedTo*` fields at all,
+so there's nothing to redact in the first place (unlike `listTasks`, which does need
+`redactOutOfScopeParent` because it shows `relatedTo`). The calendar never shows which lead/
+contact/deal a task is attached to, in scope or out of it.
+
+**UI**: existing design-system components only (`Card`, `Badge`, `Checkbox`, `Popover`'s sibling
+primitives) — no new visual patterns. "Today" is highlighted via `localDayDelta` using the
+viewer's own `Owner.timezone`, falling back to the org's effective timezone (a different fallback
+order than `effectiveOrgTimezone`'s own org-business-period logic, which prioritizes org config
+over the viewer when configured — the calendar's "today" concept deliberately prioritizes the
+individual viewer first). Overdue tasks/follow-ups render in their original overdue style on their
+original day (never moved to today), plus a dismissable-by-navigation overdue-task-count banner
+linking to `/tasks`. Marking a task done reuses the existing `toggleTask` mutation from
+`CrmProvider` (optimistic, rollback + toast on failure already built in) — the calendar's own
+locally-fetched copy is kept in sync by patching the matching item in its own `items` state
+alongside it. No drag-to-reschedule in v1. There is no Mine/Team toggle on this screen at all
+(unlike Tasks/Leads/Pipeline) — `GET /api/calendar` has no `ownerId` filter param to begin with,
+so a scoped Member's view is always exactly their own, with nothing to toggle away from; this
+trivially satisfies "hide the Mine/Team toggle for a scoped Member" by never having built one that
+would need hiding.
+
+New `tests/integration/calendar.test.ts` (14 tests): range validation (malformed/non-existent
+date, `from > to`, over 62 days, exactly 62 days), org isolation, OWN mode (a Member sees only
+their own items, and the response's task items carry no `relatedTo*` field for anyone to leak), no
+payment-shaped data in a Member's response, closed-lead/Won-Lost-deal exclusion, and the Nov-1
+calendar-date round-trip (returned as a plain date string, so it's correct for every viewer
+timezone by construction rather than needing a Karachi/Los-Angeles-specific assertion). Found and
+fixed a real test bug while building this: the range-validation block used `beforeAll` to log in,
+but the file's own `afterEach(() => mockAuth.mockReset())` cleared that login after the first test
+in the block, leaving the rest hitting 401 instead of the intended 400s — fixed to `beforeEach`.
+Extended both exhaustiveness lists: `action-route-matrix.test.ts`'s `ROUTE_BUCKETS` (new
+`calendar/route.ts` entry, `scoped`) and `test-guard.test.ts`'s `KNOWN_TEST_FILES`.
+
+Related-test total (policy override — full suite not run): **355 tests passing** across the files
+`test:related` traced from every changed file.
+
 ## Reminders and notifications — Stage B sign-off checks + Stages C, D, E (Oct 25 2026)
 
 Built in one batch, three commits (plus a preliminary one for the three sign-off checks), per the

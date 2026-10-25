@@ -123,6 +123,11 @@ const ROUTE_BUCKETS: Record<string, { kind: 'scoped' | 'exempt' | 'public'; reas
     reason:
       'GET /api/notifications/unread-count — a single COUNT scoped by orgId + the caller\'s own recipientId; no Scope object (no OWN-mode subject lookup) involved at all.',
   },
+  'calendar/route.ts': {
+    kind: 'scoped',
+    reason:
+      'GET /api/calendar — builds a Scope and passes it to listTasksForCalendar/listLeadFollowUpsForCalendar/listOpenDealsForCalendar, each of which ANDs scope.scopeOwnerId into its own query; see tests/integration/calendar.test.ts.',
+  },
 }
 
 describe('exhaustiveness: lib/actions/payments.ts, lib/actions/import.ts, and every app/api/**/route.ts file is bucketed', () => {

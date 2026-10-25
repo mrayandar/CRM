@@ -419,6 +419,7 @@ model Deal {
   @@index([orgId, stageId])
   @@index([orgId, ownerId])
   @@index([orgId, companyId])
+  @@index([orgId, ownerId, closeDate])
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "deals_name_trgm_idx")
   @@map("deals")
 }

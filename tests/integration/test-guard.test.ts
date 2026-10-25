@@ -40,6 +40,7 @@ function discoverTestFiles(dir: string, base: string = dir): string[] {
 const KNOWN_TEST_FILES = [
   'integration/action-route-matrix.test.ts',
   'integration/cache-control.test.ts',
+  'integration/calendar.test.ts',
   'integration/cross-tenant.test.ts',
   'integration/csv-import.test.ts',
   'integration/csv-import-commit.test.ts',

@@ -68,6 +68,33 @@ export async function getPipelineTotals(scope: Scope) {
   }))
 }
 
+export interface CalendarDeal {
+  id: string
+  name: string
+  closeDate: Date
+}
+
+/**
+ * Open deals' expected close dates, within [from, to] inclusive, for the Calendar screen
+ * (GET /api/calendar). "Open" means the deal's stage isn't closed — Won and Lost both excluded,
+ * since a closed deal's `closeDate` is the instant it actually closed, not an expected date
+ * anyone still needs to plan around (see this feature's own design note). Scoped by `ownerId`
+ * like every other per-rep list here; `from`/`to` are already-validated calendar dates (UTC
+ * midnight, same convention `closeDate` itself is stored in — see the route handler). Only
+ * `id`/`name`/`closeDate` selected: the calendar never shows a deal's value.
+ */
+export function listOpenDealsForCalendar(scope: Scope, from: Date, to: Date): Promise<CalendarDeal[]> {
+  return prisma.deal.findMany({
+    where: {
+      orgId: scope.orgId,
+      ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }),
+      closeDate: { gte: from, lte: to },
+      stage: { isClosed: false },
+    },
+    select: { id: true, name: true, closeDate: true },
+  })
+}
+
 export function getDealById(scope: Scope, id: string) {
   return prisma.deal.findFirst({
     where: {
