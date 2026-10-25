@@ -2,6 +2,70 @@
 
 > Living context file. Updated at the end of every task.
 
+## Calendar follow-up verification report (Oct 26 2026)
+
+Report-only, as instructed — no code changes, no fixes. Every finding below was produced by
+directly running the real code/tests against the real DB, not by re-reading the previous entry.
+
+**1. Last calendar commit, pushed, tree clean.** `8af70cfee630aa07ab49523bddd9e9f33d7d6ff4`
+("Calendar follow-up: task-cap check, test audit, a real task-index gap fixed") — confirmed as
+both `git log -1`'s HEAD and `git log origin/main -1`'s tip (identical hash), with a clean
+`git status --porcelain` before this report began. `npx prisma migrate status`: 25 migrations,
+"Database schema is up to date!" — no drift.
+
+**2. The converted-lead exclusion was already there; only the test was missing.**
+`listLeadFollowUpsForCalendar` (`lib/data/leads.ts`) already had the exclusion from the moment it
+was first written (the original Calendar-build task) — it was never a gap in the query itself,
+only in `tests/integration/calendar.test.ts`'s coverage of it (fixed in the previous entry). The
+query condition:
+```ts
+where: {
+  orgId: scope.orgId,
+  ...(scope.scopeOwnerId && { ownerId: scope.scopeOwnerId }),
+  followUpAt: { gte: from, lte: to },
+  status: { notIn: CLOSED_LEAD_STATUSES },   // excludes Lost + Unqualified at the SQL level
+},
+select: { ..., convertedDeal: { select: { id: true } }, convertedContact: { select: { id: true } } },
+```
+followed by a post-query filter: `rows.filter((l) => !l.convertedDeal && !l.convertedContact)` —
+conversion is excluded in JS, after the fetch, not in the WHERE clause (there's no `convertedDeal`/
+`convertedContact` column to filter on directly; they're back-relations). Verified directly
+against a real scratch org (created, exercised, deleted) with four leads sharing the same
+`followUpAt`: an open control lead, a Lost lead, an Unqualified lead, and a lead converted via the
+real `convertLeadToDeal` path (a Contact row with `originLeadId` pointing back, status flipped to
+`qualified`). Raw rows matching the WHERE clause were only the open lead and the converted one
+(Lost/Unqualified never even reached that point — filtered by SQL); the final result (after the
+JS filter) was the open lead alone. Confirmed: `lostLead` excluded, `unqualifiedLead` excluded,
+`toConvert` excluded, `openLead` (the control) included.
+
+**3. The Nov-1 timezone tests do catch a real regression of this exact bug class.** In a scratch
+edit to `app/api/calendar/route.ts` (never committed — `git diff`/`git status` confirmed clean
+before and after), `utcYmd` was changed from `date.toISOString().slice(0, 10)` to local-time
+getters (`getFullYear`/`getMonth`/`getDate`) — the identical bug class Stage A found and fixed for
+`Lead.followUpAt`. Running the Nov-1 timezone test against that break failed immediately under
+`TZ=America/Los_Angeles`, and more severely than a simple off-by-one: `parseYmd`'s own self-
+consistency check also calls the (now-broken) `utcYmd`, so the request's own `from`/`to` params
+failed their round-trip check under LA's negative offset and the endpoint returned `{error:
+"Invalid range"}` instead of items at all — the test crashed with `TypeError: Cannot read
+properties of undefined (reading 'find')` on `body.items`, a decisive failure, not a near-miss.
+Restored via `git checkout -- app/api/calendar/route.ts`; `git diff` on that file is empty.
+
+**4. 5,000 generated tasks: created and deleted in a throwaway org, manual-testing org untouched.**
+Both EXPLAIN scripts (previous entry) created a dedicated scratch `Organization` row, generated
+their tasks under it, and deleted the whole org (and everything under it) at the end — confirmed
+by each script's own "Cleaned up." output at the time. Re-verified now, independently: a direct
+count query found zero leftover orgs matching the scratch-script naming pattern, and zero
+scratch-org tasks anywhere in the database (current total: 32 tasks across every org in the whole
+database — a small, real number, not thousands). "Muhammad Rayan's Organization" (the real
+manual-testing org) has 17 tasks, unaffected throughout. **One real leak found and cleaned up
+while producing this report**: the deliberate break-and-restore in item 3 crashed mid-test on
+purpose, which skipped that specific test run's own `afterAll` cleanup, leaving two empty scratch
+orgs ("Calendar A ...", "Calendar B ...", 0 tasks each) behind. Found and deleted directly
+(tidying up this report's own investigation debris, not a code fix) — re-verified zero remain.
+
+**5. Full suite, run once in the background: 500/500 passing, 30 files, 1012.78s (~16m53s), zero
+failures.** No failures to list.
+
 ## Calendar follow-up: task-cap check, test audit, a real index gap found and fixed (Oct 25 2026)
 
 Mostly report-only, per the task. Only `tsc` and `npm run test:related` were run — the full suite
