@@ -246,11 +246,12 @@ export function Calendar() {
                           {cellDate.getUTCDate()}
                         </span>
                         <IconButton
-                          label={`Add task on ${cellYmd}`}
+                          label={`Add task on ${cellDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' })}`}
                           onClick={(e) => {
                             e.stopPropagation()
                             setNewTaskDate(cellYmd)
                           }}
+                          onKeyDown={(e) => e.stopPropagation()}
                           className="size-5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                         >
                           <Plus size={12} />

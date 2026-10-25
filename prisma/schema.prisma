@@ -544,6 +544,15 @@ model Task {
   @@index([orgId, createdById])
   @@index([orgId, done, dueDate])
   @@index([orgId, ownerId, done])
+  /// For the Calendar screen's listTasksForCalendar (lib/data/tasks.ts) — a dueDate RANGE with no
+  /// equality constraint on `done`/`ownerId` at all. EXPLAIN ANALYZE against 5000 generated tasks
+  /// showed the existing [orgId, done, dueDate]/[orgId, ownerId, done] indexes could only be used
+  /// for their `orgId` prefix here (a B-tree can't skip over an unconstrained `done`/`ownerId` to
+  /// reach a range condition on the column after it), so Postgres fell back to filtering every
+  /// row in the org by dueDate/ownerId-or-createdById after the orgId-only index scan — linear in
+  /// total org task count, not in the requested date range. This index lets dueDate's range
+  /// itself be the index condition.
+  @@index([orgId, dueDate])
   @@map("tasks")
 }
 

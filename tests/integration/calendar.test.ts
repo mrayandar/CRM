@@ -10,8 +10,10 @@ const { mockAuth } = vi.hoisted(() => ({ mockAuth: vi.fn() }))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@clerk/nextjs/server', () => ({ auth: () => mockAuth(), clerkClient: () => ({}) }))
 
+import { randomUUID } from 'crypto'
 import { prisma } from '@lib/prisma'
 import { ensureDefaultStages, listStages } from '@lib/data/stages'
+import * as actions from '@lib/actions/crm'
 import { GET as calendarGET, dynamic as calendarDynamic } from '../../app/api/calendar/route'
 import type { PipelineStage } from '@prisma/client'
 
@@ -56,6 +58,7 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const org of [A.org, B.org]) {
     await prisma.notification.deleteMany({ where: { orgId: org.id } })
+    await prisma.activity.deleteMany({ where: { orgId: org.id } }) // convertLeadAction's test logs one
     await prisma.task.deleteMany({ where: { orgId: org.id } })
     await prisma.deal.deleteMany({ where: { orgId: org.id } })
     await prisma.lead.deleteMany({ where: { orgId: org.id } })
@@ -99,6 +102,10 @@ describe('GET /api/calendar: range validation', () => {
   // test in this block and leave the rest hitting the 401 branch instead of the 400s under test.
   beforeEach(() => loginAs(A.admin, A.org, 'org:admin'))
 
+  it('rejects a missing from/to (no query params at all)', async () => {
+    const response = await calendarGET(new Request('http://localhost/api/calendar'))
+    expect(response.status).toBe(400)
+  })
   it('rejects a malformed date', async () => {
     const response = await calendarRequest('not-a-date', '2026-11-30')
     expect(response.status).toBe(400)
@@ -111,7 +118,11 @@ describe('GET /api/calendar: range validation', () => {
     const response = await calendarRequest('2026-11-30', '2026-11-01')
     expect(response.status).toBe(400)
   })
-  it('rejects a range over 62 days', async () => {
+  it('rejects a range of exactly 63 days (one day over the 62-day cap)', async () => {
+    const response = await calendarRequest('2026-01-01', '2026-03-04') // 63 days inclusive
+    expect(response.status).toBe(400)
+  })
+  it('rejects a range over 62 days (a larger example)', async () => {
     const response = await calendarRequest('2026-01-01', '2026-03-10') // 69 days
     expect(response.status).toBe(400)
   })
@@ -173,9 +184,21 @@ describe('GET /api/calendar: OWN mode', () => {
   })
 })
 
-describe('GET /api/calendar: no payment data', () => {
+describe('GET /api/calendar: no payment data for either role', () => {
   it("a Member's response never contains a Payment field or dollar-amount-shaped data", async () => {
     loginAs(repA, A.org, 'org:member')
+    const response = await calendarRequest('2026-11-01', '2026-11-30')
+    const body = await response.json()
+    const raw = JSON.stringify(body)
+    expect(raw.toLowerCase()).not.toContain('payment')
+    expect(raw.toLowerCase()).not.toContain('amount')
+  })
+
+  it("an Admin's response never contains a Payment field or dollar-amount-shaped data either", async () => {
+    // Payments is admin-only everywhere else in this app, but the Calendar route never imports
+    // lib/data/payments at all (see the route's own doc comment) — this isn't a role check to get
+    // right, there is simply no code path that could add payment data for anyone, admin included.
+    loginAs(A.admin, A.org, 'org:admin')
     const response = await calendarRequest('2026-11-01', '2026-11-30')
     const body = await response.json()
     const raw = JSON.stringify(body)
@@ -199,6 +222,19 @@ describe('GET /api/calendar: closed leads and Won/Lost deals are excluded', () =
     const ids = body.items.map((i: { subjectId: string }) => i.subjectId)
     expect(ids).not.toContain(lostLead.id)
     expect(ids).not.toContain(unqualifiedLead.id)
+  })
+
+  it('a converted lead never appears as a follow-up, even while still "new" status', async () => {
+    const convertedLead = await prisma.lead.create({
+      data: { orgId: A.org.id, name: 'Converted lead', title: '', companyId: A.company.id, email: `conv-${RUN}@example.com`, phone: '', source: 'Inbound', location: '', status: 'new', ownerId: A.admin.id, followUpAt: new Date('2026-11-20T00:00:00.000Z') },
+    })
+    loginAs(A.admin, A.org, 'org:admin')
+    await actions.convertLeadAction(convertedLead.id, { ownerId: A.admin.id, contactId: randomUUID(), activityId: randomUUID() })
+
+    const response = await calendarRequest('2026-11-01', '2026-11-30')
+    const body = await response.json()
+    const ids = body.items.map((i: { subjectId: string }) => i.subjectId)
+    expect(ids).not.toContain(convertedLead.id)
   })
 
   it('a Won or Lost deal never appears as a close date', async () => {
@@ -226,19 +262,40 @@ describe('GET /api/calendar: closed leads and Won/Lost deals are excluded', () =
   })
 })
 
-describe('GET /api/calendar: a task due 2026-11-01 lands on Nov 1 regardless of the server/caller timezone', () => {
-  it('returns date "2026-11-01" for a task with dueDate midnight UTC on that day', async () => {
+describe('GET /api/calendar: a task due 2026-11-01 lands on Nov 1 for Asia/Karachi and America/Los_Angeles viewers', () => {
+  it('returns date "2026-11-01" for a task with dueDate midnight UTC on that day, under both timezones', async () => {
     const task = await prisma.task.create({
       data: { orgId: A.org.id, title: 'Timezone check task', dueDate: new Date('2026-11-01T00:00:00.000Z'), ownerId: A.admin.id, createdById: A.admin.id },
     })
     loginAs(A.admin, A.org, 'org:admin')
-    const response = await calendarRequest('2026-11-01', '2026-11-01')
-    const body = await response.json()
-    const item = body.items.find((i: { subjectId: string }) => i.subjectId === task.id)
-    expect(item).toBeTruthy()
-    // The route returns a plain "YYYY-MM-DD" string, never an ISO instant — so there is no local-
-    // time re-derivation step on the client for Asia/Karachi or America/Los_Angeles (or any other
-    // zone) to get wrong; this one assertion covers every viewer identically, by construction.
-    expect(item.date).toBe('2026-11-01')
+
+    // The route itself never reads a caller timezone at all (it returns a plain "YYYY-MM-DD"
+    // string, never an ISO instant — see utcYmd in app/api/calendar/route.ts) — so the ONLY way
+    // this could ever drift per viewer is if something in the route's own date handling
+    // accidentally used a local-time Date method instead of a UTC one. Running the exact same
+    // request under two real, opposite-signed UTC offsets (TZ affects the SERVER process, which
+    // is the only "local time" in play here — a real Asia/Karachi or America/Los_Angeles
+    // browser's OWN local-time methods never reach this route at all) and asserting an identical
+    // result is what actually proves that, rather than just asserting it once and trusting the
+    // code never changes.
+    const prevTz = process.env.TZ
+    let dateFromKarachi: string
+    let dateFromLA: string
+    try {
+      process.env.TZ = 'Asia/Karachi'
+      const responseKarachi = await calendarRequest('2026-11-01', '2026-11-01')
+      const bodyKarachi = await responseKarachi.json()
+      dateFromKarachi = bodyKarachi.items.find((i: { subjectId: string }) => i.subjectId === task.id)?.date
+
+      process.env.TZ = 'America/Los_Angeles'
+      const responseLA = await calendarRequest('2026-11-01', '2026-11-01')
+      const bodyLA = await responseLA.json()
+      dateFromLA = bodyLA.items.find((i: { subjectId: string }) => i.subjectId === task.id)?.date
+    } finally {
+      process.env.TZ = prevTz
+    }
+
+    expect(dateFromKarachi).toBe('2026-11-01')
+    expect(dateFromLA).toBe('2026-11-01')
   })
 })

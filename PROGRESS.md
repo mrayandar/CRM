@@ -2,6 +2,85 @@
 
 > Living context file. Updated at the end of every task.
 
+## Calendar follow-up: task-cap check, test audit, a real index gap found and fixed (Oct 25 2026)
+
+Mostly report-only, per the task. Only `tsc` and `npm run test:related` were run — the full suite
+stays on the pre-launch gate.
+
+**1. No cap exists today — but a forward-looking gate is recorded.** Neither `listTasks`
+(`lib/data/tasks.ts`) nor `loadCrmData` applies any `take`/limit to tasks — confirmed by reading
+both (no `take:`, no post-query `.slice()`). The Calendar screen reading task items from
+`CrmProvider`'s `tasks` array is safe today because that array already holds every task the
+caller can see, uncapped. Nothing to fix now; the conditional fix the task proposed (re-fetch from
+`GET /api/calendar` and merge in optimistic rows by id) doesn't apply yet. Recorded as a **Stage 2
+gate** instead (see that section below): the moment Tasks gets paged/windowed loading, the
+Calendar must stop depending on `tasks` and go back to reading from the route for the visible
+range, merging in only its own optimistic creates — exactly the fix this task described, deferred
+to the moment it's actually needed rather than built against a cap that doesn't exist.
+
+**2. Calendar tests, audited by name — three gaps found and fixed** (all in
+`tests/integration/calendar.test.ts`):
+- Nov-1-lands-on-Nov-1 for Asia/Karachi and America/Los_Angeles viewers: the existing test
+  (`'returns date "2026-11-01" for a task with dueDate midnight UTC on that day'`) asserted the
+  date once and never actually exercised two different timezones, despite its describe block's own
+  title claiming to. Rewritten to run the identical request under `TZ=Asia/Karachi` then
+  `TZ=America/Los_Angeles` and assert both return `"2026-11-01"`.
+- OWN mode, none of another rep's items: already covered —
+  `'a Member sees only their own items — repB's items never appear, and no parent name is ever
+  present for a task'`. No change.
+- Neither role gets payment dates: the existing test only ever logged in as a Member. Added
+  `"an Admin's response never contains a Payment field or dollar-amount-shaped data either"` — the
+  route never imports `lib/data/payments` at all, so this isn't actually a role check to get
+  right, but it's now asserted for both roles instead of one.
+- Closed/converted/Lost/Unqualified leads and Won/Lost deals excluded: Lost+Unqualified+Won+Lost-
+  deal were already covered, but the describe title's own "...and converted..." lead case was
+  never actually built — the test only created Lost/Unqualified leads. Added
+  `'a converted lead never appears as a follow-up, even while still "new" status'` (via the real
+  `convertLeadAction`, not a hand-set flag), which also confirms the exclusion is about conversion
+  itself, not merely a side effect of the status change conversion happens to make.
+- Range validation (missing, malformed, non-existent date, from-after-to, over 62 days): "missing"
+  was never tested at all — added `'rejects a missing from/to (no query params at all)'`. Also
+  added a precise one-day-over-the-cap case, `'rejects a range of exactly 63 days'`, alongside the
+  existing 69-day example (kept, renamed for clarity) — a tighter boundary than "69 days" alone
+  would have been if the cap were ever accidentally loosened to, say, 65.
+
+**3. A real index gap, found and fixed.** EXPLAIN ANALYZE for `listTasksForCalendar`'s query
+against 5,000 generated tasks (dev DB, cleaned up after): Postgres used `tasks_orgId_ownerId_done_idx`
+but only for its `orgId` prefix — a B-tree can't skip over an unconstrained `done`/`ownerId` to
+reach a range condition on a column after it, so `dueDate` and the `ownerId`/`createdById` OR
+ended up as post-scan filters over **every task in the org** (4,820 of 5,000 rows filtered out;
+~1.1ms). This scales with total org task count, not with the requested date range — exactly the
+kind of thing that's invisible at today's real scale (~25-50 tasks total across every org) and
+only shows up once an org has thousands. New index, `@@index([orgId, dueDate])` (additive
+migration), re-verified with the same 5,000-row EXPLAIN: now an Index Scan with `dueDate` itself
+as part of the index condition, touching only the ~180 matching rows (~0.1ms) — a real,
+measured ~11x improvement at this test's scale, and no longer linear in org size at all.
+
+**4. Existing coverage for the two addTaskAction behaviors, not duplicated.** Both already exist
+in `tests/integration/calendar-task-create.test.ts` (added building task creation from the
+calendar, since the calendar reuses `addTaskAction` unchanged — nothing calendar-specific to add):
+- "assigning a task to a teammate writes one notification":
+  `'a Member can create a task assigned to a teammate, who gets exactly one notification'`.
+- "assigning to an inactive owner is rejected": `'rejects an inactive assignee'`.
+
+**5. Accessibility, checked and fixed.** The day-cell "+" button's `aria-label` was
+`` `Add task on ${cellYmd}` `` — e.g. "Add task on 2026-11-05", not human-readable. Changed to a
+locale-formatted label (`cellDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric',
+timeZone: 'UTC' })`), e.g. "Add task on November 5". Keyboard focusability was already correct
+(it's a real `<button>` via the existing `IconButton`, and `opacity-0` doesn't affect focus or
+click-ability — only the hover/focus-visible classes control what's visually shown); added
+`onKeyDown` stopPropagation on the button itself so pressing Enter/Space on it can't also bubble
+into the day cell's own Enter/Space handler and redundantly fire `setSelectedDate`. Escape closing
+the modal needed no fix — `Modal` (`src/components/ui/Modal.tsx`) already listens for it globally;
+`NewTaskModal` inherits that for free, same as every other modal in this app.
+
+Related-test total (policy override — full suite not run): **18 tests passing** — `test:related`
+on `prisma/schema.prisma`, `src/screens/Calendar.tsx`, and `tests/integration/calendar.test.ts`
+traced to just `calendar.test.ts` itself. Found and fixed one more real test bug while verifying:
+the new converted-lead test logs an Activity that the file's own `afterAll` wasn't deleting before
+deleting owners, so the FK restrict on `activities.actorId` broke cleanup — fixed by deleting
+activities before owners, same class of ordering bug as earlier sessions' identical fixes.
+
 ## Calendar: task creation (Oct 25 2026)
 
 Per this task's explicit instruction, only `tsc` and `npm run test:related` were run (289 tests
@@ -1444,6 +1523,17 @@ populate this cache with real data) is considered complete, rerun the live demot
 the real cache — demote a real admin with the tab open, confirm no payment data remains in it —
 the same check already done against `requirePaymentAccess()` and `GET /api/crm-refetch`, now
 against the TanStack Query cache specifically, with real query data to lose for the first time.
+
+**Stage 2 gate, recorded here (added Oct 25 2026, during the Calendar feature's follow-up
+review)**: the Calendar screen's task items are read directly from `CrmProvider`'s own `tasks`
+array (see the Calendar entries below) — today that array is `loadCrmData`'s full, uncapped
+`listTasks(scope)` result, so this is safe. The moment Stage 2 gives Tasks paged/windowed loading
+(so `tasks` no longer holds every task the caller can see), the Calendar MUST STOP depending on
+`tasks` for its grid and go back to reading task items from `GET /api/calendar` for the visible
+range instead, merging in only its own just-created optimistic rows by id (the same pattern
+already used for lead follow-ups/deal close dates, which were never read from provider arrays to
+begin with). Re-verify this explicitly as part of Stage 2's own work, not discovered as a silent
+regression afterward.
 
 **Test total: 215/215** (207 + 8 new: 4 `resolveOrgTimezone` unit tests, 4
 `updateOrgTimezoneAction` integration tests). `tsc --noEmit`, `next build`, and a live Playwright
