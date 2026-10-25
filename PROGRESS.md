@@ -5,8 +5,8 @@
 ## Reminders and notifications — Stage B sign-off checks + Stages C, D, E (Oct 25 2026)
 
 Built in one batch, three commits (plus a preliminary one for the three sign-off checks), per the
-user's explicit instruction not to push until the full suite passed at the end. **521 tests
-passing (28 files)**, up from 445 at the end of the testing-policy work.
+user's explicit instruction not to push until the full suite passed at the end. **472 tests
+passing (27 files)**, up from 445 at the end of the testing-policy work.
 
 ### Stage B sign-off checks (commit 1)
 
@@ -95,8 +95,8 @@ component, mirroring `MenuItem`'s identical one); "Daily pipeline digest" stays 
 "needs a sending domain" instead. `updateNotificationPreferenceAction` always writes the CALLER's
 own preference — no `ownerId` param exists to pass someone else's.
 
-Report of the exact totals, run at the end per the user's instruction: full suite 521 tests
-passing, 28 files, 0 failures.
+Report of the exact totals, run at the end per the user's instruction: full suite **472 tests
+passing, 27 files, 0 failures**, 916.14s.
 
 ## Test suite speed: diagnosis + testing policy (Oct 25 2026)
 
