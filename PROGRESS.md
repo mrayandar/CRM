@@ -2,6 +2,71 @@
 
 > Living context file. Updated at the end of every task.
 
+## Test suite speed: diagnosis + testing policy (Oct 25 2026)
+
+The suite had grown too slow to run after every small change (806s / 445 tests across 24 files).
+Diagnosed before building anything; built only the policy + tooling (item 5 of the four-part ask).
+
+**Diagnosis.** Raw per-query latency from this machine to Neon: ~250ms median round trip
+(measured directly, 10 consecutive `SELECT 1`s), plus a ~2.7s cold-start on the first connection —
+this network RTT, not Postgres query execution time, is the dominant cost; a typical DB-backed
+action test issues roughly 8-40 sequential queries (each `await`ed one at a time inside a
+transaction), so RTT alone accounts for seconds per test before any lead/contact GIN-index insert
+cost (the ~2-4s-per-insert finding from the CSV-import pass) is even added.
+
+Top of the real per-test timing (`vitest run --reporter=json`): the two slowest are both new Stage
+B notification tests — `notifications.test.ts`'s "bulk reassign coalesces" (22.4s) and "A→B→A
+notifies A twice" (21.6s), each chaining 2-3 full actions plus several `listNotifications` reads.
+Next: `cross-tenant.test.ts`'s activity-dedup test (17.6s) and Dashboard-payments-math test
+(16.1s), then a cluster of payment/undo/pagination tests at 9-15s. File totals: `cross-tenant.
+test.ts` alone is ~330s of the 806s (163 tests, the single biggest file by far), `csv-import-
+commit.test.ts` ~128s, the new `notifications.test.ts` ~111s, `own-mode.test.ts` ~92s including
+its ~22s of sequential `beforeAll` fixture creates — every other file (17 of them, mostly pure unit
+tests with Clerk mocked and no DB) is negligible.
+
+**Thousands-of-rows / many-sequential-creates audit.** Only one test creates anywhere near
+"thousands" of rows: `csv-import-commit.test.ts`'s per-org-cap test, seeding ~5,000 leads to reach
+`PER_ORG_RECORD_CAP` — it already uses `createMany` (one batched statement), so it's already the
+right shape; no change needed there. The real many-sequential-creates pattern is in `beforeAll`
+fixture setup across `own-mode.test.ts`/`cross-tenant.test.ts`/`notifications.test.ts`/
+`csv-import-commit.test.ts`/`lead-follow-up.test.ts` — each creates 10-15+ independent sibling
+rows (leads/contacts/deals/tasks for two reps) one `await` at a time. `createMany` doesn't fit
+(it doesn't return the created rows, and the fixtures need their ids), but parallelizing the
+independent creates with `Promise.all` would, without changing what any test asserts — not done in
+this pass (diagnosis-and-policy only), flagged here for a future pass.
+
+**Local Postgres (proposed, not built).** A `docker-compose.yml` running `postgres:16` (the
+official image already supports `CREATE EXTENSION pg_trgm`, which this repo's own migration
+`20261023110512_pg_trgm_search_indexes` already issues — no special image needed), a `.env.test`
+with a local `DATABASE_URL`/`DIRECT_URL`, and a Vitest `globalSetup` that runs
+`prisma migrate deploy` against it once per run. Nothing in the current suite asserts anything
+Neon-specific (no committed test checks connection-pool exhaustion, cold-start latency, or a real
+query plan under production-scale data) — every test is exercising application logic, not Neon's
+own behavior — so the whole suite could move to local Postgres, with at most a small smoke test
+kept under a separate `npm run test:neon` purely to confirm real Neon reachability before a
+deploy. Estimated speedup: eliminating ~250ms RTT per query (loopback is sub-millisecond) plus
+removing the cold-start tax should cut total time roughly 5-10x on its own; it also removes the
+`fileParallelism: false` constraint (a local Postgres has far more headroom than Neon's pooler),
+which could compound another 3-5x depending on CPU cores. Rough combined estimate: 806s → 20-40s.
+
+**CI workflow (proposed, not built).** A GitHub Actions workflow (`.github/workflows/test.yml`) on
+`push`/`pull_request`, using a `postgres:16` service container (same pg_trgm note as above — no
+secrets needed for the DB, it's an ephemeral container), running: checkout → setup Node → `npm ci`
+→ `prisma migrate deploy` against the service container → `npm run typecheck` → `npm test`. No
+Clerk secrets needed either — every test file already mocks `@clerk/nextjs/server` directly
+(`vi.mock('@clerk/nextjs/server', ...)`), confirmed by grepping every integration test file.
+
+**Built: testing policy + `test:related` (item 5).** New `CLAUDE.md` (didn't exist before) states
+the policy: at the end of a task, run `tsc` and `npm run test:related -- <changed files>` (Vitest's
+own module-graph "related" mode — verified working: `vitest related src/lib/utils.ts` correctly
+found 9 of 24 affected files); run the full suite only on "stage complete" or before pushing a
+change touching `lib/auth`/`lib/scope`/`lib/actions`/`lib/data`/`middleware.ts`/
+`prisma/schema.prisma`; and never skip `cross-tenant.test.ts`/`own-mode.test.ts`/
+`action-route-matrix.test.ts`/`scope.test.ts`/`scope-required.test.ts` before such a push, even if
+`test:related` doesn't surface them on its own (a Prisma schema change doesn't get "imported" the
+way a TS import does). New `package.json` script: `"test:related": "vitest related --run"`. No
+test assertions were changed anywhere in this pass.
+
 ## Reminders and notifications — Stage A (follow-up date) + Stage B (assigned notifications) (Oct 25 2026)
 
 Built per the approved design, one stage at a time, with the user's explicit four-check sign-off

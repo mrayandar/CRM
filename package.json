@@ -12,7 +12,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:related": "vitest related --run"
   },
   "dependencies": {
     "@clerk/nextjs": "7.9.5",
