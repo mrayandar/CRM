@@ -100,6 +100,15 @@ async function createLeadOwnedBy(ownerId: string) {
   return id
 }
 
+async function createTaskOwnedBy(ownerId: string) {
+  loginAsAdmin()
+  const id = randomUUID()
+  await actions.addTaskAction({
+    id, title: `Task ${id}`, dueDate: new Date().toISOString(), priority: 'low', ownerId,
+  })
+  return id
+}
+
 describe('Owner.active exclusion', () => {
   it('createLeadAction rejects an inactive owner', async () => {
     loginAsAdmin()
@@ -323,5 +332,125 @@ describe('titles never contain a stored value or amount', () => {
     expect(title).toBeTruthy()
     expect(title).not.toContain(String(value))
     expect(title).toBe(`Deal assigned to you: Six Figure Deal ${dealId}`)
+  })
+})
+
+describe('unread count and the list agree (Stage B sign-off check 2)', () => {
+  it('count equals the unread portion of the list after deleting a task, completing another, and reassigning a lead', async () => {
+    // A fresh recipient, not repA/repB — both already carry notifications (some marked read) from
+    // earlier describe blocks in this file, and the list legitimately includes read rows (newest
+    // 50) while the count is unread-only, so count vs. raw list.length would disagree for reasons
+    // having nothing to do with this test. The real invariant is: every notification `count`
+    // counts appears in the list as unread, and nothing else in the list is unread either.
+    const freshRep = await prisma.owner.create({
+      data: { orgId: org.id, clerkUserId: `test-notif-fresh-${randomUUID()}`, name: 'Fresh Rep', email: `fresh-${randomUUID()}@example.com`, role: 'Member' },
+    })
+
+    const assertAgree = async (recipientId: string) => {
+      const count = await getUnreadCount(org.id, recipientId)
+      const list = await listNotifications(scopeFor(null), recipientId)
+      expect(count).toBe(list.filter((n) => n.readAt === null).length)
+    }
+
+    loginAsAdmin()
+    const taskToDelete = await createTaskOwnedBy(freshRep.id)
+    const taskToComplete = await createTaskOwnedBy(freshRep.id)
+    const leadToReassign = await createLeadOwnedBy(freshRep.id)
+    await assertAgree(freshRep.id)
+    expect(await getUnreadCount(org.id, freshRep.id)).toBe(3)
+
+    // Deleting a task does NOT cascade-delete its Notification row (subjectId is a soft
+    // polymorphic reference, not an enforced FK) — without retractNotificationsForSubject inside
+    // deleteTask, the count above would still include it while listNotifications correctly drops
+    // it (buildTitle's lookup finds nothing), breaking the count/list agreement this test checks.
+    await actions.deleteTaskAction(taskToDelete)
+    await assertAgree(freshRep.id)
+    expect(await getUnreadCount(org.id, freshRep.id)).toBe(2)
+
+    await actions.toggleTaskAction(taskToComplete, true)
+    await assertAgree(freshRep.id)
+    expect(await getUnreadCount(org.id, freshRep.id)).toBe(2) // unaffected — completion isn't retraction
+
+    await actions.updateLeadAction({
+      id: leadToReassign, name: `Lead ${leadToReassign}`, title: '', email: '', phone: '',
+      companyId: company.id, source: 'Inbound', ownerId: repB.id, activityId: randomUUID(),
+    })
+    await assertAgree(freshRep.id)
+    expect(await getUnreadCount(org.id, freshRep.id)).toBe(1) // the lead's notification moved away
+
+    // The reassignment moved the notification to repB, not just removed it from freshRep.
+    await assertAgree(repB.id)
+    const repBUnreadForLead = (await listNotifications(scopeFor(null), repB.id)).filter(
+      (n) => n.subjectId === leadToReassign && n.readAt === null,
+    )
+    expect(repBUnreadForLead.length).toBe(1)
+
+    await prisma.notification.deleteMany({ where: { orgId: org.id, recipientId: freshRep.id } })
+    await prisma.task.deleteMany({ where: { orgId: org.id, ownerId: freshRep.id } })
+    await prisma.owner.delete({ where: { id: freshRep.id } })
+  })
+})
+
+describe('GET /api/notifications query count with mixed subject types (Stage B sign-off check 3)', () => {
+  it('stays bounded (one query per subject type present, not one per notification)', async () => {
+    const leadIds = Array.from({ length: 13 }, () => randomUUID())
+    const contactIds = Array.from({ length: 13 }, () => randomUUID())
+    const dealIds = Array.from({ length: 12 }, () => randomUUID())
+    const taskIds = Array.from({ length: 12 }, () => randomUUID())
+
+    await prisma.lead.createMany({
+      data: leadIds.map((id, i) => ({
+        id, orgId: org.id, name: `Bulk Lead ${i} ${id}`, title: '', companyId: company.id,
+        email: `bulk-lead-${id}@example.com`, phone: '', source: 'Inbound' as const, location: '', ownerId: repA.id,
+      })),
+    })
+    await prisma.contact.createMany({
+      data: contactIds.map((id, i) => ({
+        id, orgId: org.id, name: `Bulk Contact ${i} ${id}`, title: '', companyId: company.id,
+        email: `bulk-contact-${id}@example.com`, phone: '', location: '', tags: [], lifecycle: 'Prospect', ownerId: repA.id,
+      })),
+    })
+    await prisma.deal.createMany({
+      data: dealIds.map((id, i) => ({
+        id, orgId: org.id, name: `Bulk Deal ${i} ${id}`, companyId: company.id, value: 100,
+        source: 'Inbound' as const, probability: stage.probability, stageId: stage.id, closeDate: new Date(), ownerId: repA.id,
+      })),
+    })
+    await prisma.task.createMany({
+      data: taskIds.map((id, i) => ({
+        id, orgId: org.id, title: `Bulk Task ${i} ${id}`, dueDate: new Date(), ownerId: repA.id, createdById: admin.id,
+      })),
+    })
+
+    const subjectIds = [
+      ...leadIds.map((id) => ({ subjectType: 'lead' as const, subjectId: id })),
+      ...contactIds.map((id) => ({ subjectType: 'contact' as const, subjectId: id })),
+      ...dealIds.map((id) => ({ subjectType: 'deal' as const, subjectId: id })),
+      ...taskIds.map((id) => ({ subjectType: 'task' as const, subjectId: id })),
+    ]
+    await prisma.notification.createMany({
+      data: subjectIds.map(({ subjectType, subjectId }) => ({
+        orgId: org.id, recipientId: repA.id, kind: 'assigned' as const, subjectType, subjectId,
+        dedupeKey: randomUUID(),
+      })),
+    })
+
+    let queryCount = 0
+    const onQuery = () => { queryCount++ }
+    // @ts-expect-error -- 'query' event typing requires the log config to include it; see
+    // lib/prisma.ts's test-only { emit: 'event', level: 'query' } entry.
+    prisma.$on('query', onQuery)
+
+    loginAsRepA()
+    const response = await notificationsGET()
+    const body = await response.json()
+    expect(body.notifications.length).toBe(50)
+
+    // Bounded: 1 query to list the notifications + at most 4 (one per subject type present) to
+    // fetch their names — never one per row. Report the real number rather than hiding it behind
+    // a loose upper bound: it should be close to 5-7 (plus requireAuth's own 2 lookups), nowhere
+    // near 50.
+    console.log(`GET /api/notifications issued ${queryCount} Prisma queries for 50 mixed-subject-type notifications`)
+    expect(queryCount).toBeLessThanOrEqual(10)
   })
 })

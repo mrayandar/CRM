@@ -684,7 +684,7 @@ export async function bulkReassignLeadsAction(input: {
   ownerId: string
   /** Client-generated id for the whole bulk operation — see bulkReassignLeads's doc comment. */
   activityId: string
-}) {
+}): Promise<{ results: { leadId: string; outcome: 'moved' | 'skipped' | 'failed' }[]; movedCount: number }> {
   const { orgId, ownerId: actorId, scopeOwnerId } = await requireAuth()
   const scope: Scope = { orgId, scopeOwnerId }
   assertClientId(input.activityId)
@@ -694,7 +694,7 @@ export async function bulkReassignLeadsAction(input: {
   const owner = await getOwnerById(orgId, input.ownerId)
   if (!owner || !owner.active) throw new Error('Owner not found')
 
-  await guardAgainstIdCollision(() =>
+  const result = await guardAgainstIdCollision(() =>
     dbBulkReassignLeads(scope, {
       leadIds: input.leadIds,
       newOwnerId: owner.id,
@@ -703,6 +703,7 @@ export async function bulkReassignLeadsAction(input: {
     }),
   )
   revalidatePath('/', 'layout')
+  return result
 }
 
 export async function setLeadStatusAction(leadId: string, status: LeadStatus) {

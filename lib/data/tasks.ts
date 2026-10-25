@@ -7,7 +7,11 @@
 import type { Prisma, Priority, TaskType } from '@prisma/client'
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
-import { retractAssignedNotifications, writeAssignedNotification } from '@lib/data/notifications'
+import {
+  retractAssignedNotifications,
+  retractNotificationsForSubject,
+  writeAssignedNotification,
+} from '@lib/data/notifications'
 
 export interface ListTasksOptions {
   /** A free filter, meaningful only when `scope.scopeOwnerId` is null — see ListLeadsOptions'
@@ -268,6 +272,7 @@ export async function deleteTask(scope: Scope, id: string) {
       },
     })
     if (!existing) throw new Error(`Task ${id} not found in org ${scope.orgId}`)
+    await retractNotificationsForSubject(tx, { orgId: scope.orgId, subjectType: 'task', subjectId: id })
     await tx.task.delete({ where: { id } })
     return existing
   })

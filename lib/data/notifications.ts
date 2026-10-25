@@ -3,10 +3,6 @@
 // notifications (see tests/integration/notifications.test.ts).
 import { prisma, withTransaction } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
-import { getLeadById } from '@lib/data/leads'
-import { getContactById } from '@lib/data/contacts'
-import { getDealById } from '@lib/data/deals'
-import { getTaskById } from '@lib/data/tasks'
 import type { Prisma, SubjectType } from '@prisma/client'
 
 // ---------------------------------------------------------------------------
@@ -121,6 +117,24 @@ export function retractAssignedNotifications(
   })
 }
 
+/**
+ * Deletes EVERY notification about one subject, regardless of recipient — for when the subject
+ * itself is gone (e.g. a deleted task), not just reassigned away from one recipient. Unlike
+ * `retractAssignedNotifications` (scoped to a single former recipient, used on reassignment),
+ * this has no FK to rely on: `Notification.subjectId` is a soft polymorphic reference (it can
+ * point at a Lead, Contact, Deal, or Task row), never an enforced foreign key, so nothing deletes
+ * these automatically when the subject row itself is deleted — the caller must do it explicitly,
+ * in the same transaction as the delete (see `deleteTask` in lib/data/tasks.ts).
+ */
+export function retractNotificationsForSubject(
+  tx: Prisma.TransactionClient,
+  input: { orgId: string; subjectType: SubjectType; subjectId: string },
+) {
+  return tx.notification.deleteMany({
+    where: { orgId: input.orgId, subjectType: input.subjectType, subjectId: input.subjectId },
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -143,42 +157,43 @@ export interface NotificationListItem {
 
 const SUBJECT_LABEL: Record<SubjectType, string> = { lead: 'Lead', contact: 'Contact', deal: 'Deal', task: 'Task' }
 
-/** Builds a title at read time, from the subject through the SAME scoped by-id read every other
- *  feature uses — never from anything stored on the Notification row itself. Returns null when
- *  the row shouldn't be shown at all (this stage's only such case, defensively: the subject
- *  lookup — scoped to `scope.scopeOwnerId` exactly like every other read in this app — comes back
- *  empty). A coalesced row (count set) never does a lookup at all; its title is just its own kind
- *  + count. */
-async function buildTitle(
+/** One scoped findMany per subject type present in the current page of rows — bounded at 4
+ *  queries total (lead/contact/deal/task), regardless of how many of the up-to-50 rows need a
+ *  title. Replaces the earlier one-query-per-row approach (up to 50 extra queries for a full
+ *  page), which showed up as a real N+1 — see tests/integration/notifications.test.ts's query-
+ *  count check. Each query is scoped by `scope.scopeOwnerId` exactly like the single-id
+ *  `getLeadById`/etc. it replaces, so an OWN-mode Member still never gets a title built from a
+ *  subject outside their own reach. Only `id`/`name` (or `title` for a task) is selected — title-
+ *  building never needs the full record. */
+async function fetchSubjectNamesByType(
   scope: Scope,
-  row: { kind: string; count: number | null; subjectType: SubjectType | null; subjectId: string | null },
-): Promise<string | null> {
-  if (row.count !== null) {
-    const noun = row.subjectType ? SUBJECT_LABEL[row.subjectType].toLowerCase() : 'record'
-    return `${row.count} ${noun}${row.count === 1 ? '' : 's'} assigned to you`
-  }
-  if (!row.subjectType || !row.subjectId) return null
+  subjectType: SubjectType,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const scopeWhere = scope.scopeOwnerId ? { ownerId: scope.scopeOwnerId } : {}
+  const where = { id: { in: ids }, orgId: scope.orgId, ...scopeWhere }
 
-  if (row.subjectType === 'task') {
-    const task = await getTaskById(scope, row.subjectId)
-    if (!task) return null
-    return `Task assigned to you: ${task.title}`
-  }
+  const rows =
+    subjectType === 'lead'
+      ? await prisma.lead.findMany({ where, select: { id: true, name: true } })
+      : subjectType === 'contact'
+        ? await prisma.contact.findMany({ where, select: { id: true, name: true } })
+        : subjectType === 'deal'
+          ? await prisma.deal.findMany({ where, select: { id: true, name: true } })
+          : await prisma.task.findMany({ where, select: { id: true, title: true } })
 
-  const subject =
-    row.subjectType === 'lead'
-      ? await getLeadById(scope, row.subjectId)
-      : row.subjectType === 'contact'
-        ? await getContactById(scope, row.subjectId)
-        : await getDealById(scope, row.subjectId)
-  if (!subject) return null
-
-  return `${SUBJECT_LABEL[row.subjectType]} assigned to you: ${subject.name}`
+  const map = new Map<string, string>()
+  for (const row of rows) map.set(row.id, 'name' in row ? row.name : row.title)
+  return map
 }
 
-/** Newest 50, titles built at read time (see `buildTitle`). `scope` must be the RECIPIENT's own
- *  — the caller (the route handler) already has it from its own `requireAuth()`, since this is
- *  always "list my own notifications," never anyone else's. */
+/** Newest 50, titles built at read time from a batched lookup (see `fetchSubjectNamesByType`) —
+ *  never from anything stored on the Notification row itself. A row whose subject is gone, or
+ *  outside `scope`'s reach, or (for a coalesced row) has `count` set, is handled without a lookup
+ *  miss showing a broken title: the former two are simply dropped (the batched map has no entry
+ *  for them), the latter never needs the map at all. `scope` must be the RECIPIENT's own — the
+ *  caller (the route handler) already has it from its own `requireAuth()`, since this is always
+ *  "list my own notifications," never anyone else's. */
 export async function listNotifications(scope: Scope, recipientId: string): Promise<NotificationListItem[]> {
   const rows = await prisma.notification.findMany({
     where: { orgId: scope.orgId, recipientId },
@@ -186,9 +201,32 @@ export async function listNotifications(scope: Scope, recipientId: string): Prom
     take: 50,
   })
 
-  const withTitles = await Promise.all(
-    rows.map(async (row) => ({ row, title: await buildTitle(scope, row) })),
+  const idsByType = new Map<SubjectType, string[]>()
+  for (const row of rows) {
+    if (row.count !== null || !row.subjectType || !row.subjectId) continue
+    const existing = idsByType.get(row.subjectType)
+    if (existing) existing.push(row.subjectId)
+    else idsByType.set(row.subjectType, [row.subjectId])
+  }
+
+  const namesByType = new Map<SubjectType, Map<string, string>>(
+    await Promise.all(
+      [...idsByType.entries()].map(
+        async ([subjectType, ids]) => [subjectType, await fetchSubjectNamesByType(scope, subjectType, ids)] as const,
+      ),
+    ),
   )
+
+  const withTitles = rows.map((row) => {
+    if (row.count !== null) {
+      const noun = row.subjectType ? SUBJECT_LABEL[row.subjectType].toLowerCase() : 'record'
+      return { row, title: `${row.count} ${noun}${row.count === 1 ? '' : 's'} assigned to you` as string | null }
+    }
+    if (!row.subjectType || !row.subjectId) return { row, title: null }
+    const name = namesByType.get(row.subjectType)?.get(row.subjectId)
+    if (name === undefined) return { row, title: null }
+    return { row, title: `${SUBJECT_LABEL[row.subjectType]} assigned to you: ${name}` }
+  })
 
   return withTitles
     .filter((r) => r.title !== null)

@@ -918,7 +918,10 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
    *  "N leads assigned to you" notification instead of one per lead — see
    *  bulkReassignLeadsAction/bulkReassignLeads. Leads not actually owned by someone else are
    *  skipped server-side; the optimistic update here mirrors that by only touching leads whose
-   *  owner is actually changing. */
+   *  owner is actually changing. Unlike a single-record update, a lead outside the caller's scope
+   *  doesn't reject the whole call — it comes back as a per-lead `'failed'` result instead, so on
+   *  success this reconciles that lead's optimistic state back to its real (unchanged) owner,
+   *  rather than treating the whole batch as rolled back. */
   const bulkReassignLeads = useCallback(
     (leadIds: string[], ownerId: string) => {
       const idSet = new Set(leadIds)
@@ -929,7 +932,18 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       )
 
       persist(
-        () => bulkReassignLeadsAction({ leadIds, ownerId, activityId: newEntityId() }),
+        async () => {
+          const result = await bulkReassignLeadsAction({ leadIds, ownerId, activityId: newEntityId() })
+          const notMoved = new Set(
+            result.results.filter((r) => r.outcome !== 'moved').map((r) => r.leadId),
+          )
+          if (notMoved.size > 0) {
+            setLeads((prev) =>
+              prev.map((l) => (notMoved.has(l.id) ? prevLeads.find((p) => p.id === l.id) ?? l : l)),
+            )
+          }
+          return result
+        },
         () => setLeads(prevLeads),
         undefined,
         "Couldn't reassign the leads, please try again.",

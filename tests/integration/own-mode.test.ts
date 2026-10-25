@@ -314,19 +314,34 @@ describe('lib/actions/crm: OWN-mode scoped-mutation matrix — another rep\'s re
 /**
  * bulkReassignLeadsAction doesn't fit SCOPED_MUTATION_ACTIONS' single-id signature (it takes an
  * array), so it gets its own dedicated OWN-mode test instead of a matrix entry — see its
- * EXEMPT_ACTIONS reason below. Logged in as repA, including repB's lead id in the batch must not
- * silently skip-or-succeed on the rest; the whole call rejects, same as every other scoped
- * mutation in this file.
+ * EXEMPT_ACTIONS reason below. Parity with the old UI behavior (one updateLeadAction call per
+ * lead, where one lead failing never blocked the others): a batch containing repB's lead id does
+ * NOT reject the whole call — repB's lead comes back `'failed'` (nothing revealed, nothing
+ * written for it) while repA's own lead still moves.
  */
-describe('lib/actions/crm: bulkReassignLeadsAction rejects a batch containing repB\'s lead id', () => {
-  it('rejects when the batch includes a lead outside the scoped caller\'s OWN reach', async () => {
-    await expect(
-      actions.bulkReassignLeadsAction({
-        leadIds: [F.leadA.id, F.leadB.id],
-        ownerId: F.repA.id,
-        activityId: randomUUID(),
-      }),
-    ).rejects.toThrow()
+describe('lib/actions/crm: bulkReassignLeadsAction — repB\'s lead fails without blocking repA\'s own lead', () => {
+  it('moves the in-scope lead and reports the out-of-scope one as failed, without throwing', async () => {
+    const result = await actions.bulkReassignLeadsAction({
+      leadIds: [F.leadA.id, F.leadB.id],
+      ownerId: F.admin.id,
+      activityId: randomUUID(),
+    })
+    expect(result.movedCount).toBe(1)
+    expect(result.results).toEqual(
+      expect.arrayContaining([
+        { leadId: F.leadA.id, outcome: 'moved' },
+        { leadId: F.leadB.id, outcome: 'failed' },
+      ]),
+    )
+
+    const leadA = await prisma.lead.findUnique({ where: { id: F.leadA.id } })
+    const leadB = await prisma.lead.findUnique({ where: { id: F.leadB.id } })
+    expect(leadA?.ownerId).toBe(F.admin.id)
+    expect(leadB?.ownerId).toBe(F.repB.id) // untouched — nothing written for the out-of-scope lead
+
+    // Restore leadA's ownership so later tests in this file (which assume the original fixture
+    // ownership) aren't affected by this one's side effect.
+    await prisma.lead.update({ where: { id: F.leadA.id }, data: { ownerId: F.repA.id } })
   })
 })
 
@@ -388,7 +403,7 @@ const EXEMPT_ACTIONS: Record<string, string> = {
   renameStageAction: 'Admin only — same as createStageAction',
   reorderStageAction: 'Admin only — same as createStageAction',
   deleteStageAction: 'Admin only — same as createStageAction',
-  bulkReassignLeadsAction: 'Member or Admin — takes an array of lead ids, not a single one, so it doesn\'t fit SCOPED_MUTATION_ACTIONS\' signature; covered by its own dedicated test below instead',
+  bulkReassignLeadsAction: 'Member or Admin — takes an array of lead ids, not a single one, so it doesn\'t fit SCOPED_MUTATION_ACTIONS\' signature (and an out-of-scope id fails per-lead, not the whole call); covered by its own dedicated test below instead',
 }
 
 describe('lib/actions/crm: OWN-mode matrix is exhaustive over every exported action', () => {

@@ -7,11 +7,20 @@ import { Prisma, PrismaClient } from '@prisma/client'
  */
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
-  })
+// In tests, query-level logging is emitted as an event (not printed) so a test can count real
+// Prisma queries via `prisma.$on('query', ...)` — e.g. tests/integration/notifications.test.ts's
+// N+1 check on GET /api/notifications. Never enabled outside `test`: query logging is noisy and
+// (for 'event' emission) has a small perf cost not worth paying in dev or production.
+const prismaLogConfig: ConstructorParameters<typeof PrismaClient>[0] = {
+  log:
+    process.env.NODE_ENV === 'development'
+      ? ['warn', 'error']
+      : process.env.NODE_ENV === 'test'
+        ? [{ emit: 'event', level: 'query' }, 'error']
+        : ['error'],
+}
+
+export const prisma = globalForPrisma.prisma ?? new PrismaClient(prismaLogConfig)
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma
