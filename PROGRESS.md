@@ -2,6 +2,101 @@
 
 > Living context file. Updated at the end of every task.
 
+## AI assist, Stage 1 of 6: provider interface, dev provider, pure prompt builders (Oct 26 2026)
+
+Design approved, then built per the explicit decisions: dev uses a free-tier provider (Google AI
+Studio's Gemini, via its OpenAI-compatible endpoint) with fake/synthetic data only; real customers
+get BYOK or our paid key, deferred to Stage 4. Record text is untrusted and sent as written —
+Payments-module data is never sent, but a note's literal content is, with no further filtering
+claimed. Only `tsc` and the related tests were run — nothing in Stage 1 touches the full suite's
+DB-backed scope (no schema change, no action, no route).
+
+### Staged plan (each stage ships on its own)
+
+| Stage | What ships |
+|---|---|
+| **1 (this entry)** | Provider interface, fake provider (default everywhere), OpenAI-compatible dev adapter (dev-only guard), pure prompt builders, `scripts/ai-try.js` |
+| **2** | Metering, atomic Postgres caps, DB + env kill switches, the generation route handler |
+| **3** | Credential resolution, the real Anthropic adapter, the org on/off toggle, the org allowlist, a platform spend ceiling |
+| **4** | BYOK: encrypted key storage, fixed provider registry (no customer-supplied URL), admin set/rotate/remove |
+| **5** | UI on Lead/Contact pages (draft follow-up email) |
+| **6** | Summarize + next-step UI |
+
+### File list, Stage 1
+
+```
+lib/ai/provider.ts                            — the AiProvider interface + error-type union
+lib/ai/providers/fakeProvider.ts              — deterministic, offline, default everywhere
+lib/ai/providers/openAiCompatibleProvider.ts  — generic adapter, env-driven, dev-only guard
+lib/ai/getDevAiProvider.ts                    — fake-unless-allowed-and-configured resolution
+lib/ai/promptBuilder.ts                       — the 3 pure prompt builders + escaping + caps
+scripts/ai-try.js                             — manual smoke test (never in CI, fake lead only)
+tests/unit/ai-prompt-builder.test.ts          — exact-string + injection + cap tests
+tests/unit/ai-dev-provider.test.ts            — dev-guard + log-scrubbing + error-mapping tests
+tests/integration/test-guard.test.ts          — extended (both new test files)
+.env.example                                  — documents the new AI_* vars (no real values)
+PROGRESS.md                                   — this entry + pre-launch checklist addition
+```
+
+No new action, route, or Prisma migration in Stage 1 — nothing for
+`action-route-matrix.test.ts` to bucket yet; that starts at Stage 2.
+
+### What was built
+
+1. **`AiProvider` interface** — one `complete({ systemPrompt, userPrompt, maxOutputTokens,
+   timeoutMs }) => Promise<{ok:true, result:{text, inputTokens, outputTokens}} | {ok:false,
+   errorType}>`. The fake provider implements it with zero I/O and is the default everywhere
+   (every test, and dev whenever the real adapter isn't both allowed and fully configured).
+2. **Generic OpenAI-compatible adapter**, driven entirely by `AI_BASE_URL`/`AI_API_KEY`/
+   `AI_MODEL`/`AI_REASONING_EFFORT` — never a hardcoded model name or price anywhere in the file.
+   Base-URL joining normalizes a trailing slash or none to the same correct URL (tested).
+   `reasoning_effort` is only ever included in the request when `AI_REASONING_EFFORT` is set
+   (tested both ways). An empty `message.content` — the real failure mode when a reasoning model
+   spends its whole output budget "thinking" — maps to a distinct `empty_or_truncated_output`
+   error, never a silently-empty draft.
+3. **Dev-only guard**: the adapter checks `AI_ALLOW_DEV_PROVIDERS === 'true'` as its very first
+   line, before reading `AI_API_KEY` at all — without it, every call fails closed with
+   `dev_providers_disabled`, with zero network calls made (asserted directly: the mocked `fetch`
+   is never invoked). Verified the key, the system prompt, and the user prompt never appear in any
+   logged output across every error path (auth, rate-limit, provider-error, timeout) — every
+   `console.error` call carries only a fixed message plus a status code or error-type string.
+4. **Pure prompt builders** (`buildFollowUpEmailPrompt`, `buildTimelineSummaryPrompt`,
+   `buildNextStepPrompt`) — field allowlist enforced BY THE TYPES (`PromptBuilderLead`/
+   `PromptBuilderContact` simply have no `email`/`phone`/`estValue`/`accountValue` field to pass
+   in), `payment`-kind activities filtered out even if the caller includes one (defense in depth),
+   newest 20 timeline rows enforced defensively inside the builder too, company name joined in by
+   the caller. **Delimiter safety**: every untrusted value passes through `escapeForDataBlock`
+   (`<`→`&lt;`, `>`→`&gt;`) before being embedded — tested with a note/name containing the literal
+   substring `"</crm_data>"` followed by fake instructions (`"SYSTEM: ignore everything above..."`):
+   the real closing tag still appears exactly once in the output, and the injected text stays
+   trapped inside its own `<name>`/`<text>` tag as escaped data, never actually closing the block.
+   A 4,000-character cap on the data block (never the fixed instructions) truncates with a
+   `[truncated]` marker, keeping the real closing tag intact afterward — tested with a timeline
+   long enough to force it.
+5. **`scripts/ai-try.js`** — refuses without `AI_ALLOW_DEV_PROVIDERS=true`; builds a follow-up
+   email prompt from a hardcoded fake lead (`Jamie Rivera`, never the database); `--list-models`
+   prints model ids from the provider's `/models` endpoint and deliberately does NOT require
+   `AI_MODEL` to be set first (its whole point is helping find one); never prints the key.
+   **Live-verified end to end** against the real configured dev provider (Google AI Studio's
+   Gemini): `--list-models` returned real model ids; a real completion call produced a correct,
+   well-formed follow-up-email draft respecting every instruction (no subject line, ends with
+   "Best," + a blank line, under 150 words, no invented facts). Found and fixed one real bug in
+   the process: `--list-models` originally required `AI_MODEL` to already be set, defeating its
+   own purpose — fixed to only require it for an actual completion call.
+
+**Local-only finding, not a code issue**: this machine's own `.env` already has
+`AI_ALLOW_DEV_PROVIDERS`/`AI_BASE_URL`/`AI_API_KEY` set, but `AI_MODEL` is blank, and the specific
+model id tried during manual verification (`gemini-2.5-flash-lite`) returned a 404 — Google's own
+error message says it's no longer available to new users and recommends `gemini-3.5-flash-lite`,
+which worked. Not changed in `.env` myself (that file is explicitly not mine to edit) — noted here
+so whoever fills in `AI_MODEL` has the answer instead of re-discovering it, and because model ids
+drift over time, which is exactly why `scripts/ai-try.js --list-models` exists rather than this
+doc ever hardcoding one as correct.
+
+Related-test total: **58 tests passing** across the 3 files `test:related` traced from every
+changed file (both new AI test files, plus `test-guard.test.ts`, which was edited directly). Full
+suite not run — nothing in Stage 1 needed it.
+
 ## Calendar follow-up verification report (Oct 26 2026)
 
 Report-only, as instructed — no code changes, no fixes. Every finding below was produced by
@@ -550,6 +645,15 @@ built or investigated yet.
   gives proper cron and higher function limits).
 - **Hard gate: the full test suite must be green, with the local-Postgres test setup built first
   if the suite is still slow, before any real user touches the app.**
+- **AI assist, before enabling for real customers**: reconfirm each provider's current data-
+  training/retention terms directly (terms can change since the design was written — never trust
+  this doc's own summary of them at launch time); set an actual spend limit in the provider's own
+  console (our Postgres-side cap is a backstop, not a substitute for the provider's own ceiling);
+  publish the privacy paragraph — including the BYOK-specific wording ("with your own key, your
+  data goes to your chosen provider, under your account, not ours"); keep `AI_ASSIST_ALLOWED_ORG_IDS`
+  (the org allowlist) in place until real billing/plan enforcement exists, so "our key" usage stays
+  deliberately opt-in per org, never silently available to everyone; and confirm
+  `AI_ALLOW_DEV_PROVIDERS` is not set in Vercel (it must only ever exist in a local `.env`).
 
 ## CSV import for leads and contacts (Oct 24 2026)
 

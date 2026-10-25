@@ -52,6 +52,8 @@ const KNOWN_TEST_FILES = [
   'integration/own-mode.test.ts',
   'integration/test-guard.test.ts',
   'unit/activity-timeline.test.ts',
+  'unit/ai-dev-provider.test.ts',
+  'unit/ai-prompt-builder.test.ts',
   'unit/calendar-date.test.ts',
   'unit/calendar-grid.test.ts',
   'unit/csv-formula-injection.test.ts',
