@@ -27,7 +27,9 @@ async function main() {
         prisma.activity.count({ where: { orgId: org.id } }),
         prisma.company.count({ where: { orgId: org.id } }),
       ])
-      return { org: org.name, clerkOrgId: org.clerkOrgId, leads, contacts, deals, tasks, activities, companies }
+      // `id` is the internal Organization.id (cuid) — what AI_ASSIST_ALLOWED_ORG_IDS takes, NOT
+      // clerkOrgId. See lib/ai/allowlist.ts.
+      return { org: org.name, id: org.id, clerkOrgId: org.clerkOrgId, leads, contacts, deals, tasks, activities, companies }
     }),
   )
 

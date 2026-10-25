@@ -281,6 +281,10 @@ interface CrmState {
   aiAssistEnabledChangedBy: string | null
   aiAssistEnabledChangedAt: string | null
   aiAssistAllowlisted: boolean
+  /** Whether the AI assist card should render on a Lead/Contact page — see lib/data-loader.ts's
+   *  identical field's doc comment for what it ANDs together and why it reveals nothing about
+   *  the allowlist. Reactive: updateAiAssistEnabled keeps it in sync with the toggle locally. */
+  aiAssistAvailable: boolean
   /** Admin-only (requireLiveAdminAccess), same pattern as updateRepVisibility. Rejects with
    *  'not_allowlisted' before even attempting the write when the org isn't on the env allowlist —
    *  the Settings UI shows that as "Not available for your organization yet" rather than a
@@ -454,6 +458,15 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
   const [aiAssistEnabledChangedBy, setAiAssistEnabledChangedBy] = useState<string | null>(initialData.aiAssistEnabledChangedBy)
   const [aiAssistEnabledChangedAt, setAiAssistEnabledChangedAt] = useState<string | null>(initialData.aiAssistEnabledChangedAt)
   const aiAssistAllowlisted = initialData.aiAssistAllowlisted
+  // Reactive (unlike aiAssistAllowlisted) so flipping the Settings toggle shows/hides the Lead/
+  // Contact page's AI assist card immediately, without a reload — see updateAiAssistEnabled below.
+  // Approximates the full server-side check (which also considers both kill switches and whether
+  // a provider is usable in this environment) as just `enabled && allowlisted` on every update
+  // after the first: those other two factors rarely change mid-session, and the generate route
+  // re-checks all of them again regardless of what this flag says, so this is a UI nicety, not a
+  // security boundary — a stale "available" here can never result in anything but the route's own
+  // normal unavailable response.
+  const [aiAssistAvailable, setAiAssistAvailable] = useState<boolean>(initialData.aiAssistAvailable)
   const isScopedMember = scopeOwnerId !== null
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [notificationPreferences, setNotificationPreferences] = useState<Record<NotificationKind, boolean>>(
@@ -1248,6 +1261,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         setAiAssistEnabled(result.aiAssistEnabled)
         setAiAssistEnabledChangedBy(currentUser.id)
         setAiAssistEnabledChangedAt(result.changedAt)
+        setAiAssistAvailable(result.aiAssistEnabled && aiAssistAllowlisted)
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : "Couldn't save this setting" }
@@ -1255,7 +1269,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
         endMutation()
       }
     },
-    [beginMutation, endMutation, currentUser.id],
+    [beginMutation, endMutation, currentUser.id, aiAssistAllowlisted],
   )
 
   // Not routed through persist(): the caller (the inline create-or-select picker) needs the real
@@ -2058,6 +2072,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       aiAssistEnabledChangedBy,
       aiAssistEnabledChangedAt,
       aiAssistAllowlisted,
+      aiAssistAvailable,
       updateAiAssistEnabled,
       orgName,
       notificationPreferences,
@@ -2131,6 +2146,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       aiAssistEnabledChangedBy,
       aiAssistEnabledChangedAt,
       aiAssistAllowlisted,
+      aiAssistAvailable,
       updateAiAssistEnabled,
       orgName,
       notificationPreferences,

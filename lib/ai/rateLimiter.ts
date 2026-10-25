@@ -5,6 +5,33 @@ import { prisma } from '@lib/prisma'
 
 export type AiRateLimitScopeType = 'user_hour' | 'org_hour' | 'org_month'
 
+// Every row here is naturally bounded by a cap — a brand-new row per org/user per hour/month,
+// forever — with nothing that ever deletes an old one on its own. Left alone, the table grows by
+// roughly (distinct users + orgs) * (hours + months) rows forever. Pruned lazily, inside the same
+// reserveSlot every request already calls, rather than a separate cron (there's no scheduler in
+// this app yet — see PROGRESS.md's Vercel-cron note) — gated by a low probability so the extra
+// DELETE only runs on roughly 1 in 100 calls, not every one. The `LIMIT` keeps each individual
+// prune bounded and cheap even if the table has fallen far behind; it would just take a few more
+// 1-in-100 draws to fully catch up, never one slow request blocking on an unbounded delete.
+const STALE_ROW_MAX_AGE_MS = 48 * 60 * 60 * 1000
+const CLEANUP_PROBABILITY = 0.01
+const CLEANUP_BATCH_LIMIT = 500
+
+async function maybePruneStaleCounters(): Promise<void> {
+  if (Math.random() >= CLEANUP_PROBABILITY) return
+  const cutoff = new Date(Date.now() - STALE_ROW_MAX_AGE_MS)
+  try {
+    await prisma.$executeRaw`
+      DELETE FROM "ai_rate_limit_counters"
+      WHERE "id" IN (
+        SELECT "id" FROM "ai_rate_limit_counters" WHERE "bucketStart" < ${cutoff} LIMIT ${CLEANUP_BATCH_LIMIT}
+      )
+    `
+  } catch {
+    // Best-effort maintenance, never allowed to fail the real request it rode in on.
+  }
+}
+
 /** Start of the UTC hour containing `now`. */
 export function hourBucketStart(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours()))
@@ -37,6 +64,7 @@ export async function reserveSlot(
   bucketStart: Date,
   cap: number,
 ): Promise<boolean> {
+  await maybePruneStaleCounters()
   const rows = await prisma.$queryRaw<Array<{ requestCount: number }>>`
     INSERT INTO "ai_rate_limit_counters" ("id", "scopeType", "scopeId", "bucketStart", "requestCount")
     VALUES (${randomUUID()}, ${scopeType}, ${scopeId}, ${bucketStart}, 1)

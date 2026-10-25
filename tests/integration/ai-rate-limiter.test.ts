@@ -3,7 +3,7 @@
  * per-org-hour, per-org-month) shares. Real DB, no mocked auth — this module has no session
  * concept of its own.
  */
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { prisma } from '@lib/prisma'
 import { hourBucketStart, monthBucketStart, reserveSlot, refundSlot } from '@lib/ai/rateLimiter'
 
@@ -70,6 +70,34 @@ describe('reserveSlot: atomic cap reservation', () => {
     expect(await reserveSlot('user_hour', id, bucket, 1)).toBe(true)
     expect(await reserveSlot('org_hour', id, bucket, 1)).toBe(true) // same scopeId, different scopeType
     expect(await reserveSlot('user_hour', id, monthBucketStart(new Date()), 1)).toBe(true) // different bucket
+  })
+})
+
+describe('reserveSlot: lazy pruning of stale counter rows', () => {
+  it('deletes a row older than 48 hours, but leaves a recent row alone, when the low-probability cleanup draw hits', async () => {
+    const staleId = scopeId()
+    const freshId = scopeId()
+    const staleBucket = new Date(Date.now() - 49 * 60 * 60 * 1000)
+    const freshBucket = hourBucketStart(new Date())
+    await prisma.aiRateLimitCounter.create({ data: { scopeType: 'user_hour', scopeId: staleId, bucketStart: staleBucket, requestCount: 3 } })
+    await prisma.aiRateLimitCounter.create({ data: { scopeType: 'user_hour', scopeId: freshId, bucketStart: freshBucket, requestCount: 3 } })
+
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0) // forces the cleanup branch to run
+    try {
+      await reserveSlot('user_hour', scopeId(), hourBucketStart(new Date()), 5) // any reservation triggers the lazy prune check
+    } finally {
+      randomSpy.mockRestore()
+    }
+
+    const staleRow = await prisma.aiRateLimitCounter.findUnique({
+      where: { scopeType_scopeId_bucketStart: { scopeType: 'user_hour', scopeId: staleId, bucketStart: staleBucket } },
+    })
+    const freshRow = await prisma.aiRateLimitCounter.findUnique({
+      where: { scopeType_scopeId_bucketStart: { scopeType: 'user_hour', scopeId: freshId, bucketStart: freshBucket } },
+    })
+    expect(staleRow).toBeNull()
+    expect(freshRow).not.toBeNull()
+    await prisma.aiRateLimitCounter.deleteMany({ where: { scopeId: freshId } })
   })
 })
 

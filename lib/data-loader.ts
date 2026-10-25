@@ -39,6 +39,7 @@ import { withRetry } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { getNotificationPreferences } from '@lib/data/notifications'
 import { isOrgAllowlistedForAi } from '@lib/ai/allowlist'
+import { computeAiAssistAvailable } from '@lib/ai/availability'
 import type { NotificationKind } from '@prisma/client'
 
 export interface CrmInitialData {
@@ -95,6 +96,14 @@ export interface CrmInitialData {
    *  false; the generate route re-checks the same allowlist on every request regardless of what
    *  this says, so this is purely for the UI's own messaging. */
   aiAssistAllowlisted: boolean
+  /** Whether the AI assist card should render on a Lead/Contact page at all — ANDs together every
+   *  check the generate route itself runs (org enabled, env allowlist, both kill switches, a
+   *  usable provider in this environment/NODE_ENV) into the one flag the client is allowed to
+   *  see. Deliberately never reveals *why* it's false, the allowlist's contents, or any other
+   *  org's state — see lib/ai/availability.ts's computeAiAssistAvailable, the single function
+   *  both this and the route call into, so they can't drift apart. Same for every Member and
+   *  Admin in the org: it's an org-wide flag, not a per-role one. */
+  aiAssistAvailable: boolean
   /** The org's own name, as stored in our DB (set once, at creation, from Clerk's org name — see
    *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
    *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
@@ -161,6 +170,7 @@ export async function loadCrmData(
   const owners = rawOwners.map(mapOwner)
   const currentUser =
     owners.find((o) => o.id === currentOwnerId) ?? owners[0]
+  const aiAssistAvailable = await computeAiAssistAvailable(scope.orgId, org?.aiAssistEnabled ?? false)
 
   return {
     owners,
@@ -193,6 +203,7 @@ export async function loadCrmData(
     aiAssistEnabledChangedBy: org?.aiAssistEnabledChangedBy ?? null,
     aiAssistEnabledChangedAt: org?.aiAssistEnabledChangedAt?.toISOString() ?? null,
     aiAssistAllowlisted: isOrgAllowlistedForAi(scope.orgId),
+    aiAssistAvailable,
     orgName: org?.name ?? '',
     notificationPreferences,
   }

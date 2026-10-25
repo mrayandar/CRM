@@ -28,6 +28,7 @@ import { Input, Label, Segmented, Select, Textarea } from '@/components/ui/Field
 import { Modal } from '@/components/ui/Modal'
 import { MenuItem, Popover } from '@/components/ui/Menu'
 import { ActivityTimeline } from '@/components/common/ActivityStream'
+import { AiAssistCard } from '@/components/common/AiAssistCard'
 import { TaskRow } from '@/components/common/TaskRow'
 import { NewDealModal } from '@/components/common/NewDealModal'
 import { CompanyPicker } from '@/components/common/CompanyPicker'
@@ -173,6 +174,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
     updateContact,
     logActivity,
     orgCurrency,
+    aiAssistAvailable,
   } = useCrm()
 
   const record = (lead ?? contact)!
@@ -490,6 +492,8 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
               </div>
             )}
           </Card>
+
+          {aiAssistAvailable && <AiAssistCard subjectType={type} subjectId={record.id} />}
 
           {colleagues.length > 0 && (
             <Card>

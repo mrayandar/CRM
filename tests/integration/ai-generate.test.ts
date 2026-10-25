@@ -159,6 +159,7 @@ describe('POST /api/ai/generate: body validation (burns no quota)', () => {
     loginAs(A.rep, A.org)
     const response = await generateRequest('{not valid json')
     expect(response.status).toBe(400)
+    expect(await userHourCount(A.rep.id)).toBe(0)
   })
 
   it('rejects a body over the size cap with 400, before even parsing it', async () => {
@@ -206,6 +207,7 @@ describe('POST /api/ai/generate: org enabled + allowlist (burn no quota)', () =>
     expect(response.status).toBe(403)
     const json = await response.json()
     expect(json.message).toBe('Not available for your organization yet.')
+    expect(await userHourCount(A.rep.id)).toBe(0)
     process.env.AI_ASSIST_ALLOWED_ORG_IDS = `${A.org.id},${B.org.id}`
   })
 })
@@ -234,6 +236,8 @@ describe('POST /api/ai/generate: scoped subject read (burns no quota on a miss)'
     mockAuth.mockResolvedValue({ userId: otherRep.clerkUserId, orgId: A.org.clerkOrgId, orgRole: 'org:member' })
     const response = await generateRequest({ capability: 'draft_email', subjectType: 'lead', subjectId: leadA.id }) // owned by A.rep, not otherRep
     expect(response.status).toBe(404)
+    expect(await userHourCount(otherRep.id)).toBe(0)
+    await prisma.aiRateLimitCounter.deleteMany({ where: { scopeId: otherRep.id } })
     await prisma.owner.delete({ where: { id: otherRep.id } })
     await prisma.organization.update({ where: { id: A.org.id }, data: { repVisibility: 'ALL' } })
   })
@@ -286,6 +290,33 @@ describe('POST /api/ai/generate: atomic cap reservation', () => {
     const response = await generateRequest({ capability: 'draft_email', subjectType: 'contact', subjectId: contactA.id })
     expect(response.status).toBe(200)
     expect(await userHourCount(A.rep.id)).toBe(1)
+  })
+
+  it('refunds the exact bucket reserved from, even when the provider call crosses an hour boundary mid-request', async () => {
+    loginAs(A.rep, A.org)
+    const justBeforeHour = new Date('2026-06-01T10:59:58.000Z')
+    const justAfterHour = new Date('2026-06-01T11:00:02.000Z')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(justBeforeHour)
+    mockComplete.mockImplementation(async () => {
+      vi.setSystemTime(justAfterHour) // the clock moves on while the provider call is "in flight"
+      return { ok: false, errorType: 'provider_error' }
+    })
+    try {
+      const response = await generateRequest({ capability: 'draft_email', subjectType: 'contact', subjectId: contactA.id })
+      expect(response.status).toBe(503)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const originalRow = await prisma.aiRateLimitCounter.findUnique({
+      where: { scopeType_scopeId_bucketStart: { scopeType: 'user_hour', scopeId: A.rep.id, bucketStart: hourBucketStart(justBeforeHour) } },
+    })
+    const newBucketRow = await prisma.aiRateLimitCounter.findUnique({
+      where: { scopeType_scopeId_bucketStart: { scopeType: 'user_hour', scopeId: A.rep.id, bucketStart: hourBucketStart(justAfterHour) } },
+    })
+    expect(originalRow?.requestCount ?? 0).toBe(0) // reserved, then refunded, back into the bucket it was reserved from
+    expect(newBucketRow).toBeNull() // the refund never touched the bucket the clock moved into
   })
 })
 
