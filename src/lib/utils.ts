@@ -18,6 +18,36 @@ export function notificationHref(item: {
   return null
 }
 
+/** Weeks start Monday, not Sunday, on the Calendar screen — a deliberate, fixed constant (not a
+ *  user preference) for v1. 0 = Sunday, 1 = Monday. */
+export const CALENDAR_WEEK_START = 1
+
+/** "YYYY-MM-DD" from a Date's UTC fields — never local ones. Kept here, not in the 'use client'
+ *  Calendar.tsx, so it's unit-testable without a DOM, same reasoning as `notificationHref` above.
+ *  Using UTC getters (not `getFullYear`/`getDate`) is what makes this immune to the caller's own
+ *  local timezone: every calendar-grid cell is itself constructed via `Date.UTC(...)`
+ *  (`calendarMonthGrid`), so reading it back through UTC getters round-trips exactly regardless
+ *  of which zone the browser or test runner happens to be in. */
+export function calendarYmd(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
+}
+
+/**
+ * The Monday-start grid (`CALENDAR_WEEK_START`) for `monthStart`'s month — every cell a real
+ * UTC-midnight Date, so `calendarYmd()` round-trips exactly regardless of the viewer's own
+ * browser timezone (the same calendar-date discipline every other date in this app already
+ * follows — see `asCalendarDate`'s doc comment for the bug this avoids). Always full weeks (42
+ * cells: 6 rows), padded with the adjacent months' trailing/leading days.
+ */
+export function calendarMonthGrid(monthStart: Date): Date[] {
+  const year = monthStart.getUTCFullYear()
+  const month = monthStart.getUTCMonth()
+  const firstOfMonth = new Date(Date.UTC(year, month, 1))
+  const firstWeekday = (firstOfMonth.getUTCDay() - CALENDAR_WEEK_START + 7) % 7
+  const gridStart = new Date(Date.UTC(year, month, 1 - firstWeekday))
+  return Array.from({ length: 42 }, (_, i) => new Date(gridStart.getTime() + i * 86_400_000))
+}
+
 /**
  * The list an assignment picker (New lead/contact/deal/task's Owner field, Reassign, a task's
  * Assignee) should offer — active owners, plus the record's CURRENT owner even if they've since

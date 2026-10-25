@@ -2,6 +2,56 @@
 
 > Living context file. Updated at the end of every task.
 
+## Calendar: task creation (Oct 25 2026)
+
+Per this task's explicit instruction, only `tsc` and `npm run test:related` were run (289 tests
+passing across 13 affected files) — the full suite stays on the pre-launch gate.
+
+**No second form.** The Tasks page's "New task" modal was extracted, unchanged, into
+`src/components/common/NewTaskModal.tsx`, with one new optional prop (`defaultDueDate`, a plain
+"YYYY-MM-DD" string). Both Tasks.tsx and the Calendar screen render this same component — there
+was no reason to add a second create path, and nothing about creation itself needed to differ, so
+nothing did. `addTask`/`addTaskAction` are completely unchanged: the same client-generated id,
+optimistic update, the same `assignableOwners` (active owners only, defaulting to the caller), the
+same server-side Scope/org checks, and the same "assigned" notification when the assignee isn't
+the actor.
+
+**The calendar prefill never passes through an instant.** `defaultDueDate` is handed straight into
+the date `<input>`'s own state as the clicked cell's literal "YYYY-MM-DD" — no `Date` parsing, no
+reformatting, at that handoff. (The form's own pre-existing submit-time conversion — the date
+input's string to a stored instant — is untouched; that was never part of what this task asked to
+fix.) `calendarYmd`/`calendarMonthGrid`, the functions that produce that string from a grid cell,
+moved from Calendar.tsx into `src/lib/utils.ts` (same reasoning as `notificationHref` in Stage D:
+unit-testable without a DOM) — built entirely from `Date.UTC`/`getUTC*`, so a cell's date can't
+shift regardless of the viewer's (or the test runner's) local timezone. Verified directly under
+`TZ=Asia/Karachi` and `TZ=America/Los_Angeles`.
+
+**Appears on the grid immediately, with real rollback for free.** The calendar's task items are no
+longer read from the fetched `/api/calendar` response at all (lead follow-ups and deal close dates
+still are) — they're derived live from `CrmProvider`'s own `tasks` array, filtered to the visible
+date range. `tasks` is already the complete, scope-correct set (`loadCrmData`) and is already
+reactive to every task mutation (`addTask`, `toggleTask`, a live refetch), so a task created from
+the calendar — or completed, or created from the Tasks page — shows up on the grid with no extra
+wiring, and a failed create's rollback (already built into `addTask`/`persist`) removes it for
+free. This also simplified the existing "mark done" handler, which no longer needs its own manual
+patch of a separately-fetched copy.
+
+**Entry points**: a "+" on each day cell (visible on hover, `IconButton`, stops the cell's own
+click-to-select from firing) and an "Add task" button in the selected-day agenda panel's header
+(desktop only, matching where the panel itself lives). No lead-follow-up or deal-date creation,
+no drag-to-reschedule — neither is mentioned anywhere in the UI.
+
+New tests: `tests/unit/calendar-grid.test.ts` (the November-cell prefill round-trip under both
+timezones, and the Monday-start invariant), `tests/integration/calendar-task-create.test.ts`
+(`addTaskAction`'s existing OWN-mode self/teammate-assignment behavior — exactly one notification
+for the teammate, zero for a self-assignment — and the inactive-assignee rejection; plus a
+structural check that both screens import the one shared `NewTaskModal`, pinning "no second form"
+against a future regression). "A failed create rolls back off the grid with a toast" has no
+dedicated test: there's no DOM test harness in this repo (vitest runs in plain Node), and the
+behavior is inherited for free from `addTask`/`persist`'s own existing, already-trusted rollback
+mechanism — nothing calendar-specific exists to test independently. Said so rather than fabricating
+a check.
+
 ## Calendar view (Oct 25 2026)
 
 New `/calendar` route + sidebar entry: a month grid (Monday-start, a fixed constant) plus an

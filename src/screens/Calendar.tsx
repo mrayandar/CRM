@@ -2,40 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@/lib/router-compat'
-import { ChevronLeft, ChevronRight, Loader2, RotateCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Loader2, Plus, RotateCw } from 'lucide-react'
 import { PageShell } from '@/components/layout/PageShell'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button, IconButton } from '@/components/ui/Button'
 import { Checkbox } from '@/components/ui/Field'
 import { Badge } from '@/components/ui/Badge'
 import { EmptyState } from '@/components/ui/Display'
+import { NewTaskModal } from '@/components/common/NewTaskModal'
 import { useCrm } from '@/store/crm'
-import { cn } from '@/lib/utils'
+import { calendarMonthGrid, calendarYmd, cn } from '@/lib/utils'
 import { localDayDelta } from '@lib/timezones'
 import type { CalendarItemDTO } from '../../app/api/calendar/route'
 
-/** Weeks start Monday, not Sunday — a deliberate, fixed constant (not a user preference) for v1. */
-const WEEK_START = 1 // 0 = Sunday, 1 = Monday
-
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-
-function ymd(date: Date): string {
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
-}
-
-/** The Monday-start grid for `monthStart`'s month — every cell a real UTC-midnight Date, so
- *  `ymd()` round-trips exactly regardless of the viewer's own browser timezone (the same
- *  calendar-date discipline every other date in this app already follows — see asCalendarDate's
- *  doc comment in src/lib/utils.ts for the bug this avoids). Always full weeks (42 cells: 6 rows),
- *  padded with the adjacent months' trailing/leading days. */
-function monthGrid(monthStart: Date): Date[] {
-  const year = monthStart.getUTCFullYear()
-  const month = monthStart.getUTCMonth()
-  const firstOfMonth = new Date(Date.UTC(year, month, 1))
-  const firstWeekday = (firstOfMonth.getUTCDay() - WEEK_START + 7) % 7
-  const gridStart = new Date(Date.UTC(year, month, 1 - firstWeekday))
-  return Array.from({ length: 42 }, (_, i) => new Date(gridStart.getTime() + i * 86_400_000))
-}
 
 const KIND_TONE: Record<CalendarItemDTO['kind'], 'brand' | 'accent' | 'info'> = {
   task: 'brand',
@@ -56,22 +36,23 @@ function itemHref(item: CalendarItemDTO): string {
 
 export function Calendar() {
   const navigate = useNavigate()
-  const { currentUser, effectiveOrgTimezone, toggleTask } = useCrm()
+  const { currentUser, effectiveOrgTimezone, toggleTask, tasks: providerTasks } = useCrm()
   const viewerTimezone = currentUser.timezone ?? effectiveOrgTimezone
 
   const [monthStart, setMonthStart] = useState(() => {
     const now = new Date()
     return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
   })
-  const [selectedDate, setSelectedDate] = useState(() => ymd(new Date()))
+  const [selectedDate, setSelectedDate] = useState(() => calendarYmd(new Date()))
   const [showCompleted, setShowCompleted] = useState(false)
   const [items, setItems] = useState<CalendarItemDTO[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [newTaskDate, setNewTaskDate] = useState<string | null>(null)
 
-  const grid = useMemo(() => monthGrid(monthStart), [monthStart])
-  const rangeFrom = ymd(grid[0])
-  const rangeTo = ymd(grid[grid.length - 1])
+  const grid = useMemo(() => calendarMonthGrid(monthStart), [monthStart])
+  const rangeFrom = calendarYmd(grid[0])
+  const rangeTo = calendarYmd(grid[grid.length - 1])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -97,32 +78,49 @@ export function Calendar() {
     return () => window.removeEventListener('focus', load)
   }, [load])
 
+  // Task items are derived from CrmProvider's own `tasks` array, not the fetched `items` (whose
+  // task entries are ignored below) — `tasks` is already the complete, scope-correct set (see
+  // loadCrmData) and is already reactive to every task mutation (addTask, toggleTask, a live
+  // refetch), so a task created or completed from THIS screen, the Tasks page, or anywhere else
+  // shows up here immediately with no extra wiring, and a failed create's rollback (already built
+  // into `addTask`/`persist`) removes it from the grid for free — there is nothing calendar-
+  // specific to keep in sync by hand. Lead follow-ups and deal close dates still come from the
+  // fetched `items`, unchanged — those arrays aren't loaded in bulk by the provider.
+  const taskItems = useMemo<CalendarItemDTO[]>(
+    () =>
+      providerTasks
+        .map((t) => ({ date: t.dueDate.slice(0, 10), task: t }))
+        .filter(({ date }) => date >= rangeFrom && date <= rangeTo)
+        .map(({ date, task }) => ({
+          id: `task:${task.id}`, kind: 'task' as const, date, title: task.title, done: task.done,
+          subjectType: 'task' as const, subjectId: task.id,
+        })),
+    [providerTasks, rangeFrom, rangeTo],
+  )
+
   const itemsByDate = useMemo(() => {
     const map = new Map<string, CalendarItemDTO[]>()
-    for (const item of items ?? []) {
+    const nonTaskItems = (items ?? []).filter((i) => i.kind !== 'task')
+    for (const item of [...nonTaskItems, ...taskItems]) {
       if (item.kind === 'task' && item.done && !showCompleted) continue
       const list = map.get(item.date)
       if (list) list.push(item)
       else map.set(item.date, [item])
     }
     return map
-  }, [items, showCompleted])
+  }, [items, taskItems, showCompleted])
 
   const isToday = (cellYmd: string) => localDayDelta(`${cellYmd}T00:00:00.000Z`, viewerTimezone) === 0
   const isOverdueDay = (cellYmd: string) => localDayDelta(`${cellYmd}T00:00:00.000Z`, viewerTimezone) < 0
 
   const overdueTaskCount = useMemo(
-    () => (items ?? []).filter((i) => i.kind === 'task' && !i.done && isOverdueDay(i.date)).length,
-    [items, viewerTimezone],
+    () => taskItems.filter((i) => !i.done && isOverdueDay(i.date)).length,
+    [taskItems, viewerTimezone],
   )
 
   const markTaskDone = (item: CalendarItemDTO) => {
     if (item.kind !== 'task') return
-    toggleTask(item.subjectId)
-    // Optimistic locally too, so the calendar's own grouping reflects it immediately rather than
-    // waiting for the next load() — toggleTask already handles the provider-side optimistic
-    // update/rollback/toast; this just keeps THIS screen's independently-fetched copy in sync.
-    setItems((prev) => prev?.map((i) => (i.id === item.id ? { ...i, done: !i.done } : i)) ?? prev)
+    toggleTask(item.subjectId) // optimistic/rollback/toast already built into toggleTask/persist
   }
 
   const monthLabel = monthStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
@@ -155,7 +153,7 @@ export function Calendar() {
             onClick={() => {
               const now = new Date()
               setMonthStart(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)))
-              setSelectedDate(ymd(now))
+              setSelectedDate(calendarYmd(now))
             }}
           >
             Today
@@ -218,30 +216,46 @@ export function Calendar() {
               </div>
               <div className="grid grid-cols-7">
                 {grid.map((cellDate) => {
-                  const cellYmd = ymd(cellDate)
+                  const cellYmd = calendarYmd(cellDate)
                   const inMonth = cellDate.getUTCMonth() === monthStart.getUTCMonth()
                   const dayItems = itemsByDate.get(cellYmd) ?? []
                   const selected = cellYmd === selectedDate
                   return (
-                    <button
+                    <div
                       key={cellYmd}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => setSelectedDate(cellYmd)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') setSelectedDate(cellYmd)
+                      }}
                       className={cn(
-                        'flex min-h-[86px] flex-col items-start gap-1 border-b border-r border-line p-1.5 text-left transition-colors',
+                        'group relative flex min-h-[86px] cursor-pointer flex-col items-start gap-1 border-b border-r border-line p-1.5 text-left transition-colors',
                         !inMonth && 'bg-subtler/60',
                         selected && 'bg-brand-50/70',
                         'hover:bg-subtle',
                       )}
                     >
-                      <span
-                        className={cn(
-                          'flex size-5 items-center justify-center rounded-full text-[11.5px] font-medium',
-                          isToday(cellYmd) ? 'bg-brand-600 text-white' : inMonth ? 'text-ink-700' : 'text-ink-300',
-                        )}
-                      >
-                        {cellDate.getUTCDate()}
-                      </span>
+                      <div className="flex w-full items-center justify-between">
+                        <span
+                          className={cn(
+                            'flex size-5 items-center justify-center rounded-full text-[11.5px] font-medium',
+                            isToday(cellYmd) ? 'bg-brand-600 text-white' : inMonth ? 'text-ink-700' : 'text-ink-300',
+                          )}
+                        >
+                          {cellDate.getUTCDate()}
+                        </span>
+                        <IconButton
+                          label={`Add task on ${cellYmd}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setNewTaskDate(cellYmd)
+                          }}
+                          className="size-5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                        >
+                          <Plus size={12} />
+                        </IconButton>
+                      </div>
                       <div className="flex w-full flex-col gap-0.5">
                         {dayItems.slice(0, 3).map((item) => (
                           <span
@@ -265,7 +279,7 @@ export function Calendar() {
                           <span className="text-[10px] text-ink-400">+{dayItems.length - 3} more</span>
                         )}
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -290,6 +304,11 @@ export function Calendar() {
                 title={new Date(`${selectedDate}T00:00:00.000Z`).toLocaleDateString('en-US', {
                   weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC',
                 })}
+                action={
+                  <Button variant="secondary" size="xs" icon={<Plus size={12} />} onClick={() => setNewTaskDate(selectedDate)}>
+                    Add task
+                  </Button>
+                }
               />
               <div className="divide-y divide-line">
                 {selectedItems.length === 0 && (
@@ -303,6 +322,10 @@ export function Calendar() {
           </div>
         )}
       </div>
+
+      {newTaskDate !== null && (
+        <NewTaskModal defaultDueDate={newTaskDate} onClose={() => setNewTaskDate(null)} />
+      )}
     </PageShell>
   )
 }
