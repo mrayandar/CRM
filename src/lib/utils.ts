@@ -2,6 +2,22 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
 }
 
+/** Same subject-type routing ActivityStream.tsx's subjectHref already uses, for the notification
+ *  bell's click-through (PageShell.tsx) — a deal has no per-record detail page, so it goes to
+ *  the Pipeline board; a task likewise has none, so it goes to the Tasks list (nowhere more
+ *  specific to send it). Kept here, not in PageShell.tsx (a 'use client' component file), so it's
+ *  unit-testable without a DOM — this repo's vitest setup runs in plain Node, no jsdom. */
+export function notificationHref(item: {
+  subjectType: 'lead' | 'contact' | 'deal' | 'task' | null
+  subjectId: string | null
+}): string | null {
+  if (item.subjectType === 'lead' && item.subjectId) return `/leads/${item.subjectId}`
+  if (item.subjectType === 'contact' && item.subjectId) return `/contacts/${item.subjectId}`
+  if (item.subjectType === 'deal') return '/pipeline'
+  if (item.subjectType === 'task') return '/tasks'
+  return null
+}
+
 /**
  * The list an assignment picker (New lead/contact/deal/task's Owner field, Reassign, a task's
  * Assignee) should offer — active owners, plus the record's CURRENT owner even if they've since

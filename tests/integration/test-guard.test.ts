@@ -55,6 +55,7 @@ const KNOWN_TEST_FILES = [
   'unit/dashboard-helpers.test.ts',
   'unit/live-poll.test.ts',
   'unit/local-day-delta.test.ts',
+  'unit/notification-bell.test.ts',
   'unit/payments-received.test.ts',
   'unit/persist-run.test.ts',
   'unit/query-cache-security.test.ts',
