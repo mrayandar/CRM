@@ -7,12 +7,15 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { Textarea } from '@/components/ui/Field'
+import { useCrm } from '@/store/crm'
 import {
   callAiAssist,
   type AiAssistCapability,
   type AiAssistSubjectType,
   type AiAssistUiState,
 } from '@/lib/aiAssistClient'
+
+const DEV_PROVIDER_BADGE = 'Development AI (free tier): use test data only'
 
 const CAPABILITIES: Array<{ value: AiAssistCapability; label: string; editable: boolean }> = [
   { value: 'draft_email', label: 'Draft follow-up email', editable: true },
@@ -32,6 +35,7 @@ const CAPABILITIES: Array<{ value: AiAssistCapability; label: string; editable: 
  * retries, and closing the modal aborts whatever's in flight via the AbortController ref.
  */
 export function AiAssistCard({ subjectType, subjectId }: { subjectType: AiAssistSubjectType; subjectId: string }) {
+  const { aiAssistProviderKind } = useCrm()
   const [open, setOpen] = useState<AiAssistCapability | null>(null)
   const [state, setState] = useState<AiAssistUiState>({ status: 'idle' })
   const [draft, setDraft] = useState('')
@@ -73,6 +77,7 @@ export function AiAssistCard({ subjectType, subjectId }: { subjectType: AiAssist
       <Card>
         <CardHeader title="AI assist" subtitle="Draft a follow-up, or get a quick summary and next step" />
         <div className="flex flex-col gap-1.5 p-3">
+          {aiAssistProviderKind === 'dev' && <Badge tone="warning">{DEV_PROVIDER_BADGE}</Badge>}
           {CAPABILITIES.map((c) => (
             <Button key={c.value} variant="secondary" size="sm" icon={<Sparkles size={13} />} className="justify-start" onClick={() => openCapability(c.value)}>
               {c.label}
@@ -89,7 +94,7 @@ export function AiAssistCard({ subjectType, subjectId }: { subjectType: AiAssist
           width={560}
           footer={<AiAssistModalFooter state={state} draft={draft} onRegenerate={() => run(active.value)} onClose={close} />}
         >
-          <AiAssistModalBody state={state} draft={draft} editable={active.editable} onDraftChange={setDraft} />
+          <AiAssistModalBody state={state} draft={draft} editable={active.editable} onDraftChange={setDraft} providerKind={aiAssistProviderKind} />
         </Modal>
       )}
     </>
@@ -101,11 +106,13 @@ function AiAssistModalBody({
   draft,
   editable,
   onDraftChange,
+  providerKind,
 }: {
   state: AiAssistUiState
   draft: string
   editable: boolean
   onDraftChange: (value: string) => void
+  providerKind: 'dev' | 'production' | null
 }) {
   if (state.status === 'loading') {
     return (
@@ -125,9 +132,13 @@ function AiAssistModalBody({
   }
 
   // 'success' (and the brief 'idle' frame before the first call resolves)
+  const effectiveKind = state.status === 'success' ? state.providerKind : providerKind
   return (
     <div className="space-y-3">
-      <Badge tone="info">AI-generated draft: review before using</Badge>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Badge tone="info">AI-generated draft: review before using</Badge>
+        {effectiveKind === 'dev' && <Badge tone="warning">{DEV_PROVIDER_BADGE}</Badge>}
+      </div>
       <Textarea
         value={draft}
         onChange={(e) => editable && onDraftChange(e.target.value)}

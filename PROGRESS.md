@@ -2,6 +2,62 @@
 
 > Living context file. Updated at the end of every task.
 
+## AI assist: Gemini dev adapter on the deployed app, test orgs only (Oct 26 2026)
+
+`lib/ai/resolveProvider.ts`'s `resolveProviderForRequest(orgId)` replaces the generate route's old
+`NODE_ENV === 'production' ? null : getDevAiProvider()` ternary. Outside production, behavior is
+unchanged (the dev adapter, fake-unless-fully-configured). In production: a real production
+adapter (Stage 4, not built yet) would be checked first and always wins once it exists; until
+then, the dev adapter (a real network call — never the fake provider, which stays refused in
+production unconditionally) is reachable only when BOTH `AI_ALLOW_DEV_PROVIDERS=true` AND the
+calling org is on `AI_ASSIST_ALLOWED_ORG_IDS`. An unset/empty allowlist, or a non-allowlisted org,
+resolves to `null` — fails closed, never falls back to the fake provider.
+
+A successful generate response now also returns `providerKind: 'dev' | 'production'`. The AI
+assist card and its result modal show a "Development AI (free tier): use test data only" badge
+whenever it's `'dev'`. Neither the route nor the page data ever expose the provider's name, URL,
+key, or the allowlist itself — `lib/ai/availability.ts`'s `computeAiAssistAvailability` (renamed
+from `computeAiAssistAvailable`) now returns `{ available, providerKind }` together, both derived
+from the same `resolveProviderForRequest` the route itself calls, so the two can't drift.
+
+`aiAssistAvailable` (and the new `aiAssistProviderKind`) now refresh on every `GET /api/crm-refetch`
+poll (`src/store/crm.tsx`'s `applyFreshData`) — a toggle, a kill switch, or an allowlist change
+reaches the client within about a live-poll interval, with no reload. Proved in
+`tests/integration/ai-refetch-availability.test.ts`: two calls to the real route, the org's
+`aiAssistEnabled`/the DB kill flag changed in between, the second call's JSON reflects the change;
+a third test confirms the allowlist's own contents never appear in the response.
+
+Fail-closed, including in production, is covered by `tests/unit/ai-resolve-provider.test.ts`
+(unset/empty allowlist, dev adapter not fully configured, both in production) and
+`tests/integration/ai-availability.test.ts`'s equivalent cases for the combined availability flag.
+
+**Vercel env vars for this** (names only — see PROGRESS.md's pre-launch checklist for the hard
+gates before real launch):
+```
+AI_ALLOW_DEV_PROVIDERS       (plain)      — must be exactly "true"
+AI_BASE_URL                  (plain)
+AI_API_KEY                   (sensitive)  — mark as a Sensitive env var in Vercel
+AI_MODEL                     (plain)
+AI_REASONING_EFFORT          (plain, optional)
+AI_ASSIST_ALLOWED_ORG_IDS    (plain)      — test orgs' internal ids only, comma-separated
+AI_ASSIST_KILL_SWITCH        (plain, optional) — leave unset/"false" normally
+```
+
+### File list
+
+```
+app/api/ai/generate/route.ts                   — uses resolveProviderForRequest, returns providerKind
+lib/ai/resolveProvider.ts                       — new: production-safe provider resolution
+lib/ai/availability.ts                          — computeAiAssistAvailability returns { available, providerKind }
+src/lib/aiAssistClient.ts                       — carries providerKind through the success state
+src/components/common/AiAssistCard.tsx          — "Development AI" badge on the card and in the modal
+tests/unit/ai-resolve-provider.test.ts          — new: fail-closed matrix, including production
+tests/integration/ai-availability.test.ts       — extended for the new { available, providerKind } shape
+tests/integration/ai-generate.test.ts           — mocks resolveProvider instead of getDevAiProvider directly
+tests/unit/ai-assist-client.test.ts             — extended for providerKind in the success state
+tests/integration/ai-refetch-availability.test.ts — new: the refetch-carries-live-config contract
+```
+
 ## AI assist, Stage 2 follow-up: verification + fixes (Oct 26 2026)
 
 Report (items 1-3): `POST /api/ai/generate`'s check order is session -> body validation -> env
@@ -905,8 +961,23 @@ built or investigated yet.
   publish the privacy paragraph — including the BYOK-specific wording ("with your own key, your
   data goes to your chosen provider, under your account, not ours"); keep `AI_ASSIST_ALLOWED_ORG_IDS`
   (the org allowlist) in place until real billing/plan enforcement exists, so "our key" usage stays
-  deliberately opt-in per org, never silently available to everyone; and confirm
-  `AI_ALLOW_DEV_PROVIDERS` is not set in Vercel (it must only ever exist in a local `.env`).
+  deliberately opt-in per org, never silently available to everyone.
+  - **Stage 3's change**: `AI_ALLOW_DEV_PROVIDERS` + the Gemini env vars (`AI_BASE_URL`,
+    `AI_API_KEY`, `AI_MODEL`, `AI_REASONING_EFFORT`) MAY now exist in Vercel temporarily, so the
+    AI assist card actually works on the deployed app for test orgs only (see
+    `lib/ai/resolveProvider.ts` — in production this is reachable ONLY for an org on
+    `AI_ASSIST_ALLOWED_ORG_IDS`, and the fake provider never runs in production at all). This is
+    a deliberate, bounded exception to "dev-only env vars never leave `.env`," not a reversal of
+    it — it still never touches a real customer org's data.
+  - **Hard gates, before real launch** (not optional, not "nice to have"):
+    1. Remove `AI_ALLOW_DEV_PROVIDERS` and all four Gemini env vars from Vercel.
+    2. Delete the Gemini API key in Google AI Studio's own console (don't just stop using it).
+    3. No real customer organization's id may ever be on `AI_ASSIST_ALLOWED_ORG_IDS` while the dev
+       adapter is active in production — that list is test orgs only, for exactly as long as
+       Stage 4's real adapter doesn't exist yet.
+    4. If the Gemini key is ever exposed (committed, logged, pasted anywhere) — revoke it
+       immediately in Google AI Studio and issue a new one; treat exposure as the key being
+       compromised the moment it happens, not something to assess first.
 
 ## CSV import for leads and contacts (Oct 24 2026)
 

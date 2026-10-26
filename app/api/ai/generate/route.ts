@@ -11,7 +11,7 @@ import { AI_CAPS } from '@lib/ai/caps'
 import { hourBucketStart, monthBucketStart, reserveSlot, refundSlot, type AiRateLimitScopeType } from '@lib/ai/rateLimiter'
 import { recordAiUsage } from '@lib/ai/usage'
 import { logAiRequest, promptHash } from '@lib/ai/logging'
-import { getDevAiProvider } from '@lib/ai/getDevAiProvider'
+import { resolveProviderForRequest } from '@lib/ai/resolveProvider'
 import { buildFollowUpEmailPrompt, buildTimelineSummaryPrompt, buildNextStepPrompt } from '@lib/ai/promptBuilder'
 import type { PromptBuilderSubject, PromptBuilderActivity, BuiltPrompt } from '@lib/ai/promptBuilder'
 import type { Scope } from '@lib/scope'
@@ -38,9 +38,13 @@ import type { Scope } from '@lib/scope'
  *      returns the generic unavailable message, never the provider's own error text
  *   9. on success: record usage (lib/ai/usage.ts), return the plain-text result
  *
- * The fake provider (lib/ai/providers/fakeProvider.ts) is only ever reachable in a non-production
- * NODE_ENV — in production, with no real provider adapter wired yet (Stage 4), this route always
- * returns the unavailable message, which is the deliberately correct Stage 2 behavior, not a bug.
+ * Step 8's provider resolution (lib/ai/resolveProvider.ts) — the fake provider is only ever
+ * reachable in a non-production NODE_ENV. In production, with no real production adapter wired
+ * yet (Stage 4), the dev adapter (a real network call, e.g. Gemini) is reachable ONLY when both
+ * `AI_ALLOW_DEV_PROVIDERS=true` and this org is on `AI_ASSIST_ALLOWED_ORG_IDS` — any other
+ * production org gets the unavailable message instead. A successful response also returns
+ * `providerKind` ('dev' | 'production') so the client can show a "development AI" badge; never
+ * the provider's name, URL, key, or allowlist.
  */
 export const dynamic = 'force-dynamic'
 
@@ -178,11 +182,12 @@ export async function POST(request: Request) {
   }
 
   // 8. the provider call
-  const provider = process.env.NODE_ENV === 'production' ? null : getDevAiProvider()
-  if (!provider) {
+  const resolved = resolveProviderForRequest(session.orgId)
+  if (!resolved) {
     await refundReserved()
     return unavailable()
   }
+  const { provider, kind: providerKind } = resolved
 
   const hash = promptHash(built.userPrompt)
   const startedAt = Date.now()
@@ -210,5 +215,5 @@ export async function POST(request: Request) {
     latencyMs,
     promptHash: hash,
   })
-  return NextResponse.json({ text: outcome.result.text }, { headers: NO_STORE_HEADERS })
+  return NextResponse.json({ text: outcome.result.text, providerKind }, { headers: NO_STORE_HEADERS })
 }

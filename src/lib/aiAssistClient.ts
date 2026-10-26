@@ -4,6 +4,9 @@
 
 export type AiAssistCapability = 'draft_email' | 'summarize' | 'next_step'
 export type AiAssistSubjectType = 'lead' | 'contact'
+/** Never the provider's name, URL, key, or allowlist — see app/api/ai/generate/route.ts's own
+ *  doc comment. 'dev' covers both the fake provider and the OpenAI-compatible dev adapter. */
+export type AiProviderKind = 'dev' | 'production'
 
 export const CAP_REACHED_MESSAGE = "You've reached this month's AI assist limit for your plan."
 export const UNAVAILABLE_MESSAGE = "AI assist isn't available right now. Please try again later."
@@ -11,7 +14,7 @@ export const UNAVAILABLE_MESSAGE = "AI assist isn't available right now. Please 
 export type AiAssistUiState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'success'; text: string }
+  | { status: 'success'; text: string; providerKind: AiProviderKind | null }
   | { status: 'cap_reached'; message: string }
   | { status: 'unavailable'; message: string }
   | { status: 'network_error' }
@@ -36,7 +39,8 @@ export async function mapAiAssistResponse(response: Response): Promise<AiAssistU
   }
   const json = await response.json().catch(() => null)
   if (!json || typeof json.text !== 'string') return { status: 'unavailable', message: UNAVAILABLE_MESSAGE }
-  return { status: 'success', text: json.text }
+  const providerKind = json.providerKind === 'dev' || json.providerKind === 'production' ? json.providerKind : null
+  return { status: 'success', text: json.text, providerKind }
 }
 
 /**

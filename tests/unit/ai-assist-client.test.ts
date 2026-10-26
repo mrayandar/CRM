@@ -11,8 +11,24 @@ function response(status: number, body: unknown): Response {
 }
 
 describe('mapAiAssistResponse', () => {
-  it('maps 200 with { text } to success', async () => {
-    expect(await mapAiAssistResponse(response(200, { text: 'hello' }))).toEqual({ status: 'success', text: 'hello' })
+  it('maps 200 with { text } to success, with a null providerKind when the body has none', async () => {
+    expect(await mapAiAssistResponse(response(200, { text: 'hello' }))).toEqual({ status: 'success', text: 'hello', providerKind: null })
+  })
+
+  it('maps 200 with { text, providerKind } to success, carrying the provider kind through', async () => {
+    expect(await mapAiAssistResponse(response(200, { text: 'hello', providerKind: 'dev' }))).toEqual({
+      status: 'success',
+      text: 'hello',
+      providerKind: 'dev',
+    })
+  })
+
+  it('ignores an unrecognized providerKind value, treating it as null', async () => {
+    expect(await mapAiAssistResponse(response(200, { text: 'hello', providerKind: 'not-a-real-kind' }))).toEqual({
+      status: 'success',
+      text: 'hello',
+      providerKind: null,
+    })
   })
 
   it('maps 429 to cap_reached, using the server message when present', async () => {

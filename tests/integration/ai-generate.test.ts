@@ -4,16 +4,21 @@
  * for both out-of-scope and cross-org), atomic cap reservation, the provider call itself, usage
  * recording. An unauthorized or invalid request must never burn quota (no counter row created).
  *
- * The real dev-provider adapter (lib/ai/getDevAiProvider.ts) is mocked out entirely here — this
- * file is about the route's own gating and bookkeeping, not the provider adapter, which Stage 1's
- * own tests already cover.
+ * Provider resolution itself (lib/ai/resolveProvider.ts) is mocked out entirely here — this file
+ * is about the route's own gating and bookkeeping, not which provider answers or why; that's
+ * covered by tests/unit/ai-resolve-provider.test.ts (the NODE_ENV/allowlist/dev-adapter-config
+ * matrix) and Stage 1's own provider-adapter tests.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { mockAuth, mockComplete } = vi.hoisted(() => ({ mockAuth: vi.fn(), mockComplete: vi.fn() }))
+const { mockAuth, mockComplete, mockResolveProvider } = vi.hoisted(() => ({
+  mockAuth: vi.fn(),
+  mockComplete: vi.fn(),
+  mockResolveProvider: vi.fn(),
+}))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@clerk/nextjs/server', () => ({ auth: () => mockAuth(), clerkClient: () => ({}) }))
-vi.mock('@lib/ai/getDevAiProvider', () => ({ getDevAiProvider: () => ({ complete: mockComplete }) }))
+vi.mock('@lib/ai/resolveProvider', () => ({ resolveProviderForRequest: (orgId: string) => mockResolveProvider(orgId) }))
 
 import { prisma } from '@lib/prisma'
 import { ensureDefaultStages } from '@lib/data/stages'
@@ -96,6 +101,8 @@ afterAll(async () => {
 beforeEach(() => {
   mockComplete.mockReset()
   mockComplete.mockResolvedValue({ ok: true, result: { text: '[draft]', inputTokens: 10, outputTokens: 20 } })
+  mockResolveProvider.mockReset()
+  mockResolveProvider.mockReturnValue({ provider: { complete: mockComplete }, kind: 'dev' })
 })
 
 afterEach(async () => {
@@ -320,10 +327,10 @@ describe('POST /api/ai/generate: atomic cap reservation', () => {
   })
 })
 
-describe('POST /api/ai/generate: production has no real provider wired yet (Stage 4)', () => {
-  it('returns 503 unavailable in production, without ever calling the fake provider, and refunds the reservation', async () => {
+describe('POST /api/ai/generate: no usable provider resolved (resolveProviderForRequest returned null)', () => {
+  it('returns 503 unavailable, never calls the provider, and refunds the reservation — regardless of why resolution failed', async () => {
     loginAs(A.rep, A.org)
-    vi.stubEnv('NODE_ENV', 'production')
+    mockResolveProvider.mockReturnValue(null)
     const response = await generateRequest({ capability: 'draft_email', subjectType: 'contact', subjectId: contactA.id })
     expect(response.status).toBe(503)
     expect(mockComplete).not.toHaveBeenCalled()
@@ -332,12 +339,13 @@ describe('POST /api/ai/generate: production has no real provider wired yet (Stag
 })
 
 describe('POST /api/ai/generate: success response shape', () => {
-  it('returns only { text }, never token counts or any provider-internal field', async () => {
+  it('returns only { text, providerKind }, never token counts or any provider-internal field', async () => {
     loginAs(A.rep, A.org)
     const response = await generateRequest({ capability: 'draft_email', subjectType: 'contact', subjectId: contactA.id })
     const json = await response.json()
-    expect(Object.keys(json)).toEqual(['text'])
+    expect(new Set(Object.keys(json))).toEqual(new Set(['text', 'providerKind']))
     expect(json.text).toBe('[draft]')
+    expect(json.providerKind).toBe('dev')
   })
 
   it('records AiUsage with the real token counts the provider reported', async () => {
