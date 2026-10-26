@@ -362,7 +362,7 @@ export function Leads() {
                       </Td>
                       <Td>
                         <div className="flex items-center gap-2">
-                          <Avatar name={ownerRecord.name} initials={ownerRecord.initials} size="xs" />
+                          <Avatar name={ownerRecord.name} initials={ownerRecord.initials} avatarUrl={ownerRecord.avatarUrl} size="xs" />
                           <span className="truncate text-[12.5px] text-ink-600">
                             {ownerRecord.name.split(' ')[0]}
                           </span>

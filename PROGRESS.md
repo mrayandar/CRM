@@ -2,6 +2,78 @@
 
 > Living context file. Updated at the end of every task.
 
+## Profile photo through Clerk, plus the fiscal year Settings UI (Oct 26 2026)
+
+**Profile photo.** Settings -> Profile's "Upload photo"/"Remove photo" (removed the "Coming soon"
+tag) use Clerk's own client SDK (`user.setProfileImage({ file })` / `{ file: null }`) —
+`src/components/common/AvatarUploader.tsx` validates type (PNG/JPEG/WEBP) and size (≤5 MB) first
+(`src/lib/avatarValidation.ts`, pure, tested standalone). This app never stores or serves the
+image itself. After Clerk's own call succeeds, a new server action `syncMyAvatarAction`
+(`lib/actions/crm.ts`) re-reads the CALLER's current image state from Clerk's Backend API —
+`hasImage` is checked, not just `imageUrl` (Clerk returns a generated placeholder URL even when
+`hasImage` is false) — and writes only the caller's own `Owner.avatarUrl`, skipping the write
+entirely when the resolved value already matches (no-op). It takes no parameter from the client at
+all; there is no URL the client could ever pass in.
+
+`Owner.avatarUrl` existed in the schema already but reached neither the frontend `Owner` type nor
+`mapOwner` nor the `Avatar` component before this — all three gained it. `Avatar` now renders an
+`<img>` when a URL is present, with an `onError` handler that falls back to initials if the image
+fails to load (a broken URL, not just a missing one). Every place an Owner's avatar renders was
+updated: the sidebar account card (prefers Clerk's own live `useUser()` value over the DB-cached
+one, so an upload/remove shows immediately without waiting on `revalidatePath`), Settings' own
+profile card and its Team member list (the latter reads Clerk's `publicUserData.hasImage`/
+`imageUrl` directly — that list comes from `useOrganization()`, not this app's `owners` array, so
+there's no `Owner.avatarUrl` to read there at all), Leads/Contacts/Pipeline/Dashboard/Reports'
+owner columns, RecordDetail's "Owner" field, and TaskRow's owner avatar. The "assignee pickers"
+(lead/contact/deal owner reassignment) are all plain native `<select>` elements with text options —
+there's no image surface in a cross-browser `<option>` to add a photo to, so nothing changed there.
+
+The enforced CSP's `img-src` already included `https://img.clerk.com` (added when Clerk auth was
+first wired up) — no change needed.
+
+Tests (`tests/integration/avatar-sync.test.ts`): the action updates only the caller's own row
+(another owner in the same org is never touched) and ignores `hasImage=false`'s placeholder
+`imageUrl`, writing `null`; is a no-op (verified via `updatedAt` staying identical) when nothing
+changed; a different user's call never affects another user's row; and org isolation (a session in
+org B can only ever resolve to an org B owner — there's no id parameter for it to target another
+org's owner with in the first place). `tests/unit/avatar-validation.test.ts` covers the type/size
+validation helper directly, including the exact-boundary and type-checked-before-size cases.
+
+**This commit also lands the fiscal year Settings UI** (previous commit's `updateFiscalYearStartMonthAction`,
+the month `Select`, the confirm modal, `fiscalYearStartMonth`/`updateFiscalYearStartMonth` wired
+through `lib/data-loader.ts`/`src/store/crm.tsx`) — both features touch the same shared files
+(`crm.tsx`, `Settings.tsx`, `own-mode.test.ts`, `test-guard.test.ts`), so splitting them across two
+commits without one half of each file landing broken wasn't practical; see the previous commit's
+message.
+
+**Tooling fix, same commit**: `vitest related` hangs in this repo — confirmed by direct
+reproduction (even a single-file `vitest related --run <one file>` hangs indefinitely, while a
+plain `vitest run <the same file>` completes normally in seconds). `npm run test:related` is now a
+plain alias for `vitest run` — it takes actual test file paths, not source files; there is no more
+automated dependency-graph discovery. `CLAUDE.md`'s testing policy updated to match. Added to the
+pre-launch checklist below.
+
+### File list
+
+```
+lib/data/owners.ts                        — updateOwnerAvatarUrl
+lib/mappers.ts                             — mapOwner carries avatarUrl
+src/data/types.ts                          — Owner.avatarUrl
+src/components/ui/Avatar.tsx               — renders <img> with onError-to-initials fallback
+src/components/common/AvatarUploader.tsx   — new: the upload/remove control
+src/lib/avatarValidation.ts                — new: type/size validation (pure)
+lib/actions/crm.ts                          — syncMyAvatarAction, updateFiscalYearStartMonthAction
+lib/data-loader.ts, src/store/crm.tsx       — avatarUrl fallback, fiscalYearStartMonth + syncAvatar wired through
+src/screens/Settings.tsx                    — AvatarUploader wired in; fiscal year month Select + confirm modal
+src/screens/{Leads,Contacts,Pipeline,Dashboard,Reports,RecordDetail}.tsx, src/components/common/TaskRow.tsx, src/components/layout/Sidebar.tsx
+                                            — avatarUrl threaded to every Avatar call site for an Owner
+tests/integration/avatar-sync.test.ts       — new: own-row-only, hasImage check, no-op, org isolation
+tests/unit/avatar-validation.test.ts        — new: type/size validation
+tests/integration/own-mode.test.ts          — extended (syncMyAvatarAction, updateFiscalYearStartMonthAction bucketed)
+tests/integration/test-guard.test.ts        — extended (4 new test files total across this and the previous two commits)
+package.json, CLAUDE.md                     — test:related is now a plain `vitest run` alias; testing policy updated
+```
+
 ## Fiscal year start month (Oct 26 2026)
 
 `Organization.fiscalYearStartMonth` (Int, 1-12, default 1 — additive migration, no drift; the
@@ -1009,6 +1081,8 @@ built or investigated yet.
   gives proper cron and higher function limits).
 - **Hard gate: the full test suite must be green, with the local-Postgres test setup built first
   if the suite is still slow, before any real user touches the app.**
+- **`vitest related` hangs in this repo; use `vitest run` with explicit files.** Build the local
+  Postgres test setup before launch, because each suite run against Neon takes several minutes.
 - **AI assist, before enabling for real customers**: reconfirm each provider's current data-
   training/retention terms directly (terms can change since the design was written — never trust
   this doc's own summary of them at launch time); set an actual spend limit in the provider's own

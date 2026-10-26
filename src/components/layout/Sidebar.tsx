@@ -136,6 +136,10 @@ function UserMenu() {
   const displayEmail = clerkUser?.primaryEmailAddress?.emailAddress ?? currentUser.email
   const displayRole = currentUser.role
   const initials = currentUser.initials
+  // Prefers Clerk's own live client-side value (immediate after an upload/remove, no revalidation
+  // wait) over the DB-cached one every other Avatar in the app reads — only this one spot has a
+  // live useUser() hook to prefer in the first place.
+  const avatarUrl = clerkUser?.hasImage ? (clerkUser.imageUrl ?? null) : currentUser.avatarUrl
 
   return (
     <Popover
@@ -146,7 +150,7 @@ function UserMenu() {
           onClick={toggle}
           className="flex w-full items-center gap-2.5 rounded-panel px-2 py-2 text-left transition-colors hover:bg-subtle"
         >
-          <Avatar name={displayName} initials={initials} size="md" />
+          <Avatar name={displayName} initials={initials} avatarUrl={avatarUrl} size="md" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12.5px] font-semibold text-ink-900">
               {displayName}

@@ -8,7 +8,7 @@ import { requireAuth, requireAdmin, requireLiveAdminAccess } from '@lib/auth'
 import { tryAdminSession, FORBIDDEN, type ForbiddenResult } from '@lib/actions/shared'
 import type { Scope } from '@lib/scope'
 import { assertOwnerInScope } from '@lib/scope'
-import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone, updateRepVisibility } from '@lib/data/organizations'
+import { updateOrgQuota, updateOrgCurrency, updateOrgTimezone, updateRepVisibility, updateFiscalYearStartMonth } from '@lib/data/organizations'
 import { isValidIanaTimezone } from '@lib/timezones'
 import { CURRENCY_CODES } from '@/data/types'
 import {
@@ -19,7 +19,7 @@ import {
   convertLeadToDeal as dbConvertLeadToDeal,
   bulkReassignLeads as dbBulkReassignLeads,
 } from '@lib/data/leads'
-import { getOwnerById, updateOwnerProfile } from '@lib/data/owners'
+import { getOwnerById, updateOwnerProfile, updateOwnerAvatarUrl } from '@lib/data/owners'
 import {
   getCompanyById,
   getCompanyByName,
@@ -983,6 +983,33 @@ export async function updateProfileAction(input: { name: string; timezone: strin
   revalidatePath('/', 'layout')
 }
 
+/**
+ * Re-syncs the CALLER's own avatar from Clerk's Backend API — the one source of truth for what
+ * their profile photo currently is. Deliberately takes no `avatarUrl` (or any other) parameter
+ * from the client at all: a client-supplied URL could point anywhere, so the only trustworthy
+ * value is whatever Clerk's own API reports for the caller's own `clerkUserId` (never another
+ * user's, and never a bare `userId` read from the request body). `hasImage` is checked rather
+ * than trusting `imageUrl` alone — Clerk returns a generated placeholder URL in `imageUrl` even
+ * when the user has never set a real photo, which `hasImage` is what actually distinguishes.
+ * No-op (skips the write entirely) when the resolved value already matches what's stored, so
+ * removing/re-adding the same photo, or polling this after no real change, never bumps
+ * `Owner.updatedAt` for nothing.
+ */
+export async function syncMyAvatarAction(): Promise<{ ok: true; avatarUrl: string | null }> {
+  const { orgId, ownerId, clerkUserId } = await requireAuth()
+
+  const clerk = await clerkClient()
+  const clerkUser = await clerk.users.getUser(clerkUserId)
+  const avatarUrl = clerkUser.hasImage ? clerkUser.imageUrl : null
+
+  const current = await getOwnerById(orgId, ownerId)
+  if (current && current.avatarUrl !== avatarUrl) {
+    await updateOwnerAvatarUrl(orgId, ownerId, avatarUrl)
+    revalidatePath('/', 'layout')
+  }
+  return { ok: true, avatarUrl }
+}
+
 export async function updateOrgTimezoneAction(input: { timezone: string }): Promise<{ ok: true } | ForbiddenResult> {
   const session = await tryAdminSession(requireAdmin)
   if (!session) return FORBIDDEN
@@ -990,6 +1017,24 @@ export async function updateOrgTimezoneAction(input: { timezone: string }): Prom
   if (!isValidIanaTimezone(timezone)) throw new Error('Invalid time zone')
 
   await updateOrgTimezone(session.orgId, timezone)
+  revalidatePath('/', 'layout')
+  return { ok: true }
+}
+
+/**
+ * Admin-only via plain `requireAdmin()` — same tier as updateOrgCurrency/updateOrgTimezone, not
+ * updateRepVisibility/updateAiAssistEnabledAction's live-Clerk-role check: this only changes how
+ * "this quarter" and the quota tile's progress are computed for display, never who can see what,
+ * so a stale DB `Owner.role` granting it for up to a webhook-delivery window is an acceptable risk
+ * here in a way it explicitly isn't for those two.
+ */
+export async function updateFiscalYearStartMonthAction(input: { fiscalYearStartMonth: number }): Promise<{ ok: true } | ForbiddenResult> {
+  const session = await tryAdminSession(requireAdmin)
+  if (!session) return FORBIDDEN
+  const month = input.fiscalYearStartMonth
+  if (!Number.isInteger(month) || month < 1 || month > 12) throw new Error('Invalid month')
+
+  await updateFiscalYearStartMonth(session.orgId, month)
   revalidatePath('/', 'layout')
   return { ok: true }
 }

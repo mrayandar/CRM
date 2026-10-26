@@ -34,6 +34,10 @@ export interface Owner {
   role: string
   email: string
   timezone?: string
+  /** Null until this person uploads a photo (or Clerk reports one) — synced from Clerk's own
+   *  Backend API by syncMyAvatarAction, never a client-supplied URL. The initials above are the
+   *  fallback wherever this is null, or if the image itself fails to load. */
+  avatarUrl: string | null
   /** False once this person is removed from the org in Clerk — still shown (never deleted) so
    *  historical ownership/activity attribution stays accurate; just no longer assignable. */
   active: boolean

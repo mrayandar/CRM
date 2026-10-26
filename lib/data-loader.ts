@@ -39,7 +39,7 @@ import { withRetry } from '@lib/prisma'
 import type { Scope } from '@lib/scope'
 import { getNotificationPreferences } from '@lib/data/notifications'
 import { isOrgAllowlistedForAi } from '@lib/ai/allowlist'
-import { computeAiAssistAvailable } from '@lib/ai/availability'
+import { computeAiAssistAvailability } from '@lib/ai/availability'
 import type { NotificationKind } from '@prisma/client'
 
 export interface CrmInitialData {
@@ -73,6 +73,9 @@ export interface CrmInitialData {
   /** Settings -> Workspace, admin-only (`updateRepVisibilityAction`). Read by the query-cache
    *  security guard (lib/queryCacheSecurity.ts) and by every Stage 1b UI gate (via
    *  `isScopedMember`, derived from `scopeOwnerId` below, not from this directly). */
+  /** 1-12, 1 = January, default — Settings -> Workspace, admin-only
+   *  (`updateFiscalYearStartMonthAction`). Drives lib/timePeriods.ts's `currentFiscalQuarter`. */
+  fiscalYearStartMonth: number
   repVisibility: 'ALL' | 'OWN'
   /** Owner.id of whoever last changed `repVisibility`, and when — both null until the first
    *  change. Shown under the Settings switch. */
@@ -104,6 +107,9 @@ export interface CrmInitialData {
    *  both this and the route call into, so they can't drift apart. Same for every Member and
    *  Admin in the org: it's an org-wide flag, not a per-role one. */
   aiAssistAvailable: boolean
+  /** Null when `aiAssistAvailable` is false. See lib/ai/resolveProvider.ts's `AiProviderKind` —
+   *  never the provider's name, URL, key, or allowlist. Drives the "development AI" badge. */
+  aiAssistProviderKind: 'dev' | 'production' | null
   /** The org's own name, as stored in our DB (set once, at creation, from Clerk's org name — see
    *  upsertOrg in lib/data/organizations.ts; never re-synced if the org is later renamed in
    *  Clerk). Settings shows this read-only — there's no "rename workspace" action in this app. */
@@ -170,7 +176,7 @@ export async function loadCrmData(
   const owners = rawOwners.map(mapOwner)
   const currentUser =
     owners.find((o) => o.id === currentOwnerId) ?? owners[0]
-  const aiAssistAvailable = await computeAiAssistAvailable(scope.orgId, org?.aiAssistEnabled ?? false)
+  const aiAssistAvailability = await computeAiAssistAvailability(scope.orgId, org?.aiAssistEnabled ?? false)
 
   return {
     owners,
@@ -180,6 +186,7 @@ export async function loadCrmData(
       initials: 'Y',
       role: 'Member',
       email: '',
+      avatarUrl: null,
       active: true,
     },
     leads: rawLeads.map(mapLead),
@@ -195,6 +202,7 @@ export async function loadCrmData(
     orgCurrency: org?.currency ?? 'USD',
     orgTimezone: org?.timezone ?? DEFAULT_ORG_TIMEZONE,
     orgTimezoneConfigured: org?.timezoneConfigured ?? false,
+    fiscalYearStartMonth: org?.fiscalYearStartMonth ?? 1,
     repVisibility: org?.repVisibility ?? 'ALL',
     repVisibilityChangedBy: org?.repVisibilityChangedBy ?? null,
     repVisibilityChangedAt: org?.repVisibilityChangedAt?.toISOString() ?? null,
@@ -203,7 +211,8 @@ export async function loadCrmData(
     aiAssistEnabledChangedBy: org?.aiAssistEnabledChangedBy ?? null,
     aiAssistEnabledChangedAt: org?.aiAssistEnabledChangedAt?.toISOString() ?? null,
     aiAssistAllowlisted: isOrgAllowlistedForAi(scope.orgId),
-    aiAssistAvailable,
+    aiAssistAvailable: aiAssistAvailability.available,
+    aiAssistProviderKind: aiAssistAvailability.providerKind,
     orgName: org?.name ?? '',
     notificationPreferences,
   }

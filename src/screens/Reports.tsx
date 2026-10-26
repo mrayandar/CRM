@@ -355,7 +355,7 @@ export function Reports() {
                 <Tr key={row.owner.id}>
                   <Td>
                     <div className="flex items-center gap-2.5">
-                      <Avatar name={row.owner.name} initials={row.owner.initials} size="md" />
+                      <Avatar name={row.owner.name} initials={row.owner.initials} avatarUrl={row.owner.avatarUrl} size="md" />
                       <div className="min-w-0">
                         <p className="truncate text-[13px] leading-[17px] font-medium text-ink-900">
                           {row.owner.name}

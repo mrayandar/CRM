@@ -436,7 +436,7 @@ function RecordDetail({ lead, contact }: { lead?: Lead; contact?: Contact }) {
               </KeyValue>
               <KeyValue label="Owner">
                 <span className="inline-flex items-center gap-1.5">
-                  <Avatar name={owner.name} initials={owner.initials} size="xs" />
+                  <Avatar name={owner.name} initials={owner.initials} avatarUrl={owner.avatarUrl} size="xs" />
                   {owner.name}
                 </span>
               </KeyValue>

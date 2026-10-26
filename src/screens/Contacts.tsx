@@ -269,6 +269,7 @@ export function Contacts() {
                             showCompany={false}
                             ownerName={ownerById(contact.ownerId).name}
                             ownerInitials={ownerById(contact.ownerId).initials}
+                            ownerAvatarUrl={ownerById(contact.ownerId).avatarUrl}
                             onOpen={() => navigate(`/contacts/${contact.id}`)}
                           />
                         ))}
@@ -284,6 +285,7 @@ export function Contacts() {
                       showCompany
                       ownerName={ownerById(contact.ownerId).name}
                       ownerInitials={ownerById(contact.ownerId).initials}
+                      ownerAvatarUrl={ownerById(contact.ownerId).avatarUrl}
                       onOpen={() => navigate(`/contacts/${contact.id}`)}
                     />
                   ))}
@@ -422,12 +424,14 @@ function ContactRow({
   showCompany,
   ownerName,
   ownerInitials,
+  ownerAvatarUrl,
   onOpen,
 }: {
   contact: Contact
   showCompany: boolean
   ownerName: string
   ownerInitials: string
+  ownerAvatarUrl: string | null
   onOpen: () => void
 }) {
   const navigate = useNavigate()
@@ -471,7 +475,7 @@ function ContactRow({
       </Td>
       <Td>
         <div className="flex items-center gap-2">
-          <Avatar name={ownerName} initials={ownerInitials} size="xs" />
+          <Avatar name={ownerName} initials={ownerInitials} avatarUrl={ownerAvatarUrl} size="xs" />
           <span className="truncate text-[12.5px] text-ink-600">{ownerName.split(' ')[0]}</span>
         </div>
       </Td>

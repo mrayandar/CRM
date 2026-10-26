@@ -14,10 +14,12 @@ import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/ui/Display'
 import { StageManager } from '@/components/common/StageManager'
 import { TimezoneSelect } from '@/components/common/TimezoneSelect'
+import { AvatarUploader } from '@/components/common/AvatarUploader'
 import { useCrm } from '@/store/crm'
 import { cn, currencySymbol, formatDate } from '@/lib/utils'
 import { CURRENCY_CODES, CURRENCY_LABEL } from '@/data/types'
 import { resolveBrowserTimezone } from '@lib/timezones'
+import { currentFiscalQuarter } from '@lib/timePeriods'
 import { useOrganization, useUser } from '@clerk/nextjs'
 import { inviteMemberAction } from '@lib/actions/crm'
 import { getOrgRecordCountsAction, type OrgRecordCounts } from '@lib/actions/import'
@@ -38,6 +40,9 @@ export function Settings() {
     orgTimezone,
     orgTimezoneConfigured,
     updateOrgTimezone,
+    effectiveOrgTimezone,
+    fiscalYearStartMonth,
+    updateFiscalYearStartMonth,
     orgName,
     notificationPreferences,
     updateNotificationPreference,
@@ -66,6 +71,9 @@ export function Settings() {
   const [orgTimezoneInput, setOrgTimezoneInput] = useState(
     orgTimezoneConfigured ? orgTimezone : resolveBrowserTimezone(),
   )
+  const [confirmFiscalMonth, setConfirmFiscalMonth] = useState<number | null>(null)
+  const [fiscalMonthSaving, setFiscalMonthSaving] = useState(false)
+  const [fiscalMonthError, setFiscalMonthError] = useState<string | null>(null)
 
   const isAdmin = currentUser.role === 'Admin'
   const profileDirty = profileName.trim() !== currentUser.name || profileTimezone !== (currentUser.timezone ?? resolveBrowserTimezone())
@@ -87,6 +95,34 @@ export function Settings() {
   const saveOrgTimezone = () => updateOrgTimezone(orgTimezoneInput)
   const cancelOrgTimezone = () =>
     setOrgTimezoneInput(orgTimezoneConfigured ? orgTimezone : resolveBrowserTimezone())
+
+  const MONTH_NAMES = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ]
+  const currentQuarterLabel = currentFiscalQuarter(effectiveOrgTimezone, fiscalYearStartMonth).label
+  const pickFiscalMonth = (month: number) => {
+    if (month === fiscalYearStartMonth) return // no-op: selecting the already-saved month
+    setFiscalMonthError(null)
+    setConfirmFiscalMonth(month)
+  }
+  const closeFiscalConfirm = () => {
+    if (fiscalMonthSaving) return
+    setConfirmFiscalMonth(null)
+    setFiscalMonthError(null)
+  }
+  const confirmFiscalMonthChange = async () => {
+    if (confirmFiscalMonth === null) return
+    setFiscalMonthSaving(true)
+    setFiscalMonthError(null)
+    const result = await updateFiscalYearStartMonth(confirmFiscalMonth)
+    setFiscalMonthSaving(false)
+    if (result.ok) {
+      setConfirmFiscalMonth(null)
+    } else {
+      setFiscalMonthError(result.error)
+    }
+  }
 
   const saveQuota = () => {
     const digits = quotaInput.replace(/[^0-9]/g, '')
@@ -127,18 +163,7 @@ export function Settings() {
             <Card>
               <CardHeader title="Your profile" subtitle="Visible to everyone in the workspace" />
               <div className="space-y-4 px-5 py-4">
-                <div className="flex items-center gap-4">
-                  <Avatar name={currentUser.name} initials={currentUser.initials} size="xl" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Button variant="secondary" size="sm" disabled>
-                        Upload photo
-                      </Button>
-                      <Tag>Coming soon</Tag>
-                    </div>
-                    <p className="mt-1.5 text-[11.5px] text-ink-400">PNG or JPG, up to 2MB.</p>
-                  </div>
-                </div>
+                <AvatarUploader />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
                     <Label>Full name</Label>
@@ -269,18 +294,26 @@ export function Settings() {
                   )}
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <Label>Fiscal year starts</Label>
-                    <Tag>Coming soon</Tag>
-                  </div>
-                  <Select defaultValue="jan" className="h-9" disabled>
-                    <option value="jan">January</option>
-                    <option value="apr">April</option>
-                    <option value="jul">July</option>
-                  </Select>
+                  <Label>Fiscal year starts</Label>
+                  {isAdmin ? (
+                    <Select
+                      value={fiscalYearStartMonth}
+                      onChange={(e) => pickFiscalMonth(Number(e.target.value))}
+                      className="h-9"
+                    >
+                      {MONTH_NAMES.map((name, i) => (
+                        <option key={name} value={i + 1}>
+                          {name}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Input value={MONTH_NAMES[fiscalYearStartMonth - 1]} disabled />
+                  )}
                   <p className="mt-1 text-[11px] text-ink-400">
-                    The Dashboard's quarterly quota currently always uses the calendar quarter
-                    (Jan/Apr/Jul/Oct) — this would change that once it's built.
+                    {isAdmin
+                      ? `Current quarter: ${currentQuarterLabel}. Drives the quota tile's quarter-to-date progress.`
+                      : 'Only admins can change the fiscal year start month.'}
                   </p>
                 </div>
                 <div>
@@ -445,6 +478,33 @@ export function Settings() {
             {quarterlyQuota ? quarterlyQuota.toLocaleString('en-US') : '50,000'} will still show the same number,
             just under the new currency.
           </p>
+        </Modal>
+      )}
+
+      {confirmFiscalMonth !== null && (
+        <Modal
+          open
+          onClose={closeFiscalConfirm}
+          width={440}
+          title="Change fiscal year start?"
+          footer={
+            <>
+              <Button variant="ghost" onClick={closeFiscalConfirm} disabled={fiscalMonthSaving}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={confirmFiscalMonthChange} disabled={fiscalMonthSaving}>
+                {fiscalMonthSaving ? 'Saving…' : 'Change fiscal year start'}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-[13px] leading-5 text-ink-700">
+            Starting the fiscal year in {MONTH_NAMES[confirmFiscalMonth - 1]} changes which 3
+            months count as &quot;this quarter&quot; everywhere that's shown, including the
+            Dashboard's quota tile — its quarter-to-date progress will be recalculated against the
+            new quarter immediately, for every member of this workspace.
+          </p>
+          {fiscalMonthError && <p className="mt-2 text-[12.5px] text-red-600">{fiscalMonthError}</p>}
         </Modal>
       )}
     </PageShell>
@@ -780,7 +840,7 @@ function TeamSection() {
                 <Tr key={membership.id}>
                   <Td>
                     <div className="flex items-center gap-2.5">
-                      <Avatar name={name} size="md" />
+                      <Avatar name={name} avatarUrl={profile?.hasImage ? profile.imageUrl : null} size="md" />
                       <span className="text-[13px] font-medium text-ink-900">
                         {name}
                       </span>

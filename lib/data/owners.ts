@@ -65,6 +65,20 @@ export function updateOwnerProfile(
   })
 }
 
+/**
+ * Sets the caller's own `avatarUrl` — same orgId-check-as-defense-in-depth, id-always-from-
+ * requireAuth() reasoning as updateOwnerProfile above. The caller (syncMyAvatarAction) is
+ * responsible for resolving `avatarUrl` from Clerk's own Backend API, never from a client-
+ * supplied value, and for skipping this call entirely when nothing actually changed.
+ */
+export function updateOwnerAvatarUrl(orgId: string, id: string, avatarUrl: string | null) {
+  return withTransaction(async (tx) => {
+    const existing = await tx.owner.findFirst({ where: { id, orgId } })
+    if (!existing) throw new Error(`Owner ${id} not found in org ${orgId}`)
+    return tx.owner.update({ where: { id }, data: { avatarUrl } })
+  })
+}
+
 /** Upsert an Owner from Clerk user data — used during auth resolution and
  *  webhook-driven member sync. */
 export function upsertOwnerFromClerk(

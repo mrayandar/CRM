@@ -53,9 +53,11 @@ import {
   addNoteAction,
   logActivityAction,
   updateProfileAction,
+  syncMyAvatarAction,
   updateQuotaAction,
   updateCurrencyAction,
   updateOrgTimezoneAction,
+  updateFiscalYearStartMonthAction,
   updateRepVisibilityAction,
   createStageAction,
   renameStageAction,
@@ -258,6 +260,11 @@ interface CrmState {
    *  (never a silent, un-chosen "UTC"). See resolveOrgTimezone in lib/timezones.ts. */
   effectiveOrgTimezone: string
   updateOrgTimezone: (timezone: string) => void
+  /** 1-12, 1 = January, default — see lib/data-loader.ts's identical field. */
+  fiscalYearStartMonth: number
+  /** Admin-only (requireAdmin). Awaited, not fire-and-forget, same reasoning as
+   *  updateRepVisibility below — the Settings confirmation dialog needs a real result. */
+  updateFiscalYearStartMonth: (month: number) => Promise<{ ok: true } | { ok: false; error: string }>
   repVisibility: 'ALL' | 'OWN'
   /** Owner.id of whoever last changed `repVisibility`, and when (ISO string) — both null until
    *  the first change. See lib/data-loader.ts's identical fields. */
@@ -285,6 +292,9 @@ interface CrmState {
    *  identical field's doc comment for what it ANDs together and why it reveals nothing about
    *  the allowlist. Reactive: updateAiAssistEnabled keeps it in sync with the toggle locally. */
   aiAssistAvailable: boolean
+  /** Null when aiAssistAvailable is false. Never the provider's name, URL, key, or allowlist —
+   *  see lib/data-loader.ts's identical field. Drives the "development AI" badge. */
+  aiAssistProviderKind: 'dev' | 'production' | null
   /** Admin-only (requireLiveAdminAccess), same pattern as updateRepVisibility. Rejects with
    *  'not_allowlisted' before even attempting the write when the org isn't on the env allowlist —
    *  the Settings UI shows that as "Not available for your organization yet" rather than a
@@ -383,6 +393,9 @@ interface CrmState {
   logActivity: (kind: ActivityKind, title: string, subject?: SubjectRef, body?: string) => void
   /** Updates the caller's own profile (name, timezone); rolls back and shows a toast if the save fails. */
   updateProfile: (input: { name: string; timezone: string | null }) => void
+  /** Re-syncs the caller's own avatarUrl from Clerk's Backend API after AvatarUploader's own
+   *  Clerk upload/remove call succeeds — see syncMyAvatarAction's doc comment. */
+  syncAvatar: () => Promise<{ ok: true } | { ok: false; error: string }>
   /** Sets (or clears, with null) the org's quarterly quota; rolls back and shows a toast on failure. */
   updateQuota: (quota: number | null) => void
   /** Sets the org's display currency (admin-only, rejected server-side for anyone else); rolls
@@ -450,6 +463,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       }),
     [orgTimezone, orgTimezoneConfigured, currentUser.timezone],
   )
+  const [fiscalYearStartMonth, setFiscalYearStartMonth] = useState<number>(initialData.fiscalYearStartMonth)
   const [repVisibility, setRepVisibility] = useState<'ALL' | 'OWN'>(initialData.repVisibility)
   const [repVisibilityChangedBy, setRepVisibilityChangedBy] = useState<string | null>(initialData.repVisibilityChangedBy)
   const [repVisibilityChangedAt, setRepVisibilityChangedAt] = useState<string | null>(initialData.repVisibilityChangedAt)
@@ -467,6 +481,11 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
   // security boundary — a stale "available" here can never result in anything but the route's own
   // normal unavailable response.
   const [aiAssistAvailable, setAiAssistAvailable] = useState<boolean>(initialData.aiAssistAvailable)
+  // Reactive the same way as aiAssistAvailable (refreshed by applyFreshData on every refetch) —
+  // never recomputed optimistically by updateAiAssistEnabled, since the client has no way to
+  // derive which provider kind would answer; it just goes stale until the next refetch, same
+  // tradeoff as the other non-toggle factors aiAssistAvailable approximates.
+  const [aiAssistProviderKind, setAiAssistProviderKind] = useState<'dev' | 'production' | null>(initialData.aiAssistProviderKind)
   const isScopedMember = scopeOwnerId !== null
   const [orgName, setOrgName] = useState<string>(initialData.orgName)
   const [notificationPreferences, setNotificationPreferences] = useState<Record<NotificationKind, boolean>>(
@@ -1155,6 +1174,22 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     [currentUser, persist],
   )
 
+  // Called after the AvatarUploader's own Clerk upload/remove call succeeds — re-syncs this
+  // owner's avatarUrl from Clerk's Backend API (never a client-supplied URL; see
+  // syncMyAvatarAction's own doc comment) and applies the result everywhere this owner's avatar
+  // appears. Awaited, not persist()'s fire-and-forget pattern, so AvatarUploader's own loading
+  // state can cover the whole upload-then-sync round trip, not just the Clerk call.
+  const syncAvatar = useCallback(async (): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const result = await syncMyAvatarAction()
+      setCurrentUser((prev) => ({ ...prev, avatarUrl: result.avatarUrl }))
+      setOwners((list) => list.map((o) => (o.id === currentUser.id ? { ...o, avatarUrl: result.avatarUrl } : o)))
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Couldn't update your photo" }
+    }
+  }, [currentUser.id])
+
   const updateQuota = useCallback(
     (quota: number | null) => {
       const prev = quarterlyQuota
@@ -1223,6 +1258,25 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       )
     },
     [orgTimezone, persist],
+  )
+
+  // Awaited (not persist()'s fire-and-forget pattern), same reasoning as updateRepVisibility below
+  // — the Settings confirmation dialog needs a real {ok, error} result, not a toast-after-the-fact.
+  const updateFiscalYearStartMonth = useCallback(
+    async (month: number): Promise<{ ok: true } | { ok: false; error: string }> => {
+      beginMutation()
+      try {
+        const result = await updateFiscalYearStartMonthAction({ fiscalYearStartMonth: month })
+        if (!result.ok) return { ok: false, error: 'Only admins can change the fiscal year start month.' }
+        setFiscalYearStartMonth(month)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Couldn't save the fiscal year start month" }
+      } finally {
+        endMutation()
+      }
+    },
+    [beginMutation, endMutation],
   )
 
   // Awaited (not persist()'s fire-and-forget pattern) — the Settings confirmation dialog needs a
@@ -1980,11 +2034,20 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
     setOrgCurrency(fresh.orgCurrency)
     setOrgTimezone(fresh.orgTimezone)
     setOrgTimezoneConfigured(fresh.orgTimezoneConfigured)
+    setFiscalYearStartMonth(fresh.fiscalYearStartMonth)
     setRepVisibility(fresh.repVisibility)
     setRepVisibilityChangedBy(fresh.repVisibilityChangedBy)
     setRepVisibilityChangedAt(fresh.repVisibilityChangedAt)
     setScopeOwnerId(fresh.scopeOwnerId)
     setOrgName(fresh.orgName)
+    setAiAssistEnabled(fresh.aiAssistEnabled)
+    setAiAssistEnabledChangedBy(fresh.aiAssistEnabledChangedBy)
+    setAiAssistEnabledChangedAt(fresh.aiAssistEnabledChangedAt)
+    // The one allowlist-derived field this refetch carries live is the plain boolean below — a
+    // toggle, the kill switch, or an allowlist change all reach the client this way, within about
+    // a minute (the live-poll interval), without a reload. Never the allowlist's contents.
+    setAiAssistAvailable(fresh.aiAssistAvailable)
+    setAiAssistProviderKind(fresh.aiAssistProviderKind)
   }, [])
 
   /**
@@ -2062,6 +2125,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       orgTimezoneConfigured,
       effectiveOrgTimezone,
       updateOrgTimezone,
+      fiscalYearStartMonth,
+      updateFiscalYearStartMonth,
       repVisibility,
       repVisibilityChangedBy,
       repVisibilityChangedAt,
@@ -2073,6 +2138,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       aiAssistEnabledChangedAt,
       aiAssistAllowlisted,
       aiAssistAvailable,
+      aiAssistProviderKind,
       updateAiAssistEnabled,
       orgName,
       notificationPreferences,
@@ -2110,6 +2176,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       addNote,
       logActivity: pushActivity,
       updateProfile,
+      syncAvatar,
       updateQuota,
       updateCurrency,
       persist,
@@ -2136,6 +2203,8 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       orgTimezoneConfigured,
       effectiveOrgTimezone,
       updateOrgTimezone,
+      fiscalYearStartMonth,
+      updateFiscalYearStartMonth,
       repVisibility,
       repVisibilityChangedBy,
       repVisibilityChangedAt,
@@ -2147,6 +2216,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       aiAssistEnabledChangedAt,
       aiAssistAllowlisted,
       aiAssistAvailable,
+      aiAssistProviderKind,
       updateAiAssistEnabled,
       orgName,
       notificationPreferences,
@@ -2184,6 +2254,7 @@ export function CrmProvider({ children, initialData, orgId }: CrmProviderProps) 
       addNote,
       pushActivity,
       updateProfile,
+      syncAvatar,
       updateQuota,
       updateCurrency,
       persist,

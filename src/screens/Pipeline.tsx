@@ -242,6 +242,7 @@ export function Pipeline() {
                     columns={columns}
                     ownerName={ownerById(deal.ownerId).name}
                     ownerInitials={ownerById(deal.ownerId).initials}
+                    ownerAvatarUrl={ownerById(deal.ownerId).avatarUrl}
                     dragging={dragging === deal.id}
                     onDragStart={(e) => {
                       e.dataTransfer.setData('text/deal-id', deal.id)
@@ -305,6 +306,7 @@ function DealCard({
   columns,
   ownerName,
   ownerInitials,
+  ownerAvatarUrl,
   dragging,
   onDragStart,
   onDragEnd,
@@ -318,6 +320,7 @@ function DealCard({
   columns: PipelineStage[]
   ownerName: string
   ownerInitials: string
+  ownerAvatarUrl: string | null
   dragging: boolean
   onDragStart: (e: DragEvent) => void
   onDragEnd: () => void
@@ -494,10 +497,10 @@ function DealCard({
           )}
           {deal.contactId ? (
             <Link to={`/contacts/${deal.contactId}`} onClick={(e) => e.stopPropagation()}>
-              <Avatar name={ownerName} initials={ownerInitials} size="xs" title={`Owner: ${ownerName}`} />
+              <Avatar name={ownerName} initials={ownerInitials} avatarUrl={ownerAvatarUrl} size="xs" title={`Owner: ${ownerName}`} />
             </Link>
           ) : (
-            <Avatar name={ownerName} initials={ownerInitials} size="xs" title={`Owner: ${ownerName}`} />
+            <Avatar name={ownerName} initials={ownerInitials} avatarUrl={ownerAvatarUrl} size="xs" title={`Owner: ${ownerName}`} />
           )}
         </span>
       </div>

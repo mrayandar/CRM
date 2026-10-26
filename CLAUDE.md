@@ -9,15 +9,22 @@ latency to it (~250ms per query round trip from this machine, confirmed by direc
 the dominant cost — not Postgres query time itself. That makes the full suite too slow to run after
 every small change (~800s / 445 tests as of this policy's writing), so:
 
-- **At the end of a task**: run `npm run typecheck`, then run only the tests related to the files
-  you actually changed:
+- **`vitest related` hangs in this repo** (confirmed: even a single-file `vitest related --run
+  <one file>` hangs, while a plain `vitest run <explicit test files>` with the same effective
+  scope completes normally) — never invoke it, including via `npm run test:related -- <source
+  files>` the old way. `test:related` is now a plain alias for `vitest run`: pass it actual test
+  file paths, not source files.
+
+- **At the end of a task**: run `npm run typecheck`, then run the specific test files that cover
+  the files you actually changed:
   ```
-  npm run test:related -- <changed files>
+  npm run test:related -- <test file paths>
   ```
-  e.g. `npm run test:related -- lib/data/leads.ts lib/actions/crm.ts`. This uses Vitest's own
-  module-graph analysis (`vitest related`) to find every test file that imports (even
-  transitively) the changed files, and runs only those. Get the changed-files list from
-  `git diff --name-only` / `git status --porcelain` — don't guess it by hand.
+  e.g. `npm run test:related -- tests/integration/leads.test.ts tests/integration/own-mode.test.ts`.
+  Since there's no automated dependency-graph discovery anymore, figure out which test files are
+  relevant yourself (grep the test directory for the changed module's import path, or reason from
+  what the change touches) — get the changed-*source*-files list from `git diff --name-only` /
+  `git status --porcelain` first, then map that to test files by hand.
 
 - **Run the full suite** (`npm test`) only when:
   1. the user says **"stage complete"**, or

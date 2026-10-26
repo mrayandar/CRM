@@ -32,7 +32,7 @@ import {
 } from '@/lib/utils'
 import {
   isClosingSoon,
-  isInCurrentQuarter,
+  isInCurrentFiscalQuarter,
   isMonthsAgo,
   isTaskDueToday,
   isTaskOverdue,
@@ -54,6 +54,7 @@ export function Dashboard() {
     quarterlyQuota,
     orgCurrency,
     effectiveOrgTimezone,
+    fiscalYearStartMonth,
     payments,
     canAccessPayments,
     isScopedMember,
@@ -86,7 +87,7 @@ export function Dashboard() {
   // The quota (Settings -> Workspace) is explicitly quarterly, so it's compared against
   // quarter-to-date revenue, not the month-to-date figure the tile's headline value shows.
   const wonThisQuarterValue = sum(
-    wonDeals.filter((d) => isInCurrentQuarter(d.closeDate, effectiveOrgTimezone)).map((d) => d.value),
+    wonDeals.filter((d) => isInCurrentFiscalQuarter(d.closeDate, effectiveOrgTimezone, fiscalYearStartMonth)).map((d) => d.value),
   )
   const quotaProgress = quarterlyQuota ? Math.min((wonThisQuarterValue / quarterlyQuota) * 100, 999) : null
 
@@ -328,7 +329,7 @@ export function Dashboard() {
                             to="/pipeline"
                             className="flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-subtler"
                           >
-                            <Avatar name={owner.name} initials={owner.initials} size="xs" />
+                            <Avatar name={owner.name} initials={owner.initials} avatarUrl={owner.avatarUrl} size="xs" />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-[12.5px] font-medium text-ink-900">
                                 {deal.company}

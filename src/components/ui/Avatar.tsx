@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { cn, initialsOf } from '@/lib/utils'
 
 const sizes = {
@@ -13,27 +14,46 @@ const sizes = {
 export function Avatar({
   name,
   initials,
+  avatarUrl,
   size = 'sm',
   className,
   title,
 }: {
   name: string
   initials?: string
+  /** Null/undefined/a broken URL all fall back to initials — see the `onError` handler below,
+   *  which is what actually catches "the URL 404s or the image otherwise fails to decode," not
+   *  just "there was no URL to begin with." */
+  avatarUrl?: string | null
   size?: keyof typeof sizes
   className?: string
   title?: string
 }) {
+  const [imageFailed, setImageFailed] = useState(false)
+  const showImage = Boolean(avatarUrl) && !imageFailed
+
   return (
     <span
       title={title ?? name}
       className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-full border border-line',
+        'inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-line',
         'bg-subtle font-semibold tracking-[-0.01em] text-ink-600 select-none',
         sizes[size],
         className,
       )}
     >
-      {initials ?? initialsOf(name)}
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element -- a remote, per-user Clerk-hosted
+        // URL; next/image's domain allowlist would need every possible viewer's own image host.
+        <img
+          src={avatarUrl!}
+          alt={name}
+          className="size-full object-cover"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        (initials ?? initialsOf(name))
+      )}
     </span>
   )
 }

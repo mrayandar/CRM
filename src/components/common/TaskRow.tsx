@@ -95,7 +95,7 @@ export function TaskRow({
         )}
       </div>
 
-      {showOwner && <Avatar name={owner.name} initials={owner.initials} size="xs" />}
+      {showOwner && <Avatar name={owner.name} initials={owner.initials} avatarUrl={owner.avatarUrl} size="xs" />}
 
       <span
         className={cn(
