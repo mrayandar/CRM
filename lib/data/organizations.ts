@@ -121,3 +121,11 @@ export function updateAiAssistEnabled(orgId: string, enabled: boolean, changedBy
     data: { aiAssistEnabled: enabled, aiAssistEnabledChangedBy: changedByOwnerId, aiAssistEnabledChangedAt: new Date() },
   })
 }
+
+/** Sets the org's fiscal year start month (1-12). Same orgId-from-auth, admin-only-checked-one-
+ *  layer-up reasoning as updateOrgCurrency/updateOrgTimezone — this isn't sensitive enough to
+ *  need updateRepVisibility/updateAiAssistEnabled's live-Clerk-role check (it only changes how
+ *  "this quarter" is computed for display, never who can see what). */
+export function updateFiscalYearStartMonth(orgId: string, fiscalYearStartMonth: number) {
+  return prisma.organization.update({ where: { id: orgId }, data: { fiscalYearStartMonth } })
+}

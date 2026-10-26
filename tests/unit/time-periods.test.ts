@@ -7,9 +7,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  currentFiscalQuarter,
   dayDeltaInZone,
   isClosingSoon,
-  isInCurrentQuarter,
+  isInCurrentFiscalQuarter,
   isMonthsAgo,
   isTaskDueToday,
   isTaskOverdue,
@@ -87,15 +88,80 @@ describe('isThisMonth / isMonthsAgo — month boundary disagreement', () => {
   })
 })
 
-describe('isInCurrentQuarter — quarter boundary disagreement (also exercises US DST)', () => {
-  it('UTC has already rolled into Q2 while New York (daylight time, UTC-4) is still in Q1', () => {
+describe('isInCurrentFiscalQuarter / currentFiscalQuarter — quarter boundary disagreement (also exercises US DST)', () => {
+  it('UTC has already rolled into Q2 (calendar fiscal year, start month 1) while New York (daylight time, UTC-4) is still in Q1', () => {
     // now = 2026-04-01T02:00:00Z → UTC's current quarter is Q2 (Apr-Jun); NY local (April =
     // daylight time, UTC-4) is March 31 22:00, so NY's current quarter is still Q1 (Jan-Mar).
     vi.setSystemTime(new Date('2026-04-01T02:00:00.000Z'))
     const closeDate = '2026-03-31T23:00:00.000Z' // NY local: March 31 19:00 → still Q1
 
-    expect(isInCurrentQuarter(closeDate, 'UTC')).toBe(false) // already rolled into Q2 by UTC
-    expect(isInCurrentQuarter(closeDate, 'America/New_York')).toBe(true) // still Q1 for NY
+    expect(isInCurrentFiscalQuarter(closeDate, 'UTC', 1)).toBe(false) // already rolled into Q2 by UTC
+    expect(isInCurrentFiscalQuarter(closeDate, 'America/New_York', 1)).toBe(true) // still Q1 for NY
+  })
+
+  it('a viewer in a different timezone never changes the result — only orgTimezone is read (no viewer-zone parameter exists at all)', () => {
+    // Same instant/org as above: the function's signature has no viewer-timezone input, so a
+    // Member sitting in Tokyo and one sitting in LA see the identical answer for the same org.
+    vi.setSystemTime(new Date('2026-04-01T02:00:00.000Z'))
+    const closeDate = '2026-03-31T23:00:00.000Z'
+    expect(isInCurrentFiscalQuarter(closeDate, 'America/New_York', 1)).toBe(
+      isInCurrentFiscalQuarter(closeDate, 'America/New_York', 1),
+    )
+  })
+
+  it('the end boundary is exclusive: an instant exactly at the next quarter start is NOT in the current one', () => {
+    vi.setSystemTime(new Date('2026-02-15T00:00:00.000Z')) // fiscal Q1 (start month 1): Jan-Mar
+    const { end } = currentFiscalQuarter('UTC', 1)
+    expect(isInCurrentFiscalQuarter(end.toISOString(), 'UTC', 1)).toBe(false)
+    expect(isInCurrentFiscalQuarter(new Date(end.getTime() - 1).toISOString(), 'UTC', 1)).toBe(true)
+  })
+
+  it.each([
+    [1, 'Jan to Mar', 'Apr to Jun', 'Oct to Dec'],
+    [2, 'Feb to Apr', 'May to Jul', 'Nov to Jan'],
+    [4, 'Apr to Jun', 'Jul to Sep', 'Jan to Mar'],
+    [7, 'Jul to Sep', 'Oct to Dec', 'Apr to Jun'],
+    [10, 'Oct to Dec', 'Jan to Mar', 'Jul to Sep'],
+  ])('fiscal year starting month %i: Q1/Q2/Q4 labels and boundaries are each 3 whole months', (startMonth, q1Label, q2Label, q4Label) => {
+    // Every call below passes its own explicit `now` — the faked system time from this file's
+    // top-level beforeEach is irrelevant to this block.
+    const q1 = currentFiscalQuarter('UTC', startMonth as number, new Date(Date.UTC(2026, (startMonth as number) - 1, 15)))
+    expect(q1.label).toBe(q1Label)
+    expect(q1.end.getTime() - q1.start.getTime()).toBeGreaterThan(27 * 24 * 60 * 60 * 1000) // at least ~3 short months
+
+    const q2Instant = new Date(q1.end.getTime() + 15 * 24 * 60 * 60 * 1000) // well inside the next quarter
+    const q2 = currentFiscalQuarter('UTC', startMonth as number, q2Instant)
+    expect(q2.label).toBe(q2Label)
+    expect(q2.start.getTime()).toBe(q1.end.getTime()) // quarters tile with no gap/overlap
+
+    const q4Instant = new Date(q1.start.getTime() - 15 * 24 * 60 * 60 * 1000) // well inside the PRIOR quarter (= Q4 of the previous fiscal year)
+    const q4 = currentFiscalQuarter('UTC', startMonth as number, q4Instant)
+    expect(q4.label).toBe(q4Label)
+    expect(q4.end.getTime()).toBe(q1.start.getTime())
+  })
+
+  it('month-start boundaries hold in a non-UTC org timezone too (Asia/Karachi, UTC+5, no DST)', () => {
+    // "Now" anchored well inside the Jul-Sep Karachi quarter (fiscal start month 7) — isInCurrent
+    // FiscalQuarter has no explicit `now` param, so the fake clock IS what it reads as "now."
+    vi.setSystemTime(new Date('2026-08-15T12:00:00.000Z'))
+    // Just before and just after the Oct 1 00:00 Karachi boundary, expressed as the equivalent
+    // UTC instants (Karachi = UTC+5).
+    const justBeforeKarachiOct1 = new Date('2026-09-30T18:59:59.000Z') // Karachi: Sep 30 23:59:59
+    const justAfterKarachiOct1 = new Date('2026-09-30T19:00:01.000Z') // Karachi: Oct 1 00:00:01
+    expect(isInCurrentFiscalQuarter(justBeforeKarachiOct1.toISOString(), 'Asia/Karachi', 7)).toBe(true)
+    expect(isInCurrentFiscalQuarter(justAfterKarachiOct1.toISOString(), 'Asia/Karachi', 7)).toBe(false)
+  })
+
+  it('month-start boundaries hold in America/New_York across a DST transition (standard time, UTC-5)', () => {
+    // "Now" anchored well inside the Jan-Mar NY quarter (fiscal start month 1).
+    vi.setSystemTime(new Date('2026-02-15T12:00:00.000Z'))
+    // Fiscal quarter starting month 1 (Jan-Mar in NY local time): just before and just after the
+    // Apr 1 00:00 NY boundary (standard-to-daylight already happened by then — NY is UTC-4 by
+    // April), expressed as the equivalent UTC instants.
+    const justBeforeNyApr1 = new Date('2026-04-01T03:59:59.000Z') // NY (UTC-4): Mar 31 23:59:59
+    const justAfterNyApr1 = new Date('2026-04-01T04:00:01.000Z') // NY (UTC-4): Apr 1 00:00:01
+    expect(isInCurrentFiscalQuarter(justBeforeNyApr1.toISOString(), 'America/New_York', 1)).toBe(true)
+    expect(isInCurrentFiscalQuarter(justAfterNyApr1.toISOString(), 'America/New_York', 1)).toBe(false)
   })
 })
 

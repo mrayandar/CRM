@@ -150,12 +150,72 @@ export function monthlyWonRevenue(
   return [...buckets.values()]
 }
 
-/** Org-wide business period — whether `iso` falls on or after the start of the current calendar
- *  quarter (Jan/Apr/Jul/Oct), in the org's timezone. Powers the quota card's quarter-to-date
- *  comparison; replaces that card's own inline `new Date()` quarter math. */
-export function isInCurrentQuarter(iso: string, orgTimezone: string): boolean {
-  const [ny, nm] = ymdInZone(new Date(), orgTimezone)
-  const quarterStartMonth = Math.floor((nm - 1) / 3) * 3 + 1
-  const quarterStart = midnightInZone(ny, quarterStartMonth, 1, orgTimezone)
-  return new Date(iso).getTime() >= quarterStart
+const MONTH_ABBR = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+] as const
+
+export interface FiscalQuarter {
+  /** Inclusive start instant, as midnight of the quarter's first day in `orgTimezone`. */
+  start: Date
+  /** Exclusive end instant — midnight of the NEXT quarter's first day, same zone. */
+  end: Date
+  /** e.g. "Jul to Sep" — the 3 calendar months this fiscal quarter spans, regardless of fiscal
+   *  year start month. Never includes the year: this is always "the current one." */
+  label: string
+}
+
+const idxToYM = (idx: number): [number, number] => [Math.floor(idx / 12), (((idx % 12) + 12) % 12) + 1]
+
+/** Absolute, 0-based month index (year*12 + month-1) of the first month of the fiscal quarter
+ *  containing `now`, in `orgTimezone`, plus the (exclusive) index just past its last month.
+ *  Pure month arithmetic, deliberately never routed through `midnightInZone`'s day-granularity
+ *  math: `midnightInZone` only ever promises that two calls IN THE SAME ZONE, subtracted, give
+ *  the right calendar-day difference (every existing caller in this file — isThisMonth,
+ *  isClosingSoon, dayDeltaInZone — only ever uses it that way) — for a positive-UTC-offset zone
+ *  its OWN return value is not the real UTC instant of local midnight, which an absolute
+ *  timestamp comparison (what isInCurrentFiscalQuarter needs) would silently get wrong by a
+ *  zone's own UTC offset. Comparing whole-month indices sidesteps that entirely: a fiscal quarter
+ *  is always 3 whole calendar months, so there's no finer-than-a-month boundary to get wrong. */
+function fiscalQuarterMonthRange(orgTimezone: string, fiscalYearStartMonth: number, now: Date): { startIdx: number; endIdx: number } {
+  const [ny, nm] = ymdInZone(now, orgTimezone)
+  const nowIdx = ny * 12 + (nm - 1)
+  // How many whole months into the CURRENT fiscal year "now" falls, 0-11.
+  const monthsIntoFiscalYear = ((nm - fiscalYearStartMonth) % 12 + 12) % 12
+  const startIdx = nowIdx - (monthsIntoFiscalYear % 3)
+  return { startIdx, endIdx: startIdx + 3 }
+}
+
+/**
+ * The one shared helper every "what's the current quarter" computation in this app must go
+ * through — see this module's own doc comment for the org-wide-vs-personal-zone rule this
+ * follows (always `Organization.timezone`, never a viewer's own). `fiscalYearStartMonth` is
+ * `Organization.fiscalYearStartMonth` (1-12, 1 = January) — a fiscal quarter is always 3 whole
+ * calendar months starting from that month, same as a calendar quarter is 3 months starting from
+ * January; this generalizes `isInCurrentQuarter`'s old hardcoded Jan/Apr/Jul/Oct boundaries,
+ * which is exactly what a `fiscalYearStartMonth` of 1 still produces. `start`/`end` are for
+ * display (the label, or formatting a date range) — `isInCurrentFiscalQuarter` below does its own
+ * membership check via month indices, never by comparing against these two Dates directly.
+ */
+export function currentFiscalQuarter(orgTimezone: string, fiscalYearStartMonth: number, now: Date = new Date()): FiscalQuarter {
+  const { startIdx, endIdx } = fiscalQuarterMonthRange(orgTimezone, fiscalYearStartMonth, now)
+  const [sy, sm] = idxToYM(startIdx)
+  const [ey, em] = idxToYM(endIdx)
+  const [, lm] = idxToYM(endIdx - 1) // the quarter's own last month, for the label
+
+  return {
+    start: new Date(midnightInZone(sy, sm, 1, orgTimezone)),
+    end: new Date(midnightInZone(ey, em, 1, orgTimezone)),
+    label: `${MONTH_ABBR[sm - 1]} to ${MONTH_ABBR[lm - 1]}`,
+  }
+}
+
+/** Org-wide business period — whether `iso` falls within the current fiscal quarter (inclusive of
+ *  its start, exclusive of its end), in the org's timezone. Powers the quota card's
+ *  quarter-to-date comparison. Compares whole-month indices, not instants — see
+ *  `fiscalQuarterMonthRange`'s own doc comment for why. */
+export function isInCurrentFiscalQuarter(iso: string, orgTimezone: string, fiscalYearStartMonth: number): boolean {
+  const { startIdx, endIdx } = fiscalQuarterMonthRange(orgTimezone, fiscalYearStartMonth, new Date())
+  const [iy, im] = ymdInZone(new Date(iso), orgTimezone)
+  const isoIdx = iy * 12 + (im - 1)
+  return isoIdx >= startIdx && isoIdx < endIdx
 }

@@ -2,6 +2,61 @@
 
 > Living context file. Updated at the end of every task.
 
+## Fiscal year start month (Oct 26 2026)
+
+`Organization.fiscalYearStartMonth` (Int, 1-12, default 1 — additive migration, no drift; the
+default preserves every org's existing calendar-quarter behavior exactly). `lib/timePeriods.ts`
+gained the one shared helper every "current quarter" computation must go through:
+`currentFiscalQuarter(orgTimezone, fiscalYearStartMonth, now?)` (returns `{ start, end, label }`,
+e.g. "Jul to Sep") and `isInCurrentFiscalQuarter(iso, orgTimezone, fiscalYearStartMonth)`. Searched
+the codebase for every existing "quarter" computation: the only real one was `isInCurrentQuarter`
+(this file, hardcoded Jan/Apr/Jul/Oct), used by exactly one call site — the Dashboard quota tile's
+quarter-to-date revenue (`src/screens/Dashboard.tsx`). Both are now replaced/updated. (Reports.tsx
+has an unrelated, still-disabled "This quarter" button under its own "Coming soon" tag — no real
+computation there yet, left alone.)
+
+**A real bug found and fixed before it shipped**: the first version of `isInCurrentFiscalQuarter`
+compared `new Date(iso).getTime()` directly against `currentFiscalQuarter(...).start/end` (computed
+via the existing `midnightInZone` helper). `midnightInZone` only ever promises that two calls in
+the *same* zone, subtracted, give the right calendar-day difference (every existing caller —
+`isThisMonth`, `isClosingSoon`, `dayDeltaInZone` — only ever uses it that way); for a positive-UTC-
+offset zone (e.g. Asia/Karachi, UTC+5) its own return value is not the true UTC instant of local
+midnight, so an absolute comparison was silently wrong by the zone's own offset. Caught by this
+feature's own new DST/non-UTC boundary tests, not by inspection. Fixed by comparing whole *month
+indices* instead (a fiscal quarter is always 3 whole calendar months, so there's no finer-than-a-
+month boundary to get wrong) — see `fiscalQuarterMonthRange`'s doc comment in `lib/timePeriods.ts`.
+
+Settings -> Workspace gained a "Fiscal year starts" month `Select` (removed its "Coming soon" tag)
+— admin-only (`updateFiscalYearStartMonthAction`, plain `requireAdmin`, not the live-Clerk-role
+check RepVisibility/AI-assist-toggle use, since this only changes display math, never who can see
+what), read-only with a note for a Member, a confirmation modal explaining that "this quarter" and
+the quota tile's progress will change immediately for the whole workspace, no-op suppression
+(picking the already-saved month skips the confirm step and the write), and the quarter label
+("Current quarter: Jul to Sep") shown next to the picker.
+
+Tests: quarter boundaries and labels for start months 1, 2, 4, 7, and 10 (`tests/unit/
+time-periods.test.ts`, table-driven); month boundaries in Asia/Karachi and America/New_York (DST);
+a viewer in a different timezone gets the same answer (the function takes no viewer-zone param at
+all); `tests/integration/fiscal-year.test.ts` — a Member is rejected with a typed forbidden result
+and writes nothing, an invalid month (0, 13, -1, 1.5, NaN) is rejected even for a real admin, and
+org A's admin can never change org B's setting (the action has no org-targeting parameter at all).
+
+### File list
+
+```
+prisma/schema.prisma                              — Organization.fiscalYearStartMonth
+prisma/migrations/20261026164516_fiscal_year_start_month/
+lib/timePeriods.ts                                 — currentFiscalQuarter, isInCurrentFiscalQuarter, fiscalQuarterMonthRange; isInCurrentQuarter removed
+lib/data/organizations.ts                          — updateFiscalYearStartMonth
+lib/actions/crm.ts                                 — updateFiscalYearStartMonthAction
+lib/data-loader.ts, src/store/crm.tsx              — fiscalYearStartMonth wired through (extended)
+src/screens/Dashboard.tsx                           — uses isInCurrentFiscalQuarter + fiscalYearStartMonth
+src/screens/Settings.tsx                            — the month Select + confirm modal, "Coming soon" removed
+tests/unit/time-periods.test.ts                     — extended: start-month table, DST/non-UTC boundaries
+tests/integration/fiscal-year.test.ts               — new: admin-only, validation, org isolation
+tests/integration/own-mode.test.ts                  — extended (updateFiscalYearStartMonthAction bucketed)
+```
+
 ## AI assist: Gemini dev adapter on the deployed app, test orgs only (Oct 26 2026)
 
 `lib/ai/resolveProvider.ts`'s `resolveProviderForRequest(orgId)` replaces the generate route's old

@@ -203,6 +203,13 @@ model Organization {
   aiAssistEnabledChangedBy String?
   aiAssistEnabledChangedAt DateTime?
 
+  /// 1-12 — the calendar month the org's fiscal year starts in (1 = January, the default,
+  /// matching every org's existing calendar-quarter behavior before this column existed: Jan/
+  /// Apr/Jul/Oct boundaries, unchanged). Drives lib/timePeriods.ts's currentFiscalQuarter — "this
+  /// quarter" and the quota tile's quarter-to-date progress both read it, in the org's timezone,
+  /// never a viewer's own. Settings -> Workspace, admin-only (updateFiscalYearStartMonthAction).
+  fiscalYearStartMonth Int @default(1)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
